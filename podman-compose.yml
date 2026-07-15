@@ -1,0 +1,128 @@
+# =============================================================================
+#  Podman Compose stack: SearXNG (search) + Tilion Fortress (stealth scrape)
+#  Usage:  podman compose up -d
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  #  Valkey — Redis-compatible cache for SearXNG rate limiting & bot detection
+  # ---------------------------------------------------------------------------
+  valkey:
+    image: docker.io/valkey/valkey:8-alpine
+    container_name: ws-valkey
+    restart: unless-stopped
+    command: valkey-server --save 30 1 --loglevel warning
+    volumes:
+      - valkey-data:/data
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  #  SearXNG — privacy metasearch engine (70+ engines, JSON API enabled)
+  #  Exposes: http://localhost:8888  (REST + JSON search API)
+  # ---------------------------------------------------------------------------
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: ws-searxng
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - ./searxng/limiter.toml:/etc/searxng/limiter.toml:ro
+      - searxng-data:/var/cache/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-please-change-this-secret-key}
+      - FORCE_OWNERSHIP=true
+      - UWSGI_THREADS=4
+    depends_on:
+      valkey:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  #  Tilion Fortress — stealth Chromium engine (CDP on :9222)
+  #  The bridge connects to this for scraping bot-protected pages.
+  #  ~300 MB pull, ~850 MB on disk.
+  # ---------------------------------------------------------------------------
+  fortress:
+    image: docker.io/tilion/fortress:latest
+    container_name: ws-fortress
+    restart: unless-stopped
+    ports:
+      - "9222:9222"
+    # Fortress needs --no-sandbox when running as non-root in a container
+    command: ["--headless=new", "--remote-debugging-port=9222", "--no-sandbox", "--user-data-dir=/tmp/fortress"]
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9222/json/version >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  #  Bridge — orchestrates SearXNG search + Fortress scrape into a unified API
+  #  REST:  http://localhost:8000  (FastAPI docs at /docs)
+  #  MCP:   stdio transport for AI agents (search_web, scrape_url, search_and_scrape)
+  # ---------------------------------------------------------------------------
+  bridge:
+    build:
+      context: ./bridge
+      dockerfile: Dockerfile
+    container_name: ws-bridge
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - SEARXNG_URL=http://searxng:8080
+      - FORTRESS_CDP_URL=http://fortress:9222
+      - BRIDGE_HOST=0.0.0.0
+      - BRIDGE_PORT=8000
+      # Optional: residential proxy for Fortress egress
+      # - TILION_PROXY=http://user:pass@proxy-host:port
+      # - TILION_REGION=us
+      # Optional: CAPTCHA solver for hard targets
+      # - CAPTCHA_API_KEY=your-key
+      # - CAPTCHA_PROVIDER=2captcha
+    depends_on:
+      searxng:
+        condition: service_healthy
+      fortress:
+        condition: service_healthy
+    networks:
+      - internal
+
+volumes:
+  valkey-data:
+  searxng-data:
+
+networks:
+  internal:
+    driver: bridge

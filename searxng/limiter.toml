@@ -1,0 +1,12 @@
+# SearXNG rate limiter configuration
+# Docs: https://docs.searxng.org/admin/searx.limiter.html
+
+[botdetection.ip_limit]
+# Maximum requests per minute for a single IP
+link_token = true
+
+[botdetection.ip_lists]
+# Block list (deny) and pass list (allow) of IPs
+pass_ip = [
+  "0.0.0.0/0",
+]

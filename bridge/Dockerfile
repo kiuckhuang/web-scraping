@@ -1,0 +1,29 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps: ca-certificates + curl for healthchecks, plus
+# libs that Playwright's CDP client may need at runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY pyproject.toml .
+RUN pip install --no-cache-dir -e .
+
+# NOTE: We do NOT run `playwright install` — the bridge connects to the
+# Fortress container over CDP (http://fortress:9222), so it only needs
+# the Playwright Python client, not local browser binaries.
+
+# Copy the bridge application
+COPY bridge/ ./bridge/
+
+EXPOSE 8000
+
+# Healthcheck: hit the FastAPI /health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
+    CMD curl -sf http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "bridge.main:app", "--host", "0.0.0.0", "--port", "8000"]
