@@ -1,0 +1,13 @@
+# Local config (may contain credentials/tokens)
+opencode.jsonc
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Podman / containers
+.env.local

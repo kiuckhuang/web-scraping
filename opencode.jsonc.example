@@ -9,6 +9,15 @@
         "TILION_MCP_HEADLESS": "0",
         "FORTRESS_CHANNEL": "latest"
       }
+    },
+    "web-scrape": {
+      "type": "local",
+      "command": ["python", "-m", "bridge.mcp_server"],
+      "enabled": true,
+      "environment": {
+        "SEARXNG_URL": "http://localhost:8888",
+        "FORTRESS_CDP_URL": "http://localhost:9222"
+      }
     }
   }
 }
