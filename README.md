@@ -212,35 +212,6 @@ await page.goto("https://bot.sannysoft.com");
 await page.screenshot({ path: "stealth-check.png" });
 ```
 
-## Using the Tilion MCP (Alternative)
-
-You can also run the official Tilion MCP server alongside this stack. It provides 29 stealth-browser tools (`fetch_protected_page`, `extract_page`, `crawl_site`, `recon_site_apis`, `search_web`, `run_browser_task`, etc.) that connect to the same Fortress engine:
-
-```jsonc
-// opencode.jsonc
-{
-  "mcp": {
-    "tilion": {
-      "type": "local",
-      "command": ["tilion-mcp"],
-      "enabled": true,
-      "environment": {
-        "TILION_MCP_HEADLESS": "1"
-      }
-    },
-    "web-scrape": {
-      "type": "local",
-      "command": ["python", "-m", "bridge.mcp_server"],
-      "enabled": true,
-      "environment": {
-        "SEARXNG_URL": "http://localhost:8888",
-        "FORTRESS_CDP_URL": "http://localhost:9222"
-      }
-    }
-  }
-}
-```
-
 ## Configuration
 
 ### Environment Variables
