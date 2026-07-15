@@ -325,6 +325,53 @@ async def handle_health(scope, receive, send):
 
 
 # ---------------------------------------------------------------------------
+#  CORS — allow browser-based MCP clients (llama.cpp web UI, etc.)
+# ---------------------------------------------------------------------------
+
+CORS_HEADERS = [
+    (b"access-control-allow-origin", b"*"),
+    (b"access-control-allow-methods", b"GET, POST, DELETE, OPTIONS"),
+    (b"access-control-allow-headers", b"Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version"),
+    (b"access-control-expose-headers", b"Mcp-Session-Id"),
+    (b"access-control-max-age", b"86400"),
+]
+
+
+def _is_cors_preflight(scope) -> bool:
+    return scope.get("method") == "OPTIONS"
+
+
+async def _send_cors_preflight(scope, send):
+    await send({
+        "type": "http.response.start",
+        "status": 204,
+        "headers": CORS_HEADERS,
+    })
+    await send({"type": "http.response.body", "body": b""})
+
+
+def _wrap_send_with_cors(send):
+    """Wrap the ASGI send callable to inject CORS headers into response start."""
+    original_send = send
+    cors_added = False
+
+    async def send_with_cors(message):
+        nonlocal cors_added
+        if message["type"] == "http.response.start" and not cors_added:
+            headers = list(message.get("headers", []))
+            # Add CORS headers if not already present
+            existing = {k.decode().lower() for k, _ in headers}
+            for k, v in CORS_HEADERS:
+                if k.decode().lower() not in existing:
+                    headers.append((k, v))
+            message["headers"] = headers
+            cors_added = True
+        await original_send(message)
+
+    return send_with_cors
+
+
+# ---------------------------------------------------------------------------
 #  ASGI app — minimal router (no Starlette dependency)
 # ---------------------------------------------------------------------------
 
@@ -332,12 +379,20 @@ async def app(scope, receive, send):
     path = scope.get("path", "")
     method = scope.get("method", "")
 
+    # Handle CORS preflight
+    if method == "OPTIONS":
+        await _send_cors_preflight(scope, send)
+        return
+
+    # Wrap send to inject CORS headers into all responses
+    send_with_cors = _wrap_send_with_cors(send)
+
     if path == "/mcp" and method in ("POST", "GET", "DELETE"):
-        await handle_mcp(scope, receive, send)
+        await handle_mcp(scope, receive, send_with_cors)
     elif path == "/health" and method == "GET":
-        await handle_health(scope, receive, send)
+        await handle_health(scope, receive, send_with_cors)
     else:
-        await _send_json(scope, send, 404, {"error": "not found"})
+        await _send_json(scope, send_with_cors, 404, {"error": "not found"})
 
 
 if __name__ == "__main__":
