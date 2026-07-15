@@ -1,39 +1,62 @@
-"""MCP server — exposes search + scrape as Model Context Protocol tools.
+"""MCP server (Streamable HTTP) — exposes search + scrape tools over HTTP.
 
-Run standalone:
-    python -m bridge.mcp_server
+Runs inside a container on port 9100. opencode connects as a remote MCP:
 
-Or add to an MCP client config:
-    { "mcpServers": { "web-scrape": { "command": "python", "args": ["-m", "bridge.mcp_server"] } } }
+    { "mcp": { "web-scrape": { "type": "remote", "url": "http://localhost:9100/mcp" } } }
 
-Tools exposed:
-    search_web        — search via SearXNG (70+ engines)
-    scrape_url        — scrape a URL via Fortress stealth browser
-    search_and_scrape — search + scrape top results (Exa-style)
-    crawl_site        — crawl a whole site
-    fortress_search   — web search via Fortress stealth browser (not SearXNG)
+Calls the bridge REST API at http://bridge:8000 — no heavy deps, just httpx + mcp.
+Uses the Streamable HTTP transport (the MCP standard since protocol version 2025-03-26),
+which replaces the deprecated HTTP+SSE transport.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import uuid
+from dataclasses import dataclass
+from typing import Any
 
+import httpx
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.types import TextContent, Tool
-
-from .searxng_client import search as searxng_search
-from .fortress_client import (
-    scrape as fortress_scrape,
-    crawl_site as fortress_crawl,
-    search_web as fortress_web_search,
-)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://bridge:8000")
+HTTP_TIMEOUT = float(os.environ.get("BRIDGE_TIMEOUT", "120"))
+MCP_PORT = int(os.environ.get("MCP_PORT", "9100"))
+
 server = Server("web-scrape-bridge")
+
+
+# ---------------------------------------------------------------------------
+#  Bridge REST API client
+# ---------------------------------------------------------------------------
+
+async def _api_get(path: str, **params) -> dict:
+    # Drop empty-string/None params so FastAPI's pattern validators don't reject them
+    clean = {k: v for k, v in params.items() if v not in (None, "")}
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        resp = await client.get(f"{BRIDGE_URL}{path}", params=clean)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def _api_post(path: str, body: dict) -> dict:
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        resp = await client.post(f"{BRIDGE_URL}{path}", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+
+# ---------------------------------------------------------------------------
+#  MCP tools
+# ---------------------------------------------------------------------------
 
 TOOLS: list[Tool] = [
     Tool(
@@ -117,49 +140,46 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     try:
         if name == "search_web":
-            result = await searxng_search(
-                arguments["query"],
-                categories=arguments.get("categories"),
+            result = await _api_get(
+                "/search",
+                q=arguments["query"],
+                categories=arguments.get("categories", ""),
                 language=arguments.get("language", "en"),
                 max_results=arguments.get("max_results", 10),
-                time_range=arguments.get("time_range"),
+                time_range=arguments.get("time_range", ""),
             )
             return [TextContent(type="text", text=_format_search_results(result))]
 
         elif name == "scrape_url":
-            result = await fortress_scrape(arguments["url"], mode=arguments.get("mode", "extract"))
+            result = await _api_post("/scrape", {
+                "url": arguments["url"],
+                "mode": arguments.get("mode", "extract"),
+            })
             return [TextContent(type="text", text=_format_scrape_result(result))]
 
         elif name == "search_and_scrape":
-            search_data = await searxng_search(
-                arguments["query"],
-                categories=arguments.get("categories"),
-                language=arguments.get("language", "en"),
-                max_results=arguments.get("max_results", 5),
-            )
-            urls = [r["url"] for r in search_data.get("results", []) if r.get("url")]
-
-            async def scrape_one(r: dict) -> dict:
-                try:
-                    content = await fortress_scrape(r["url"], mode=arguments.get("scrape_mode", "extract"))
-                    return {**r, "content": content}
-                except Exception as exc:
-                    return {**r, "content": None, "scrape_error": str(exc)}
-
-            scraped = await asyncio.gather(*[scrape_one(r) for r in search_data.get("results", [])]) if urls else []
-            return [TextContent(type="text", text=_format_combined_results(arguments["query"], scraped))]
+            result = await _api_post("/search_and_scrape", {
+                "query": arguments["query"],
+                "categories": arguments.get("categories"),
+                "language": arguments.get("language", "en"),
+                "max_results": arguments.get("max_results", 5),
+                "scrape_mode": arguments.get("scrape_mode", "extract"),
+            })
+            return [TextContent(type="text", text=_format_combined_results(result))]
 
         elif name == "crawl_site":
-            result = await fortress_crawl(
-                arguments["url"],
+            result = await _api_get(
+                "/crawl",
+                url=arguments["url"],
                 depth=arguments.get("depth", 2),
                 max_pages=arguments.get("max_pages", 50),
             )
             return [TextContent(type="text", text=_format_crawl_result(result))]
 
         elif name == "fortress_search":
-            result = await fortress_web_search(
-                arguments["query"],
+            result = await _api_get(
+                "/web_search",
+                q=arguments["query"],
                 count=arguments.get("count", 10),
             )
             return [TextContent(type="text", text=_format_search_results(result))]
@@ -167,6 +187,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
+    except httpx.HTTPStatusError as exc:
+        logger.exception("Tool %s HTTP error", name)
+        return [TextContent(type="text", text=f"Error in {name}: {exc.response.status_code} {exc.response.text[:500]}")]
     except Exception as exc:
         logger.exception("Tool %s failed", name)
         return [TextContent(type="text", text=f"Error in {name}: {exc}")]
@@ -202,13 +225,16 @@ def _format_scrape_result(result: dict) -> str:
     return "\n".join(lines)
 
 
-def _format_combined_results(query: str, results: list[dict]) -> str:
-    lines = [f"## Search + Scrape Results for: \"{query}\"\n"]
+def _format_combined_results(result: dict) -> str:
+    query = result.get("query", "")
+    results = result.get("results", [])
+    lines = [f'## Search + Scrape Results for: "{query}"\n']
     for i, r in enumerate(results, 1):
         lines.append(f"### {i}. {r.get('title', 'Untitled')}")
         lines.append(f"   URL: {r.get('url', '')}")
-        if r.get("content") and r["content"].get("markdown"):
-            lines.append(f"   {r['content']['markdown'][:500]}")
+        content = r.get("content")
+        if content and isinstance(content, dict) and content.get("markdown"):
+            lines.append(f"   {content['markdown'][:500]}")
         elif r.get("scrape_error"):
             lines.append(f"   [scrape failed: {r['scrape_error']}]")
         lines.append("")
@@ -226,17 +252,94 @@ def _format_crawl_result(result: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-#  Entrypoint
+#  Streamable HTTP transport — session management
 # ---------------------------------------------------------------------------
 
-async def _run() -> None:
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+@dataclass
+class Session:
+    """Holds a live MCP session: transport, background server task, and context manager."""
+    transport: StreamableHTTPServerTransport
+    task: asyncio.Task
+    cm: Any  # the connect() async context manager
 
 
-def main() -> None:
-    asyncio.run(_run())
+_sessions: dict[str, Session] = {}
+
+
+async def _send_json(scope, send, status: int, body: dict):
+    """Send a plain JSON HTTP response (ASGI)."""
+    payload = json.dumps(body).encode()
+    await send({
+        "type": "http.response.start",
+        "status": status,
+        "headers": [(b"content-type", b"application/json")],
+    })
+    await send({"type": "http.response.body", "body": payload})
+
+
+async def handle_mcp(scope, receive, send):
+    """ASGI handler for the single /mcp endpoint (POST, GET, DELETE).
+
+    Uses the MCP Streamable HTTP transport (protocol version 2025-03-26+),
+    which replaces the deprecated HTTP+SSE transport.
+    """
+    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+    session_id = headers.get("mcp-session-id")
+
+    if not session_id:
+        # New session — create transport, connect server, handle initialize request
+        transport = StreamableHTTPServerTransport(
+            mcp_session_id=uuid.uuid4().hex,
+            is_json_response_enabled=True,
+        )
+        # Enter the connect() context manager and keep it open for the session lifetime
+        cm = transport.connect()
+        read_stream, write_stream = await cm.__aenter__()
+        # Start the MCP server as a background task — it runs for the session lifetime
+        task = asyncio.create_task(
+            server.run(read_stream, write_stream, server.create_initialization_options())
+        )
+        # Handle the initialize request (this sends the response back via HTTP)
+        await transport.handle_request(scope, receive, send)
+        sid = transport.mcp_session_id or ""
+        if sid:
+            _sessions[sid] = Session(transport=transport, task=task, cm=cm)
+            logger.info("MCP session created: %s", sid)
+    else:
+        session = _sessions.get(session_id)
+        if session is None:
+            await _send_json(scope, send, 404, {"error": "Session not found"})
+            return
+        await session.transport.handle_request(scope, receive, send)
+
+
+async def handle_health(scope, receive, send):
+    """Health check — returns bridge status and tool count."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{BRIDGE_URL}/health")
+            bridge_status = "up" if resp.status_code == 200 else f"down ({resp.status_code})"
+    except Exception:
+        bridge_status = "unreachable"
+    await _send_json(scope, send, 200, {"status": "ok", "bridge": bridge_status, "tools": len(TOOLS)})
+
+
+# ---------------------------------------------------------------------------
+#  ASGI app — minimal router (no Starlette dependency)
+# ---------------------------------------------------------------------------
+
+async def app(scope, receive, send):
+    path = scope.get("path", "")
+    method = scope.get("method", "")
+
+    if path == "/mcp" and method in ("POST", "GET", "DELETE"):
+        await handle_mcp(scope, receive, send)
+    elif path == "/health" and method == "GET":
+        await handle_health(scope, receive, send)
+    else:
+        await _send_json(scope, send, 404, {"error": "not found"})
 
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=MCP_PORT, log_level="info")

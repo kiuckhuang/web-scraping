@@ -2,13 +2,9 @@
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "web-scrape": {
-      "type": "local",
-      "command": ["python", "-m", "bridge.mcp_server"],
-      "enabled": true,
-      "environment": {
-        "SEARXNG_URL": "http://localhost:8888",
-        "FORTRESS_CDP_URL": "http://localhost:9222"
-      }
+      "type": "remote",
+      "url": "http://localhost:9100/mcp",
+      "enabled": true
     }
   }
 }

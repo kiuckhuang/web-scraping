@@ -12,7 +12,7 @@ A self-hosted, Podman-based search-and-scrape stack that combines:
 │              (REST API or MCP tools)                 │
 └──────────────┬──────────────────────┬───────────────┘
                │                      │
-        REST ( :8000 )          MCP ( stdio )
+        REST ( :8000 )          MCP HTTP ( :9100 )
                │                      │
 ┌──────────────▼──────────────────────▼───────────────┐
 │                    Bridge Service                     │
@@ -21,7 +21,7 @@ A self-hosted, Podman-based search-and-scrape stack that combines:
 │  /search_and_scrape → SearXNG + Fortress (Exa-style)  │
 │  /crawl             → Fortress site crawler           │
 │  /web_search        → Fortress browser search         │
-└───────┬──────────────────────────────┬───────────────┘
+└───────┬──────────────────────┬───────────────┘
         │                              │
 ┌───────▼──────────┐         ┌────────▼────────┐
 │     SearXNG      │         │    Fortress     │
@@ -56,14 +56,15 @@ echo "SEARXNG_SECRET_KEY=$(openssl rand -hex 32)" >> .env
 podman compose up -d
 ```
 
-This starts four containers:
+This starts five containers:
 
 | Service    | Port  | Purpose                                      |
 |------------|-------|----------------------------------------------|
 | SearXNG    | 8888  | Metasearch web UI + JSON API                 |
 | Valkey     | —     | Redis-compatible cache for SearXNG           |
 | Fortress   | 9222  | Stealth Chromium (CDP endpoint)              |
-| Bridge     | 8000  | Unified REST API + MCP server                |
+| Bridge     | 8000  | Unified REST API (FastAPI)                   |
+| MCP        | 9100  | SSE MCP server for AI agents                 |
 
 ### 3. Verify
 
@@ -142,22 +143,24 @@ Check status of SearXNG and Fortress.
 
 ## MCP Server (for AI Agents)
 
-The bridge also runs as an MCP server, exposing the same capabilities as tools for Claude, Cursor, and other MCP-compatible AI agents.
+The stack includes a dedicated MCP container (`ws-mcp`) that exposes the search and scrape tools over the MCP Streamable HTTP transport on port 9100. It calls the bridge REST API internally — no local Python or modules required. opencode, Claude Desktop, Cursor, and any MCP-compatible client can connect to it as a remote MCP server.
+
+| Service | Port  | Purpose                                      |
+|---------|-------|----------------------------------------------|
+| MCP     | 9100  | MCP server (Streamable HTTP) for AI agents   |
 
 ### Add to opencode
 
+Copy `opencode.jsonc.example` to `opencode.jsonc` (or merge into your existing config):
+
 ```jsonc
-// opencode.jsonc
 {
+  "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "web-scrape": {
-      "type": "local",
-      "command": ["python", "-m", "bridge.mcp_server"],
-      "enabled": true,
-      "environment": {
-        "SEARXNG_URL": "http://localhost:8888",
-        "FORTRESS_CDP_URL": "http://localhost:9222"
-      }
+      "type": "remote",
+      "url": "http://localhost:9100/mcp",
+      "enabled": true
     }
   }
 }
@@ -169,12 +172,7 @@ The bridge also runs as an MCP server, exposing the same capabilities as tools f
 {
   "mcpServers": {
     "web-scrape": {
-      "command": "python",
-      "args": ["-m", "bridge.mcp_server"],
-      "env": {
-        "SEARXNG_URL": "http://localhost:8888",
-        "FORTRESS_CDP_URL": "http://localhost:9222"
-      }
+      "url": "http://localhost:9100/mcp"
     }
   }
 }
@@ -255,20 +253,24 @@ Then verify egress: `curl http://localhost:8000/health` and check the Fortress s
 
 ```
 web-scraping/
-├── podman-compose.yml          # 4 services: valkey, searxng, fortress, bridge
+├── podman-compose.yml          # 5 services: valkey, searxng, fortress, bridge, mcp
 ├── .env.example                # environment variable template
+├── opencode.jsonc.example      # MCP config template (copy to opencode.jsonc)
 ├── searxng/
 │   ├── settings.yml            # SearXNG config (JSON API enabled, 70+ engines)
 │   └── limiter.toml            # rate limiter config
-└── bridge/
-    ├── Dockerfile              # Python 3.12 + FastAPI + tilion
-    ├── pyproject.toml          # dependencies
-    └── bridge/
-        ├── __init__.py
-        ├── main.py             # FastAPI REST API
-        ├── searxng_client.py   # SearXNG JSON API client
-        ├── fortress_client.py  # Tilion Fortress CDP client
-        └── mcp_server.py       # MCP server (stdio transport)
+├── bridge/
+│   ├── Dockerfile              # Python 3.12 + FastAPI + Playwright
+│   ├── pyproject.toml          # dependencies
+│   └── bridge/
+│       ├── __init__.py
+│       ├── main.py             # FastAPI REST API
+│       ├── searxng_client.py   # SearXNG JSON API client
+│       └── fortress_client.py  # Tilion Fortress CDP client (Playwright over CDP)
+└── mcp/
+    ├── Dockerfile              # Python 3.12 + mcp + httpx (lightweight)
+    ├── requirements.txt        # mcp, httpx, starlette, uvicorn
+    └── server.py               # SSE MCP server (calls bridge REST API)
 ```
 
 ## Commands
@@ -279,6 +281,7 @@ podman compose up -d
 
 # View logs
 podman compose logs -f bridge
+podman compose logs -f mcp
 podman compose logs -f searxng
 podman compose logs -f fortress
 
@@ -287,6 +290,9 @@ podman compose down
 
 # Rebuild the bridge after code changes
 podman compose up -d --build bridge
+
+# Rebuild the MCP server after code changes
+podman compose up -d --build mcp
 
 # Update SearXNG
 podman compose pull searxng && podman compose up -d searxng

@@ -93,7 +93,6 @@ services:
   # ---------------------------------------------------------------------------
   #  Bridge — orchestrates SearXNG search + Fortress scrape into a unified API
   #  REST:  http://localhost:8000  (FastAPI docs at /docs)
-  #  MCP:   stdio transport for AI agents (search_web, scrape_url, search_and_scrape)
   # ---------------------------------------------------------------------------
   bridge:
     build:
@@ -119,6 +118,27 @@ services:
         condition: service_healthy
       fortress:
         condition: service_healthy
+    networks:
+      - internal
+
+  # ---------------------------------------------------------------------------
+  #  MCP Server — SSE transport for AI agents (opencode, Claude, Cursor, etc.)
+  #  Exposes: http://localhost:9100/mcp  (MCP Streamable HTTP)
+  #  Calls the bridge REST API internally — no local Python needed.
+  # ---------------------------------------------------------------------------
+  mcp:
+    build:
+      context: ./mcp
+      dockerfile: Dockerfile
+    container_name: ws-mcp
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    environment:
+      - BRIDGE_URL=http://bridge:8000
+      - MCP_PORT=9100
+    depends_on:
+      - bridge
     networks:
       - internal
 
