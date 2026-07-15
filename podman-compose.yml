@@ -76,16 +76,19 @@ services:
     restart: unless-stopped
     ports:
       - "9222:9222"
-    # Fortress needs --no-sandbox when running as non-root in a container
-    command: ["--headless=new", "--remote-debugging-port=9222", "--no-sandbox", "--user-data-dir=/tmp/fortress"]
+    # The image's entrypoint already starts Chromium on :9223 (internal) and
+    # socat-bridges 0.0.0.0:9222 -> 127.0.0.1:9223. Do NOT override command —
+    # passing --remote-debugging-port=9222 causes a port conflict with socat.
+    # Extra Chromium args can be passed via command: if needed (they append to
+    # the entrypoint's defaults).
     networks:
       - internal
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:9222/json/version >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/9222' 2>/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 15s
 
   # ---------------------------------------------------------------------------
   #  Bridge — orchestrates SearXNG search + Fortress scrape into a unified API

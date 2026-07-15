@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 from typing import Any
 from urllib.parse import urlparse
 
@@ -27,6 +28,31 @@ FORTRESS_CDP_URL = os.environ.get("FORTRESS_CDP_URL", "http://fortress:9222")
 SCRAPE_TIMEOUT = float(os.environ.get("FORTRESS_TIMEOUT", "60"))
 NAV_WAIT = os.environ.get("FORTRESS_NAV_WAIT", "domcontentloaded")
 
+
+def _resolve_cdp_url(url: str) -> str:
+    """Resolve the hostname in the CDP URL to an IP address.
+
+    Chromium's DevTools server rejects HTTP requests whose Host header is not
+    an IP address or "localhost". When containers communicate via DNS names
+    (e.g. http://fortress:9222), the Host header is the container name, which
+    gets a 500 error. Resolving to the IP fixes this for both httpx and
+    Playwright's connect_over_cdp.
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if host in ("127.0.0.1", "localhost", "0.0.0.0"):
+        return url
+    try:
+        ip = socket.gethostbyname(host)
+        logger.info("Resolved %s -> %s", host, ip)
+        return url.replace(host, ip, 1)
+    except socket.gaierror:
+        logger.warning("Could not resolve %s, using URL as-is", host)
+        return url
+
+
+CDP_URL = _resolve_cdp_url(FORTRESS_CDP_URL)
+
 _browser: Browser | None = None
 _playwright_ctx: Any = None
 _lock = asyncio.Lock()
@@ -38,9 +64,9 @@ async def _get_browser() -> Browser:
     if _browser is None or not _browser.is_connected():
         async with _lock:
             if _browser is None or not _browser.is_connected():
-                logger.info("Connecting to Fortress CDP at %s", FORTRESS_CDP_URL)
+                logger.info("Connecting to Fortress CDP at %s", CDP_URL)
                 _playwright_ctx = await async_playwright().start()
-                _browser = await _playwright_ctx.chromium.connect_over_cdp(FORTRESS_CDP_URL)
+                _browser = await _playwright_ctx.chromium.connect_over_cdp(CDP_URL)
                 logger.info("Connected to Fortress CDP")
     return _browser
 
@@ -300,8 +326,8 @@ async def search_web(query: str, count: int = 10) -> dict[str, Any]:
 async def health() -> bool:
     """Check if the Fortress CDP endpoint is alive."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{FORTRESS_CDP_URL}/json/version")
+        async with httpx.AsyncClient(timeout=5.0, headers={"Host": "127.0.0.1"}) as client:
+            resp = await client.get(f"{CDP_URL}/json/version")
             return resp.status_code == 200
     except Exception:
         return False

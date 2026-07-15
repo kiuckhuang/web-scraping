@@ -97,7 +97,7 @@ async def search(
     categories: str | None = Query(None),
     language: str = Query("en"),
     pageno: int = Query(1, ge=1),
-    time_range: str | None = Query(None, regex="^(day|month|year)$"),
+    time_range: str | None = Query(None, pattern="^(day|month|year)$"),
     safesearch: int = Query(0, ge=0, le=2),
     max_results: int = Query(10, ge=1, le=50),
 ) -> dict[str, Any]:
