@@ -1,7 +1,18 @@
 # SearXNG configuration — JSON API enabled for the bridge service
 # Docs: https://docs.searxng.org/admin/settings/settings.html
 
-use_default_settings: true
+use_default_settings:
+  engines:
+    keep_only:
+      - google
+      - bing
+      - duckduckgo
+      - wikipedia
+      - github
+      - stackoverflow
+      - reddit
+      - duckduckgo news
+      - wikinews
 
 general:
   instance_name: "Web Scrape Stack"
@@ -13,12 +24,13 @@ server:
   bind_address: "0.0.0.0"
   base_url: "http://localhost:8888/"
   secret_key: "change-me-via-SEARXNG_SECRET_KEY-env"
-  limiter: true
+  # This instance is private and only reachable by the internal bridge.
+  limiter: false
   public_instance: false
   image_proxy: true
 
-# Redis (Valkey) for rate limiting and caching
-redis:
+# Valkey (Redis-compatible) for rate limiting and caching
+valkey:
   url: redis://valkey:6379/0
 
 search:
@@ -57,8 +69,6 @@ engines:
     disabled: false
   - name: duckduckgo
     disabled: false
-  - name: brave
-    disabled: false
   - name: wikipedia
     disabled: false
   - name: github
@@ -67,26 +77,7 @@ engines:
     disabled: false
   - name: reddit
     disabled: false
-  - name: duckduckgo_definitions
+  - name: duckduckgo news
     disabled: false
-  # Disable less useful defaults to reduce noise and rate-limit pressure
-  - name: 1x
-    disabled: true
-  - name: apk_mirror
-    disabled: true
-  - name: google_images
-    disabled: true
-  - name: google_news
-    disabled: true
-  - name: google_videos
-    disabled: true
-  - name: media.ccc.de
-    disabled: true
-  - name: mixcloud
-    disabled: true
-  - name: rumble
-    disabled: true
-  - name: soundcloud
-    disabled: true
-  - name: twitcher
-    disabled: true
+  - name: wikinews
+    disabled: false

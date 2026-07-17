@@ -9,6 +9,10 @@ import httpx
 
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
 DEFAULT_TIMEOUT = 15.0
+SEARXNG_HEADERS = {
+    "X-Real-IP": "127.0.0.1",
+    "X-Forwarded-For": "127.0.0.1",
+}
 
 
 async def search(
@@ -48,7 +52,10 @@ async def search(
     if time_range:
         params["time_range"] = time_range
 
-    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+    async with httpx.AsyncClient(
+        timeout=DEFAULT_TIMEOUT,
+        headers=SEARXNG_HEADERS,
+    ) as client:
         resp = await client.get(f"{SEARXNG_URL}/search", params=params)
         resp.raise_for_status()
         data = resp.json()
@@ -61,7 +68,7 @@ async def search(
 async def health() -> bool:
     """Check if SearXNG is up and responding."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=5.0, headers=SEARXNG_HEADERS) as client:
             resp = await client.get(f"{SEARXNG_URL}/healthz")
             return resp.status_code == 200
     except Exception:
