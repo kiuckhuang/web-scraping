@@ -13,6 +13,10 @@ SEARXNG_HEADERS = {
     "X-Real-IP": "127.0.0.1",
     "X-Forwarded-For": "127.0.0.1",
 }
+LANGUAGE_ALIASES = {
+    "zh-hant": "zh-TW",
+    "zh-hans": "zh-CN",
+}
 
 
 async def search(
@@ -40,6 +44,7 @@ async def search(
         SearXNG JSON response dict with keys:
         - query, number_of_results, results[], unresponsive_engines[]
     """
+    language = LANGUAGE_ALIASES.get(language.lower(), language)
     params: dict[str, Any] = {
         "q": query,
         "format": "json",
@@ -59,6 +64,16 @@ async def search(
         resp = await client.get(f"{SEARXNG_URL}/search", params=params)
         resp.raise_for_status()
         data = resp.json()
+
+        # Some engines cannot provide dated results for all locales. Preserve
+        # useful search output when a strict time filter produces no results.
+        if time_range and not data.get("results"):
+            fallback_params = {**params}
+            fallback_params.pop("time_range", None)
+            fallback_resp = await client.get(f"{SEARXNG_URL}/search", params=fallback_params)
+            fallback_resp.raise_for_status()
+            data = fallback_resp.json()
+            data["time_range_fallback"] = True
 
     results = data.get("results", [])[:max_results]
     data["results"] = results

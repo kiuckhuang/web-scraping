@@ -74,6 +74,7 @@ services:
     image: docker.io/tilion/fortress:latest
     container_name: ws-fortress
     restart: unless-stopped
+    shm_size: 1gb
     ports:
       - "9222:9222"
     # The image's entrypoint already starts Chromium on :9223 (internal) and

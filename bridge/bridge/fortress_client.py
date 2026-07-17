@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 FORTRESS_CDP_URL = os.environ.get("FORTRESS_CDP_URL", "http://fortress:9222")
 SCRAPE_TIMEOUT = float(os.environ.get("FORTRESS_TIMEOUT", "60"))
 NAV_WAIT = os.environ.get("FORTRESS_NAV_WAIT", "domcontentloaded")
+MAX_CONCURRENT_PAGES = int(os.environ.get("FORTRESS_MAX_CONCURRENT_PAGES", "3"))
 
 
 def _resolve_cdp_url(url: str) -> str:
@@ -56,6 +57,25 @@ CDP_URL = _resolve_cdp_url(FORTRESS_CDP_URL)
 _browser: Browser | None = None
 _playwright_ctx: Any = None
 _lock = asyncio.Lock()
+_page_slots = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
+
+
+async def _reset_browser() -> None:
+    """Drop a broken CDP connection so the next request reconnects cleanly."""
+    global _browser, _playwright_ctx
+    browser, playwright_ctx = _browser, _playwright_ctx
+    _browser = None
+    _playwright_ctx = None
+    if browser is not None:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+    if playwright_ctx is not None:
+        try:
+            await playwright_ctx.stop()
+        except Exception:
+            pass
 
 
 async def _get_browser() -> Browser:
@@ -65,9 +85,13 @@ async def _get_browser() -> Browser:
         async with _lock:
             if _browser is None or not _browser.is_connected():
                 logger.info("Connecting to Fortress CDP at %s", CDP_URL)
-                _playwright_ctx = await async_playwright().start()
-                _browser = await _playwright_ctx.chromium.connect_over_cdp(CDP_URL)
-                logger.info("Connected to Fortress CDP")
+                try:
+                    _playwright_ctx = await async_playwright().start()
+                    _browser = await _playwright_ctx.chromium.connect_over_cdp(CDP_URL)
+                    logger.info("Connected to Fortress CDP")
+                except Exception:
+                    await _reset_browser()
+                    raise
     return _browser
 
 
@@ -209,18 +233,21 @@ async def scrape(url: str, *, mode: str = "extract") -> dict[str, Any]:
     Returns:
         Extraction result (markdown + tables) or fetch result (html + text).
     """
-    try:
-        if mode == "fetch":
-            return await fetch_page(url)
-        return await extract_page(url)
-    except PlaywrightError as exc:
-        logger.warning("Scrape failed for %s (mode=%s): %s — falling back to fetch", url, mode, exc)
-        if mode != "fetch":
-            try:
+    async with _page_slots:
+        try:
+            if mode == "fetch":
                 return await fetch_page(url)
-            except Exception:
-                pass
-        raise
+            return await extract_page(url)
+        except PlaywrightError as exc:
+            if _browser is None or not _browser.is_connected():
+                await _reset_browser()
+            logger.warning("Scrape failed for %s (mode=%s): %s — falling back to fetch", url, mode, exc)
+            if mode != "fetch":
+                try:
+                    return await fetch_page(url)
+                except Exception:
+                    pass
+            raise
 
 
 async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str, Any]:
@@ -288,13 +315,14 @@ async def search_web(query: str, count: int = 10) -> dict[str, Any]:
 
     Navigates to DuckDuckGo, extracts organic results.
     """
-    page, context = await _new_page()
-    try:
-        search_url = f"https://duckduckgo.com/html/?q={query.replace(' ', '+')}"
-        await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
-        await page.wait_for_timeout(1500)
+    async with _page_slots:
+        page, context = await _new_page()
+        try:
+            search_url = f"https://duckduckgo.com/html/?q={query.replace(' ', '+')}"
+            await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
+            await page.wait_for_timeout(1500)
 
-        results = await page.evaluate("""
+            results = await page.evaluate("""
             (count) => {
                 const results = [];
                 const items = document.querySelectorAll('.result, .web-result, [data-testid="result"]');
@@ -312,15 +340,15 @@ async def search_web(query: str, count: int = 10) -> dict[str, Any]:
                 }
                 return results;
             }
-        """, count)
+            """, count)
 
-        return {
-            "engine": "duckduckgo",
-            "query": query,
-            "results": results[:count],
-        }
-    finally:
-        await context.close()
+            return {
+                "engine": "duckduckgo",
+                "query": query,
+                "results": results[:count],
+            }
+        finally:
+            await context.close()
 
 
 async def health() -> bool:
