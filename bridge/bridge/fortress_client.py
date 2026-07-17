@@ -28,6 +28,14 @@ FORTRESS_CDP_URL = os.environ.get("FORTRESS_CDP_URL", "http://fortress:9222")
 SCRAPE_TIMEOUT = float(os.environ.get("FORTRESS_TIMEOUT", "60"))
 NAV_WAIT = os.environ.get("FORTRESS_NAV_WAIT", "domcontentloaded")
 MAX_CONCURRENT_PAGES = int(os.environ.get("FORTRESS_MAX_CONCURRENT_PAGES", "3"))
+WAF_WAIT = float(os.environ.get("FORTRESS_WAF_WAIT", "15"))
+WAF_MARKERS = (
+    "just a moment",
+    "performing security verification",
+    "checking your browser",
+    "cf-chl-",
+    "challenge-platform",
+)
 
 
 def _resolve_cdp_url(url: str) -> str:
@@ -103,6 +111,28 @@ async def _new_page():
     return page
 
 
+async def _is_waf_challenge(page) -> bool:
+    """Detect common WAF challenge pages before returning their HTML."""
+    try:
+        content = (await page.title() + "\n" + await page.locator("body").inner_text()).lower()
+        return any(marker in content for marker in WAF_MARKERS)
+    except PlaywrightError:
+        return False
+
+
+async def _wait_for_waf(page) -> None:
+    """Give a browser challenge time to complete, then wait for navigation."""
+    if not await _is_waf_challenge(page):
+        return
+    logger.info("WAF challenge detected at %s; waiting for browser verification", page.url)
+    deadline = asyncio.get_running_loop().time() + WAF_WAIT
+    while asyncio.get_running_loop().time() < deadline:
+        await page.wait_for_timeout(1000)
+        if not await _is_waf_challenge(page):
+            logger.info("WAF challenge cleared at %s", page.url)
+            return
+
+
 async def fetch_page(url: str) -> dict[str, Any]:
     """Fetch a URL through the stealth browser.
 
@@ -112,20 +142,23 @@ async def fetch_page(url: str) -> dict[str, Any]:
     page = await _new_page()
     try:
         response = await page.goto(url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
-        await page.wait_for_timeout(1000)
+        await _wait_for_waf(page)
 
         title = await page.title()
         text = await page.inner_text("body")
         html = await page.content()
         status = response.status if response else 200
 
-        return {
+        result = {
             "url": page.url,
             "title": title,
             "text": text,
             "html": html,
             "status": status,
         }
+        if await _is_waf_challenge(page):
+            result["waf_challenge"] = True
+        return result
     finally:
         await page.close()
 
@@ -142,7 +175,7 @@ async def extract_page(url: str) -> dict[str, Any]:
     page = await _new_page()
     try:
         await page.goto(url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
-        await page.wait_for_timeout(1500)
+        await _wait_for_waf(page)
 
         title = await page.title()
 
@@ -152,12 +185,15 @@ async def extract_page(url: str) -> dict[str, Any]:
         # Extract main content as markdown
         markdown = await _extract_markdown(page)
 
-        return {
+        result = {
             "url": page.url,
             "title": title,
             "markdown": markdown,
             "tables": tables,
         }
+        if await _is_waf_challenge(page):
+            result["waf_challenge"] = True
+        return result
     finally:
         await page.close()
 

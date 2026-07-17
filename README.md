@@ -289,8 +289,9 @@ podman compose up -d
 ```
 
 Stop the stack before copying or reusing the profile directory elsewhere. The bridge
-uses Fortress's persistent default browser context, and the profile is mounted at
-`/tmp/tillion-profile` inside Fortress, matching the current Docker image.
+uses Fortress's persistent default browser context. The profile is mounted at both
+`/tmp/tilion-profile` (the upstream documented path) and
+`/tmp/tillion-profile` (used by current image builds) for compatibility.
 
 If the profile directory is not writable under rootless Podman, run
 `chmod 777 fortress-profile` once, or set `FORTRESS_PROFILE_DIR` to a directory that

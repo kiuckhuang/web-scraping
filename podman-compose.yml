@@ -84,6 +84,9 @@ services:
       - FORTRESS_TZ=${FORTRESS_TZ:-}
       - FORTRESS_LANG=${FORTRESS_LANG:-}
     volumes:
+      # Upstream documents /tmp/tilion-profile; current image builds use the
+      # historical /tmp/tillion-profile path. Mount both for compatibility.
+      - ${FORTRESS_PROFILE_DIR:-./fortress-profile}:/tmp/tilion-profile:Z
       - ${FORTRESS_PROFILE_DIR:-./fortress-profile}:/tmp/tillion-profile:Z
       - ./fortress-entrypoint.sh:/usr/local/bin/ws-fortress-entrypoint.sh:ro,Z
     entrypoint: ["/bin/sh", "/usr/local/bin/ws-fortress-entrypoint.sh"]
