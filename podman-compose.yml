@@ -71,12 +71,22 @@ services:
   #  ~300 MB pull, ~850 MB on disk.
   # ---------------------------------------------------------------------------
   fortress:
-    image: docker.io/tilion/fortress:latest
+    image: docker.io/tilion/fortress:${FORTRESS_CHANNEL:-latest}
     container_name: ws-fortress
     restart: unless-stopped
     shm_size: 1gb
     ports:
       - "9222:9222"
+    environment:
+      # The wrapper applies FORTRESS_* overrides, otherwise these inherit host values.
+      - TZ=${TZ:-UTC}
+      - LANG=${LANG:-en_US.UTF-8}
+      - FORTRESS_TZ=${FORTRESS_TZ:-}
+      - FORTRESS_LANG=${FORTRESS_LANG:-}
+    volumes:
+      - ${FORTRESS_PROFILE_DIR:-./fortress-profile}:/tmp/tillion-profile:Z
+      - ./fortress-entrypoint.sh:/usr/local/bin/ws-fortress-entrypoint.sh:ro,Z
+    entrypoint: ["/bin/sh", "/usr/local/bin/ws-fortress-entrypoint.sh"]
     # The image's entrypoint already starts Chromium on :9223 (internal) and
     # socat-bridges 0.0.0.0:9222 -> 127.0.0.1:9223. Do NOT override command —
     # passing --remote-debugging-port=9222 causes a port conflict with socat.

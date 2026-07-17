@@ -96,11 +96,11 @@ async def _get_browser() -> Browser:
 
 
 async def _new_page():
-    """Get a new page (tab) on the Fortress browser."""
+    """Get a new page in Fortress's persistent default browser context."""
     browser = await _get_browser()
-    context = await browser.new_context()
+    context = browser.contexts[0] if browser.contexts else await browser.new_context()
     page = await context.new_page()
-    return page, context
+    return page
 
 
 async def fetch_page(url: str) -> dict[str, Any]:
@@ -109,7 +109,7 @@ async def fetch_page(url: str) -> dict[str, Any]:
     Returns:
         dict with keys: url, title, text, html, status
     """
-    page, context = await _new_page()
+    page = await _new_page()
     try:
         response = await page.goto(url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
         await page.wait_for_timeout(1000)
@@ -127,7 +127,7 @@ async def fetch_page(url: str) -> dict[str, Any]:
             "status": status,
         }
     finally:
-        await context.close()
+        await page.close()
 
 
 async def extract_page(url: str) -> dict[str, Any]:
@@ -139,7 +139,7 @@ async def extract_page(url: str) -> dict[str, Any]:
     Returns:
         dict with keys: url, title, markdown, tables
     """
-    page, context = await _new_page()
+    page = await _new_page()
     try:
         await page.goto(url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
         await page.wait_for_timeout(1500)
@@ -159,7 +159,7 @@ async def extract_page(url: str) -> dict[str, Any]:
             "tables": tables,
         }
     finally:
-        await context.close()
+        await page.close()
 
 
 async def _extract_tables(page) -> list[dict[str, Any]]:
@@ -277,7 +277,7 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
         visited.add(current_url)
 
         try:
-            page, context = await _new_page()
+            page = await _new_page()
             try:
                 await page.goto(current_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
                 await page.wait_for_timeout(800)
@@ -303,7 +303,7 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
                         if link not in visited and link.startswith(root_domain):
                             queue.append((link, current_depth + 1))
             finally:
-                await context.close()
+                await page.close()
         except Exception as exc:
             logger.warning("Crawl failed for %s: %s", current_url, exc)
 
@@ -316,7 +316,7 @@ async def search_web(query: str, count: int = 10) -> dict[str, Any]:
     Navigates to DuckDuckGo, extracts organic results.
     """
     async with _page_slots:
-        page, context = await _new_page()
+        page = await _new_page()
         try:
             search_url = f"https://duckduckgo.com/html/?q={query.replace(' ', '+')}"
             await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
@@ -348,7 +348,7 @@ async def search_web(query: str, count: int = 10) -> dict[str, Any]:
                 "results": results[:count],
             }
         finally:
-            await context.close()
+            await page.close()
 
 
 async def health() -> bool:

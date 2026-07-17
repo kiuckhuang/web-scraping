@@ -219,6 +219,10 @@ await page.screenshot({ path: "stealth-check.png" });
 | `SEARXNG_SECRET_KEY`    | (required)               | SearXNG session encryption key       |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
 | `FORTRESS_CDP_URL`      | `http://fortress:9222`   | Fortress CDP endpoint                |
+| `FORTRESS_CHANNEL`      | `latest`                 | Fortress image channel (`stable` or `latest`) |
+| `FORTRESS_TZ`           | host `TZ`                | Browser timezone override             |
+| `FORTRESS_LANG`         | host `LANG`              | Browser language override             |
+| `FORTRESS_PROFILE_DIR`  | `./fortress-profile`     | Persistent host directory for Chromium profile |
 | `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen host                   |
 | `BRIDGE_PORT`           | `8000`                   | Bridge listen port                   |
 | `FORTRESS_TIMEOUT`      | `60`                     | Scrape timeout (seconds)             |
@@ -248,6 +252,29 @@ TILION_REGION=us
 ```
 
 Then verify egress: `curl http://localhost:8000/health` and check the Fortress status.
+
+### Fortress Locale and Profile
+
+Fortress inherits the compose process' `TZ` and `LANG` values by default. Set
+`FORTRESS_TZ` or `FORTRESS_LANG` in `.env` to override them. If the host timezone is
+not exported as `TZ`, set `FORTRESS_TZ` explicitly. The browser profile is persisted in
+`FORTRESS_PROFILE_DIR`, allowing cookies and other profile state to survive restarts:
+
+```bash
+FORTRESS_CHANNEL=latest
+FORTRESS_TZ=Asia/Hong_Kong
+FORTRESS_LANG=zh-HK
+FORTRESS_PROFILE_DIR=./fortress-profile
+podman compose up -d
+```
+
+Stop the stack before copying or reusing the profile directory elsewhere. The bridge
+uses Fortress's persistent default browser context, and the profile is mounted at
+`/tmp/tillion-profile` inside Fortress, matching the current Docker image.
+
+If the profile directory is not writable under rootless Podman, run
+`chmod 777 fortress-profile` once, or set `FORTRESS_PROFILE_DIR` to a directory that
+is writable by the container user.
 
 ## Project Structure
 

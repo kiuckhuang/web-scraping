@@ -11,3 +11,4 @@ build/
 
 # Podman / containers
 .env.local
+fortress-profile/
