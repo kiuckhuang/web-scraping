@@ -1,51 +1,71 @@
-# Web Scrape Stack — SearXNG + Tilion Fortress
+# Web Scrape Stack: [SearXNG](https://github.com/searxng/searxng) + [Tilion Fortress](https://github.com/tiliondev/fortress)
 
 A self-hosted, Podman-based search-and-scrape stack that combines:
 
-- **SearXNG** — privacy metasearch engine aggregating 70+ search engines (Google, Bing, DuckDuckGo, Brave, etc.) with a JSON API
-- **Tilion Fortress** — stealth Chromium engine that bypasses Cloudflare, DataDome, PerimeterX, Akamai, and other bot detection
-- **Bridge** — a FastAPI + MCP service that orchestrates both into a unified API (like Exa, but self-hosted and free)
+- **[SearXNG](https://github.com/searxng/searxng)** — privacy metasearch engine aggregating 70+ search engines ([Google](https://www.google.com/), [Bing](https://www.bing.com/), [DuckDuckGo](https://duckduckgo.com/), [Brave Search](https://search.brave.com/), etc.) with a JSON API
+- **[Tilion Fortress](https://github.com/tiliondev/fortress)** — stealth [Chromium](https://www.chromium.org/) engine that bypasses Cloudflare, DataDome, PerimeterX, Akamai, and other bot detection
+- **Bridge** — a [FastAPI](https://fastapi.tiangolo.com/) + [Model Context Protocol](https://modelcontextprotocol.io/) service that orchestrates both into a unified API (like [Exa](https://exa.ai/), but self-hosted and free)
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   Your App / AI Agent                │
-│              (REST API or MCP tools)                 │
-└──────────────┬──────────────────────┬───────────────┘
-               │                      │
-        REST ( :8000 )          MCP HTTP ( :9100 )
-               │                      │
-┌──────────────▼──────────────────────▼───────────────┐
-│                    Bridge Service                     │
-│  /search            → SearXNG JSON API                │
-│  /scrape            → Fortress stealth browser        │
-│  /search_and_scrape → SearXNG + Fortress (Exa-style)  │
-│  /crawl             → Fortress site crawler           │
-│  /web_search        → Fortress browser search         │
-└───────┬──────────────────────┬───────────────┘
-        │                              │
-┌───────▼──────────┐         ┌────────▼────────┐
-│     SearXNG      │         │    Fortress     │
-│   ( :8888 )      │         │   ( :9222 CDP)  │
-│  70+ engines     │         │  stealth Chrome │
-└───────┬──────────┘         └─────────────────┘
-        │
-┌───────▼──────────┐
-│     Valkey       │
-│  (rate limiting)  │
-└──────────────────┘
-```
 
 ## Quick Start
 
 ### Prerequisites
 
-- [Podman](https://podman.io/) 4.x+ with `podman compose` (or `podman-compose`)
+- [Podman](https://podman.io/) 4.x+ with `podman compose` (or [podman-compose](https://github.com/containers/podman-compose))
 - ~2 GB RAM (SearXNG ~512 MB, Fortress ~850 MB, Bridge ~128 MB)
+
+### Architecture
+
+```mermaid
+flowchart TB
+    client["Your app or AI agent"]
+    rest["REST API\nlocalhost:8000"]
+    mcp["MCP HTTP\nlocalhost:9100/mcp"]
+    bridge["Bridge\nFastAPI orchestration"]
+    searx["SearXNG\nJSON search API :8888"]
+    fortress["Tilion Fortress\nChromium over CDP :9222"]
+    valkey["Valkey\ncache and limiter"]
+
+    client --> rest
+    client --> mcp
+    rest --> bridge
+    mcp --> bridge
+    bridge -->|search| searx
+    bridge -->|scrape, crawl, browser search| fortress
+    searx --> valkey
+```
+
+### Request Flow
+
+```mermaid
+sequenceDiagram
+    participant A as App or AI agent
+    participant M as MCP server
+    participant B as Bridge
+    participant S as SearXNG
+    participant F as Fortress
+
+    A->>M: search_web or search_and_scrape
+    M->>B: HTTP request
+    B->>S: /search?format=json
+    S-->>B: ranked URLs and snippets
+    opt search_and_scrape
+        par each result URL
+            B->>F: CDP page navigation
+            F-->>B: HTML or extracted content
+        end
+    end
+    B-->>M: JSON response
+    M-->>A: MCP tool result
+```
 
 ### 1. Configure
 
 ```bash
 cp .env.example .env
+# Create the persistent Fortress browser profile directory.
+mkdir -p fortress-profile
+chmod 777 fortress-profile
 # Generate a secret key for SearXNG
 echo "SEARXNG_SECRET_KEY=$(openssl rand -hex 32)" >> .env
 ```
@@ -60,11 +80,11 @@ This starts five containers:
 
 | Service    | Port  | Purpose                                      |
 |------------|-------|----------------------------------------------|
-| SearXNG    | 8888  | Metasearch web UI + JSON API                 |
-| Valkey     | —     | Redis-compatible cache for SearXNG           |
-| Fortress   | 9222  | Stealth Chromium (CDP endpoint)              |
-| Bridge     | 8000  | Unified REST API (FastAPI)                   |
-| MCP        | 9100  | SSE MCP server for AI agents                 |
+| [SearXNG](https://github.com/searxng/searxng) | 8888  | Metasearch web UI + JSON API                 |
+| [Valkey](https://github.com/valkey-io/valkey) | —     | Redis-compatible cache for SearXNG           |
+| [Fortress](https://github.com/tiliondev/fortress) | 9222  | Stealth Chromium (CDP endpoint)              |
+| Bridge     | 8000  | Unified REST API ([FastAPI](https://fastapi.tiangolo.com/)) |
+| MCP        | 9100  | Streamable HTTP server for AI agents ([MCP](https://modelcontextprotocol.io/)) |
 
 ### 3. Verify
 
@@ -92,7 +112,7 @@ Interactive API docs at `http://localhost:8000/docs`.
 
 ### `GET /search`
 
-Search the web via SearXNG (70+ engines aggregated).
+Search the web via [SearXNG](https://github.com/searxng/searxng) (70+ engines aggregated).
 
 | Parameter     | Type   | Default | Description                          |
 |---------------|--------|---------|--------------------------------------|
@@ -106,7 +126,7 @@ Search the web via SearXNG (70+ engines aggregated).
 
 ### `POST /scrape`
 
-Scrape a single URL through the Fortress stealth browser. Bypasses Cloudflare, DataDome, PerimeterX, Akamai.
+Scrape a single URL through the [Fortress](https://github.com/tiliondev/fortress) stealth browser. Bypasses [Cloudflare](https://www.cloudflare.com/), [DataDome](https://datadome.co/), [PerimeterX](https://www.perimeterx.com/), and [Akamai](https://www.akamai.com/).
 
 ```json
 {"url": "https://protected-site.com", "mode": "extract"}
@@ -117,7 +137,7 @@ Scrape a single URL through the Fortress stealth browser. Bypasses Cloudflare, D
 
 ### `POST /search_and_scrape`
 
-Search via SearXNG, then scrape each result URL through Fortress concurrently. This is the primary Exa-style endpoint.
+Search via [SearXNG](https://github.com/searxng/searxng), then scrape each result URL through [Fortress](https://github.com/tiliondev/fortress) concurrently. This is the primary Exa-style endpoint.
 
 ```json
 {"query": "best practices for kubernetes security", "max_results": 5, "scrape_mode": "extract"}
@@ -125,7 +145,7 @@ Search via SearXNG, then scrape each result URL through Fortress concurrently. T
 
 ### `GET /crawl`
 
-Crawl a whole website via Fortress (auto-handles SPA/JS + lazy-load).
+Crawl a whole website via [Fortress](https://github.com/tiliondev/fortress) (auto-handles SPA/JS + lazy-load).
 
 | Parameter  | Type | Default | Description           |
 |------------|------|---------|-----------------------|
@@ -135,7 +155,7 @@ Crawl a whole website via Fortress (auto-handles SPA/JS + lazy-load).
 
 ### `GET /web_search`
 
-Web search through the Fortress stealth browser (real browser search, not SearXNG). Useful when SearXNG engines are rate-limited.
+Web search through the [Fortress](https://github.com/tiliondev/fortress) stealth browser (real browser search, not SearXNG). Useful when SearXNG engines are rate-limited.
 
 ### `GET /health`
 
@@ -143,7 +163,7 @@ Check status of SearXNG and Fortress.
 
 ## MCP Server (for AI Agents)
 
-The stack includes a dedicated MCP container (`ws-mcp`) that exposes the search and scrape tools over the MCP Streamable HTTP transport on port 9100. It calls the bridge REST API internally — no local Python or modules required. opencode, Claude Desktop, Cursor, and any MCP-compatible client can connect to it as a remote MCP server.
+The stack includes a dedicated MCP container (`ws-mcp`) that exposes the search and scrape tools over the [MCP](https://modelcontextprotocol.io/) Streamable HTTP transport on port 9100. It calls the bridge REST API internally — no local Python or modules required. [OpenCode](https://opencode.ai/), [Claude Desktop](https://claude.ai/download), [Cursor](https://www.cursor.com/), and any MCP-compatible client can connect to it as a remote MCP server.
 
 | Service | Port  | Purpose                                      |
 |---------|-------|----------------------------------------------|
@@ -182,15 +202,15 @@ Copy `opencode.jsonc.example` to `opencode.jsonc` (or merge into your existing c
 
 | Tool                 | Description                                              |
 |----------------------|----------------------------------------------------------|
-| `search_web`         | Search via SearXNG (70+ engines)                         |
-| `scrape_url`         | Scrape a URL via Fortress stealth browser                |
+| `search_web`         | Search via [SearXNG](https://github.com/searxng/searxng) (70+ engines) |
+| `scrape_url`         | Scrape a URL via [Fortress](https://github.com/tiliondev/fortress) stealth browser |
 | `search_and_scrape`  | Search + scrape top results (Exa-style combined)         |
-| `crawl_site`         | Crawl a whole site via Fortress                          |
-| `fortress_search`    | Web search via Fortress stealth browser (not SearXNG)    |
+| `crawl_site`         | Crawl a whole site via [Fortress](https://github.com/tiliondev/fortress) |
+| `fortress_search`    | Web search via [Fortress](https://github.com/tiliondev/fortress) stealth browser (not SearXNG) |
 
 ## Using Fortress Directly (CDP)
 
-The Fortress container exposes a CDP endpoint on port 9222. You can connect your own Playwright, Puppeteer, or browser-use automation directly:
+The [Fortress](https://github.com/tiliondev/fortress) container exposes a CDP endpoint on port 9222. You can connect your own [Playwright](https://playwright.dev/), [Puppeteer](https://pptr.dev/), or [browser-use](https://github.com/browser-use/browser-use) automation directly:
 
 ```python
 from playwright.sync_api import sync_playwright
@@ -231,7 +251,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | `CAPTCHA_API_KEY`       | —                        | 2captcha/capsolver key for CAPTCHAs  |
 | `CAPTCHA_PROVIDER`      | `2captcha`               | `2captcha` or `anticaptcha` or `capsolver` |
 
-### SearXNG
+### [SearXNG](https://docs.searxng.org/) Configuration
 
 Edit `searxng/settings.yml` to:
 - Enable/disable specific search engines
@@ -241,7 +261,7 @@ Edit `searxng/settings.yml` to:
 
 Restart after changes: `podman compose restart searxng`
 
-### Fortress Proxy (for hard targets)
+### [Fortress](https://github.com/tiliondev/fortress) Proxy (for hard targets)
 
 If sites block your datacenter IP, route Fortress through a residential proxy:
 
@@ -330,11 +350,11 @@ podman compose pull fortress && podman compose up -d fortress
 
 ## How It Works
 
-1. **Search**: The bridge sends a query to SearXNG's `/search?format=json` endpoint. SearXNG aggregates results from 70+ engines (Google, Bing, DuckDuckGo, Brave, etc.) and returns JSON with titles, URLs, and snippets.
+1. **Search**: The bridge sends a query to [SearXNG](https://github.com/searxng/searxng)'s `/search?format=json` endpoint. SearXNG aggregates results from 70+ engines ([Google](https://www.google.com/), [Bing](https://www.bing.com/), [DuckDuckGo](https://duckduckgo.com/), [Brave Search](https://search.brave.com/), etc.) and returns JSON with titles, URLs, and snippets.
 
-2. **Scrape**: The bridge connects to the Fortress container over CDP (`http://fortress:9222`). Fortress is a recompiled Chromium that corrects the browser fingerprint in C++ (canvas, WebGL, audio, fonts, navigator — 34 patches), so bot detectors (Cloudflare, DataDome, PerimeterX, Akamai) read it as a normal Chrome install. The `tilion` Python library drives the browser to fetch/extract pages.
+2. **Scrape**: The bridge connects to [Fortress](https://github.com/tiliondev/fortress) over CDP (`http://fortress:9222`). Fortress is a recompiled [Chromium](https://www.chromium.org/) that corrects the browser fingerprint in C++ (canvas, WebGL, audio, fonts, navigator — 34 patches), so bot detectors ([Cloudflare](https://www.cloudflare.com/), [DataDome](https://datadome.co/), [PerimeterX](https://www.perimeterx.com/), [Akamai](https://www.akamai.com/)) read it as a normal Chrome install. The [Playwright](https://playwright.dev/) client drives the browser to fetch/extract pages.
 
-3. **Search + Scrape**: The Exa-style combined endpoint searches via SearXNG, then scrapes each result URL through Fortress concurrently — giving you search results with full page content in one call.
+3. **Search + Scrape**: The Exa-style combined endpoint searches via [SearXNG](https://github.com/searxng/searxng), then scrapes each result URL through [Fortress](https://github.com/tiliondev/fortress) concurrently — giving you search results with full page content in one call.
 
 ## Troubleshooting
 
@@ -344,7 +364,7 @@ Ensure `json` is in the `search.formats` list in `searxng/settings.yml` (it is b
 
 ### Fortress container won't start
 
-The Fortress image is ~300 MB. On first pull it takes a while. Check: `podman compose logs fortress`. If you see sandbox errors, the `--no-sandbox` flag is already set in the compose file.
+The [Fortress](https://github.com/tiliondev/fortress) image is ~300 MB. On first pull it takes a while. Check: `podman compose logs fortress`. If you see sandbox errors, the `--no-sandbox` flag is already set in the compose file.
 
 ### Scraping still blocked
 
@@ -352,7 +372,7 @@ The Fortress image is ~300 MB. On first pull it takes a while. Check: `podman co
 
 ### Bridge can't connect to Fortress
 
-Verify the Fortress CDP endpoint: `curl http://localhost:9222/json/version`. It should return JSON with Chrome version info. If not, check `podman compose logs fortress`.
+Verify the [Fortress](https://github.com/tiliondev/fortress) CDP endpoint: `curl http://localhost:9222/json/version`. It should return JSON with Chrome version info. If not, check `podman compose logs fortress`.
 
 ### Port conflicts
 
