@@ -39,6 +39,8 @@ init:
 		sed -i "s/^SEARXNG_SECRET_KEY=.*/SEARXNG_SECRET_KEY=$$(openssl rand -hex 32)/" .env; \
 		echo "Created .env (UID=$$(id -u), GID=$$(id -g), secret key generated)"; \
 	fi
+	@mkdir -p fortress-profile && chmod 777 fortress-profile && \
+		echo "fortress-profile ready (chmod 777 for Fortress container user)"
 
 build:
 	$(CONTAINER) compose build
