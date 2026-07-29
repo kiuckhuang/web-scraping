@@ -37,13 +37,13 @@ services:
     container_name: ws-searxng
     restart: unless-stopped
     ports:
-      - "8888:8080"
+      - "${PORT_SEARXNG:-8888}:8080"
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
       - ./searxng/limiter.toml:/etc/searxng/limiter.toml:ro
       - searxng-data:/var/cache/searxng
     environment:
-      - SEARXNG_BASE_URL=http://localhost:8888/
+      - SEARXNG_BASE_URL=http://localhost:${PORT_SEARXNG:-8888}/
       - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-please-change-this-secret-key}
       - FORCE_OWNERSHIP=true
       - UWSGI_THREADS=4
@@ -76,7 +76,7 @@ services:
     restart: unless-stopped
     shm_size: ${FORTRESS_SHM_SIZE:-1gb}
     ports:
-      - "9222:9222"
+      - "${PORT_FORTRESS:-9222}:9222"
     environment:
       # The wrapper applies FORTRESS_* overrides, otherwise these inherit host values.
       - TZ=${TZ:-UTC}
@@ -118,7 +118,7 @@ services:
     container_name: ws-bridge
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${PORT_BRIDGE:-8000}:8000"
     environment:
       - SEARXNG_URL=http://searxng:8080
       - FORTRESS_CDP_URL=http://fortress:9222
@@ -153,7 +153,7 @@ services:
     container_name: ws-mcp
     restart: unless-stopped
     ports:
-      - "9100:9100"
+      - "${PORT_MCP:-9100}:9100"
     environment:
       - BRIDGE_URL=http://bridge:8000
       - MCP_PORT=9100

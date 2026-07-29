@@ -235,7 +235,7 @@ await page.screenshot({ path: "stealth-check.png" });
 
 | Variable                | Default                  | Description                          |
 |-------------------------|--------------------------|--------------------------------------|
-| `SEARXNG_SECRET_KEY`    | (required)               | SearXNG session encryption key       |
+| `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
 | `FORTRESS_CDP_URL`      | `http://fortress:9222`   | Fortress CDP endpoint                |
 | `FORTRESS_CHANNEL`      | `latest`                 | Fortress image channel (`stable` or `latest`) |
@@ -243,9 +243,10 @@ await page.screenshot({ path: "stealth-check.png" });
 | `FORTRESS_LANG`         | host `LANG`              | Browser language override             |
 | `FORTRESS_PROFILE_DIR`  | `./fortress-profile`     | Persistent host directory for Chromium profile |
 | `FORTRESS_SHM_SIZE`     | `1gb`                    | Fortress shared memory size (increase for heavy workloads) |
-| `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen host                   |
-| `BRIDGE_PORT`           | `8000`                   | Bridge listen port                   |
-| `FORTRESS_TIMEOUT`      | `60`                     | Scrape timeout (seconds)             |
+| `PORT_SEARXNG`          | `8888`                   | Host port for SearXNG                |
+| `PORT_FORTRESS`         | `9222`                   | Host port for Fortress CDP           |
+| `PORT_BRIDGE`           | `8000`                   | Host port for Bridge REST API        |
+| `PORT_MCP`              | `9100`                   | Host port for MCP server             |
 | `APP_UID`               | `1000`                   | Host user UID for bridge/mcp containers |
 | `APP_GID`               | `1000`                   | Host user GID for bridge/mcp containers |
 | `TILION_PROXY`          | —                        | Residential proxy for Fortress       |
