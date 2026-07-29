@@ -74,7 +74,7 @@ services:
     image: docker.io/tilion/fortress:${FORTRESS_CHANNEL:-latest}
     container_name: ws-fortress
     restart: unless-stopped
-    shm_size: 1gb
+    shm_size: ${FORTRESS_SHM_SIZE:-1gb}
     ports:
       - "9222:9222"
     environment:
@@ -112,6 +112,9 @@ services:
     build:
       context: ./bridge
       dockerfile: Dockerfile
+      args:
+        APP_UID: ${APP_UID}
+        APP_GID: ${APP_GID}
     container_name: ws-bridge
     restart: unless-stopped
     ports:
@@ -144,6 +147,9 @@ services:
     build:
       context: ./mcp
       dockerfile: Dockerfile
+      args:
+        APP_UID: ${APP_UID}
+        APP_GID: ${APP_GID}
     container_name: ws-mcp
     restart: unless-stopped
     ports:

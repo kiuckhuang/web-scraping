@@ -22,7 +22,14 @@ from typing import Any
 import httpx
 from mcp.server import Server
 from mcp.server.streamable_http import StreamableHTTPServerTransport
-from mcp.types import TextContent, Tool
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+    TextContent,
+    Tool,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -129,13 +136,13 @@ TOOLS: list[Tool] = [
 ]
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return TOOLS
+async def _list_tools_handler(_ctx, _params):
+    return ListToolsResult(tools=TOOLS)
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolResult:
+    name = params.name
+    arguments = params.arguments or {}
     logger.info("MCP tool called: %s args=%s", name, arguments)
 
     try:
@@ -148,14 +155,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 max_results=arguments.get("max_results", 10),
                 time_range=arguments.get("time_range", ""),
             )
-            return [TextContent(type="text", text=_format_search_results(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_format_search_results(result))])
 
         elif name == "scrape_url":
             result = await _api_post("/scrape", {
                 "url": arguments["url"],
                 "mode": arguments.get("mode", "extract"),
             })
-            return [TextContent(type="text", text=_format_scrape_result(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_format_scrape_result(result))])
 
         elif name == "search_and_scrape":
             result = await _api_post("/search_and_scrape", {
@@ -165,7 +172,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "max_results": arguments.get("max_results", 5),
                 "scrape_mode": arguments.get("scrape_mode", "extract"),
             })
-            return [TextContent(type="text", text=_format_combined_results(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_format_combined_results(result))])
 
         elif name == "crawl_site":
             result = await _api_get(
@@ -174,7 +181,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 depth=arguments.get("depth", 2),
                 max_pages=arguments.get("max_pages", 50),
             )
-            return [TextContent(type="text", text=_format_crawl_result(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_format_crawl_result(result))])
 
         elif name == "fortress_search":
             result = await _api_get(
@@ -182,17 +189,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 q=arguments["query"],
                 count=arguments.get("count", 10),
             )
-            return [TextContent(type="text", text=_format_search_results(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_format_search_results(result))])
 
         else:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])
 
     except httpx.HTTPStatusError as exc:
         logger.exception("Tool %s HTTP error", name)
-        return [TextContent(type="text", text=f"Error in {name}: {exc.response.status_code} {exc.response.text[:500]}")]
+        return CallToolResult(content=[TextContent(type="text", text=f"Error in {name}: {exc.response.status_code} {exc.response.text[:500]}")], is_error=True)
     except Exception as exc:
         logger.exception("Tool %s failed", name)
-        return [TextContent(type="text", text=f"Error in {name}: {exc}")]
+        return CallToolResult(content=[TextContent(type="text", text=f"Error in {name}: {exc}")], is_error=True)
+
+
+server.add_request_handler("tools/list", PaginatedRequestParams, _list_tools_handler)
+server.add_request_handler("tools/call", CallToolRequestParams, _call_tool_handler)
 
 
 # ---------------------------------------------------------------------------

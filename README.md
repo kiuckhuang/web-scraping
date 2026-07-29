@@ -59,22 +59,21 @@ sequenceDiagram
     M-->>A: MCP tool result
 ```
 
-### 1. Configure
+### 1. Init
 
 ```bash
-cp .env.example .env
-# Create the persistent Fortress browser profile directory.
-mkdir -p fortress-profile
-chmod 777 fortress-profile
-# Generate a secret key for SearXNG
-echo "SEARXNG_SECRET_KEY=$(openssl rand -hex 32)" >> .env
+make init
 ```
+
+This creates `.env` from `.env.example`, auto-fills your host `APP_UID`/`APP_GID` (so containers run as your user), and generates a random `SEARXNG_SECRET_KEY`.
 
 ### 2. Launch
 
 ```bash
-podman compose up -d
+make
 ```
+
+Or manually: `podman compose up -d`
 
 This starts five containers:
 
@@ -243,9 +242,12 @@ await page.screenshot({ path: "stealth-check.png" });
 | `FORTRESS_TZ`           | host `TZ`                | Browser timezone override             |
 | `FORTRESS_LANG`         | host `LANG`              | Browser language override             |
 | `FORTRESS_PROFILE_DIR`  | `./fortress-profile`     | Persistent host directory for Chromium profile |
+| `FORTRESS_SHM_SIZE`     | `1gb`                    | Fortress shared memory size (increase for heavy workloads) |
 | `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen host                   |
 | `BRIDGE_PORT`           | `8000`                   | Bridge listen port                   |
 | `FORTRESS_TIMEOUT`      | `60`                     | Scrape timeout (seconds)             |
+| `APP_UID`               | `1000`                   | Host user UID for bridge/mcp containers |
+| `APP_GID`               | `1000`                   | Host user GID for bridge/mcp containers |
 | `TILION_PROXY`          | —                        | Residential proxy for Fortress       |
 | `TILION_REGION`         | —                        | Egress region hint (`us`, `eu`, etc.)|
 | `CAPTCHA_API_KEY`       | —                        | 2captcha/capsolver key for CAPTCHAs  |
@@ -301,6 +303,7 @@ is writable by the container user.
 
 ```
 web-scraping/
+├── Makefile                    # build, run, test targets
 ├── podman-compose.yml          # 5 services: valkey, searxng, fortress, bridge, mcp
 ├── .env.example                # environment variable template
 ├── opencode.jsonc.example      # MCP config template (copy to opencode.jsonc)
@@ -318,10 +321,26 @@ web-scraping/
 └── mcp/
     ├── Dockerfile              # Python 3.12 + mcp + httpx (lightweight)
     ├── requirements.txt        # mcp, httpx, starlette, uvicorn
-    └── server.py               # SSE MCP server (calls bridge REST API)
+    └── server.py               # Streamable HTTP MCP server (calls bridge REST API)
 ```
 
 ## Commands
+
+### Makefile (recommended)
+
+```bash
+make init      # Create .env with UID/GID and secret key
+make           # Start all services
+make build     # Build images
+make test      # Run integration tests
+make logs      # Follow logs
+make rebuild   # Stop, rebuild, start
+make down      # Stop services
+make clean     # Stop, remove volumes, prune images
+make help      # Show all targets
+```
+
+### Podman Compose (manual)
 
 ```bash
 # Start everything

@@ -1,5 +1,11 @@
 FROM python:3.12-slim
 
+ARG APP_UID=1000
+ARG APP_GID=1000
+
+RUN groupadd -g ${APP_GID} appuser && \
+    useradd -u ${APP_UID} -g ${APP_GID} -m appuser
+
 WORKDIR /app
 
 # System deps: ca-certificates + curl for healthchecks, plus
@@ -19,6 +25,9 @@ RUN pip install --no-cache-dir -e .
 
 # Copy the bridge application
 COPY bridge/ ./bridge/
+
+RUN chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8000
 
