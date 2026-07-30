@@ -3,15 +3,15 @@
 #
 #  Quick start:
 #    make init      # first run only — creates .env with your UID/GID
-#    make           # start all services
-#    make help      # show this help
+#    make up        # start all services
+#    make           # show this help
 # =============================================================================
 
 CONTAINER := podman
 
-.PHONY: all init build up down logs test rebuild clean help
+.PHONY: all init build up down logs test rebuild clean update help
 
-all: up
+all: help
 
 help:
 	@echo "Usage: make <target>"
@@ -24,10 +24,11 @@ help:
 	@echo "  logs      — Follow logs from all services"
 	@echo "  test      — Integration tests: health checks + API smoke tests"
 	@echo "  rebuild   — Stop, clean caches, rebuild and start"
+	@echo "  update    — Pull latest images, rebuild custom images, restart"
 	@echo "  clean     — Stop, remove volumes, prune unused images"
 	@echo ""
 	@echo "Quick start:"
-	@echo "  make init && make"
+	@echo "  make init && make up"
 
 init:
 	@if [ -f .env ]; then \
@@ -100,6 +101,10 @@ test:
 
 rebuild: down
 	rm -rf bridge/__pycache__ mcp/__pycache__
+	$(MAKE) build up
+
+update: down
+	$(CONTAINER) compose pull
 	$(MAKE) build up
 
 clean: down

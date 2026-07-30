@@ -70,7 +70,7 @@ This creates `.env` from `.env.example`, auto-fills your host `APP_UID`/`APP_GID
 ### 2. Launch
 
 ```bash
-make
+make up
 ```
 
 Or manually: `podman compose up -d`
@@ -163,10 +163,6 @@ Check status of SearXNG and Fortress.
 ## MCP Server (for AI Agents)
 
 The stack includes a dedicated MCP container (`ws-mcp`) that exposes the search and scrape tools over the [MCP](https://modelcontextprotocol.io/) Streamable HTTP transport on port 9100. It calls the bridge REST API internally — no local Python or modules required. [OpenCode](https://opencode.ai/), [Claude Desktop](https://claude.ai/download), [Cursor](https://www.cursor.com/), and any MCP-compatible client can connect to it as a remote MCP server.
-
-| Service | Port  | Purpose                                      |
-|---------|-------|----------------------------------------------|
-| MCP     | 9100  | MCP server (Streamable HTTP) for AI agents   |
 
 ### Add to opencode
 
@@ -331,14 +327,15 @@ web-scraping/
 
 ```bash
 make init      # Create .env with UID/GID and secret key
-make           # Start all services
+make up        # Start all services
 make build     # Build images
 make test      # Run integration tests
 make logs      # Follow logs
 make rebuild   # Stop, rebuild, start
+make update    # Pull latest images, rebuild custom images, restart
 make down      # Stop services
 make clean     # Stop, remove volumes, prune images
-make help      # Show all targets
+make help      # Show all targets (also runs with no argument)
 ```
 
 ### Podman Compose (manual)
