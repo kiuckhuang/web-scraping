@@ -82,6 +82,26 @@ sequenceDiagram
 
 Interactive API docs at `http://localhost:8000/docs`.
 
+### Manual Testing (troubleshooting)
+
+```bash
+# Check all services
+curl http://localhost:8000/health
+
+# Search the web (SearXNG)
+curl 'http://localhost:8000/search?q=podman+tutorial&max_results=3'
+
+# Scrape a bot-protected page (Fortress)
+curl -X POST http://localhost:8000/scrape \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://example.com", "mode": "extract"}'
+
+# Search + scrape in one call (Exa-style)
+curl -X POST http://localhost:8000/search_and_scrape \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "rust async programming", "max_results": 3}'
+```
+
 ## REST API
 
 ### `GET /search`
