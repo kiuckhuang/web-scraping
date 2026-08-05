@@ -6,6 +6,7 @@
 services:
   # ---------------------------------------------------------------------------
   #  Valkey — Redis-compatible cache for SearXNG rate limiting & bot detection
+  #  Network: internal only. No host ports.
   # ---------------------------------------------------------------------------
   valkey:
     image: docker.io/valkey/valkey:8-alpine
@@ -30,14 +31,15 @@ services:
 
   # ---------------------------------------------------------------------------
   #  SearXNG — privacy metasearch engine (70+ engines, JSON API enabled)
-  #  Exposes: http://localhost:8888  (REST + JSON search API)
+  #  Bind: 127.0.0.1 only (core service, localhost access)
+  #  Network: internal only
   # ---------------------------------------------------------------------------
   searxng:
     image: docker.io/searxng/searxng:latest
     container_name: ws-searxng
     restart: unless-stopped
     ports:
-      - "${PORT_SEARXNG:-8888}:8080"
+      - "127.0.0.1:${PORT_SEARXNG:-8888}:8080"
     # settings.template.yml is rendered into settings.yml at startup from the
     # SEARXNG_* overrides below (see searxng-entrypoint.sh + render_settings.py).
     entrypoint: ["/bin/sh", "/usr/local/bin/ws-searxng-entrypoint.sh"]
@@ -82,6 +84,8 @@ services:
   # ---------------------------------------------------------------------------
   #  Tilion Fortress — stealth Chromium engine (CDP on :9222)
   #  The bridge connects to this for scraping bot-protected pages.
+  #  Bind: 127.0.0.1 only (core service, localhost access)
+  #  Network: internal only
   #  ~300 MB pull, ~850 MB on disk.
   # ---------------------------------------------------------------------------
   fortress:
@@ -90,7 +94,7 @@ services:
     restart: unless-stopped
     shm_size: ${FORTRESS_SHM_SIZE:-1gb}
     ports:
-      - "${PORT_FORTRESS:-9222}:9222"
+      - "127.0.0.1:${PORT_FORTRESS:-9222}:9222"
     environment:
       # The wrapper applies FORTRESS_* overrides, otherwise these inherit host values.
       - TZ=${TZ:-UTC}
@@ -120,6 +124,8 @@ services:
 
   # ---------------------------------------------------------------------------
   #  Bridge — orchestrates SearXNG search + Fortress scrape into a unified API
+  #  Bind: 127.0.0.1 only (core service, localhost access)
+  #  Networks: internal (talks to searxng/fortress) + edge (talks to mcp)
   #  REST:  http://localhost:8000  (FastAPI docs at /docs)
   # ---------------------------------------------------------------------------
   bridge:
@@ -132,7 +138,7 @@ services:
     container_name: ws-bridge
     restart: unless-stopped
     ports:
-      - "${PORT_BRIDGE:-8000}:8000"
+      - "127.0.0.1:${PORT_BRIDGE:-8000}:8000"
     environment:
       - SEARXNG_URL=http://searxng:8080
       - FORTRESS_CDP_URL=http://fortress:9222
@@ -151,11 +157,14 @@ services:
         condition: service_healthy
     networks:
       - internal
+      - edge
 
   # ---------------------------------------------------------------------------
   #  MCP Server — SSE transport for AI agents (opencode, Claude, Cursor, etc.)
-  #  Exposes: http://localhost:9100/mcp  (MCP Streamable HTTP)
-  #  Calls the bridge REST API internally — no local Python needed.
+  #  Bind: 0.0.0.0 (all interfaces — reachable from other machines)
+  #  Network: edge only (can reach bridge, but NOT searxng/fortress/valkey)
+  #  Exposes: http://<host>:9100/mcp  (MCP Streamable HTTP)
+  #  Calls the bridge REST API — no local Python needed.
   # ---------------------------------------------------------------------------
   mcp:
     build:
@@ -174,12 +183,17 @@ services:
     depends_on:
       - bridge
     networks:
-      - internal
+      - edge
 
 volumes:
   valkey-data:
   searxng-data:
 
 networks:
+  # Core services only — no direct access from MCP or the outside world
   internal:
+    driver: bridge
+  # Edge tier — bridge + mcp. MCP is reachable from other machines,
+  # but can only talk to bridge (not searxng/fortress/valkey directly)
+  edge:
     driver: bridge

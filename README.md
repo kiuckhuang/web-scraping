@@ -18,22 +18,27 @@ A self-hosted, Podman-based search-and-scrape stack that combines:
 
 ```mermaid
 flowchart TB
-    client["Your app or AI agent"]
-    rest["REST API\nlocalhost:8000"]
-    mcp["MCP HTTP\nlocalhost:9100/mcp"]
-    bridge["Bridge\nFastAPI orchestration"]
-    searx["SearXNG\nJSON search API :8888"]
-    fortress["Tilion Fortress\nChromium over CDP :9222"]
-    valkey["Valkey\ncache and limiter"]
+    subgraph external["External (other machines)"]
+        client["Your app or AI agent"]
+    end
+    subgraph edge["edge network (exposed)"]
+        mcp["MCP HTTP\n0.0.0.0:9100/mcp"]
+        bridge["Bridge\nFastAPI orchestration\n127.0.0.1:8000"]
+    end
+    subgraph internal["internal network (localhost only)"]
+        searx["SearXNG\nJSON search API\n127.0.0.1:8888"]
+        fortress["Tilion Fortress\nChromium over CDP\n127.0.0.1:9222"]
+        valkey["Valkey\ncache and limiter"]
+    end
 
-    client --> rest
     client --> mcp
-    rest --> bridge
     mcp --> bridge
     bridge -->|search| searx
     bridge -->|scrape, crawl, browser search| fortress
     searx --> valkey
 ```
+
+> **Security model:** Core services (SearXNG, Fortress, Valkey) bind to `127.0.0.1` only — reachable from localhost, not the LAN. MCP binds to `0.0.0.0` so AI agents on other machines can connect. MCP is on the `edge` network only; it can talk to Bridge but cannot reach SearXNG, Fortress, or Valkey directly.
 
 ### Request Flow
 
@@ -77,13 +82,13 @@ Or manually: `podman compose up -d`
 
 This starts five containers:
 
-| Service    | Port  | Purpose                                      |
-|------------|-------|----------------------------------------------|
-| [SearXNG](https://github.com/searxng/searxng) | 8888  | Metasearch web UI + JSON API                 |
+| Service    | Port (bind)  | Purpose                                      |
+|------------|--------------|----------------------------------------------|
+| [SearXNG](https://github.com/searxng/searxng) | 8888 (127.0.0.1) | Metasearch web UI + JSON API             |
 | [Valkey](https://github.com/valkey-io/valkey) | —     | Redis-compatible cache for SearXNG           |
-| [Fortress](https://github.com/tiliondev/fortress) | 9222  | Stealth Chromium (CDP endpoint)              |
-| Bridge     | 8000  | Unified REST API ([FastAPI](https://fastapi.tiangolo.com/)) |
-| MCP        | 9100  | Streamable HTTP server for AI agents ([MCP](https://modelcontextprotocol.io/)) |
+| [Fortress](https://github.com/tiliondev/fortress) | 9222 (127.0.0.1) | Stealth Chromium (CDP endpoint)       |
+| Bridge     | 8000 (127.0.0.1) | Unified REST API ([FastAPI](https://fastapi.tiangolo.com/)) |
+| MCP        | 9100 (0.0.0.0)   | Streamable HTTP server for AI agents ([MCP](https://modelcontextprotocol.io/)) |
 
 ### 3. Verify
 
@@ -309,7 +314,28 @@ If the profile directory is not writable under rootless Podman, run
 `chmod 777 fortress-profile` once, or set `FORTRESS_PROFILE_DIR` to a directory that
 is writable by the container user.
 
-## Project Structure
+## Security
+
+### Network segmentation
+
+The stack is split into two bridge networks:
+
+| Network   | Services                | Exposure                        |
+|-----------|-------------------------|---------------------------------|
+| `internal`| Valkey, SearXNG, Fortress | `127.0.0.1` only (localhost)  |
+| `edge`    | Bridge, MCP             | Bridge `127.0.0.1`, MCP `0.0.0.0` |
+
+- **Core services** (SearXNG, Fortress, Valkey) bind to `127.0.0.1` — accessible only from the host, not the LAN.
+- **MCP** binds to `0.0.0.0` — reachable from other machines for AI agents.
+- MCP sits on `edge` only. It can talk to Bridge but **cannot** reach SearXNG, Fortress, or Valkey directly — compromise of MCP does not expose the core services.
+
+### Least privilege
+
+- Bridge and MCP run as non-root (`appuser`).
+- Valkey and SearXNG drop all capabilities except `SETGID`/`SETUID`/`CHOWN`.
+- SearXNG is configured with `public_instance: false` and `limiter: false` (private, internal-only).
+
+### Project Structure
 
 ```
 web-scraping/
