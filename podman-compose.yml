@@ -180,6 +180,7 @@ services:
     environment:
       - BRIDGE_URL=http://bridge:8000
       - MCP_PORT=9100
+      - MCP_API_KEY=${MCP_API_KEY:-}
     depends_on:
       - bridge
     networks:

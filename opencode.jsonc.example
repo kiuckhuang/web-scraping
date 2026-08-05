@@ -8,3 +8,17 @@
     }
   }
 }
+
+// For a REMOTE connection (different machine), add the Authorization header:
+//
+// {
+//   "mcp": {
+//     "web-scrape": {
+//       "type": "remote",
+//       "url": "http://YOUR_HOST:9100/mcp",
+//       "headers": {
+//         "Authorization": "Bearer YOUR_MCP_API_KEY"
+//       }
+//     }
+//   }
+// }

@@ -38,7 +38,8 @@ init:
 		sed -i "s/^APP_UID=.*/APP_UID=$$(id -u)/" .env; \
 		sed -i "s/^APP_GID=.*/APP_GID=$$(id -g)/" .env; \
 		sed -i "s/^SEARXNG_SECRET_KEY=.*/SEARXNG_SECRET_KEY=$$(openssl rand -hex 32)/" .env; \
-		echo "Created .env (UID=$$(id -u), GID=$$(id -g), secret key generated)"; \
+		sed -i "s|^MCP_API_KEY=.*|MCP_API_KEY=$$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")|" .env; \
+		echo "Created .env (UID=$$(id -u), GID=$$(id -g), secret key + MCP token generated)"; \
 	fi
 	@mkdir -p fortress-profile && chmod 777 fortress-profile && \
 		echo "fortress-profile ready (chmod 777 for Fortress container user)"

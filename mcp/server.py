@@ -12,9 +12,12 @@ which replaces the deprecated HTTP+SSE transport.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
+import secrets
+import socket
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -37,6 +40,10 @@ logger = logging.getLogger(__name__)
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://bridge:8000")
 HTTP_TIMEOUT = float(os.environ.get("BRIDGE_TIMEOUT", "120"))
 MCP_PORT = int(os.environ.get("MCP_PORT", "9100"))
+MCP_API_KEY = os.environ.get("MCP_API_KEY", "").strip()
+
+# Masked key for logging (never leak the full key)
+_key_preview = f"{MCP_API_KEY[:4]}...{MCP_API_KEY[-4:]}" if len(MCP_API_KEY) > 8 else ("set" if MCP_API_KEY else "unset")
 
 server = Server("web-scrape-bridge")
 
@@ -207,6 +214,73 @@ server.add_request_handler("tools/call", CallToolRequestParams, _call_tool_handl
 
 
 # ---------------------------------------------------------------------------
+#  Auth — bearer token for remote connections, local subnet bypass
+# ---------------------------------------------------------------------------
+
+
+def _get_trusted_cidrs() -> set[str]:
+    """Compute trusted networks: loopback + this container's own /24 subnets.
+
+    Podman forwards host connections (localhost:9100) through the bridge gateway,
+    which lives on the same subnet as the container. Trusting that subnet lets
+    host-side tooling (make test, local AI agents) connect without a token,
+    while LAN clients on a different subnet still must authenticate.
+    """
+    cidrs = {"127.0.0.0/8", "::1/128"}
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            octets = ip.split(".")
+            cidrs.add(".".join(octets[:3]) + ".0/24")
+    except Exception:
+        pass
+    return cidrs
+
+
+_TRUSTED_CIDRS = _get_trusted_cidrs()
+
+
+def _ip_in_cidr(ip: str, cidr: str) -> bool:
+    """Check if dotted-quad ip belongs to cidr (IPv4 only)."""
+    addr = int.from_bytes(socket.inet_aton(ip), "big")
+    net, prefix = cidr.split("/")
+    net_int = int.from_bytes(socket.inet_aton(net), "big")
+    mask = (0xFFFFFFFF << (32 - int(prefix))) & 0xFFFFFFFF
+    return (addr & mask) == (net_int & mask)
+
+
+def _is_trusted(scope) -> bool:
+    """True if the request originates from a trusted (local/podman-forwarded) address."""
+    client = scope.get("client")
+    if not client:
+        return False
+    host = client[0]
+    if host in ("127.0.0.1", "::1", "localhost"):
+        return True
+    for cidr in _TRUSTED_CIDRS:
+        try:
+            if "/" in cidr and ":" not in cidr and _ip_in_cidr(host, cidr):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _auth_ok(scope) -> bool:
+    """Check bearer token. Always passes for trusted sources or when no key is set."""
+    if not MCP_API_KEY:
+        return True
+    if _is_trusted(scope):
+        return True
+    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+    auth = headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        return hmac.compare_digest(token, MCP_API_KEY)
+    return False
+
+
+# ---------------------------------------------------------------------------
 #  Formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -342,7 +416,7 @@ async def handle_health(scope, receive, send):
 CORS_HEADERS = [
     (b"access-control-allow-origin", b"*"),
     (b"access-control-allow-methods", b"GET, POST, DELETE, OPTIONS"),
-    (b"access-control-allow-headers", b"Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version"),
+    (b"access-control-allow-headers", b"Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version"),
     (b"access-control-expose-headers", b"Mcp-Session-Id"),
     (b"access-control-max-age", b"86400"),
 ]
@@ -399,6 +473,9 @@ async def app(scope, receive, send):
     send_with_cors = _wrap_send_with_cors(send)
 
     if path == "/mcp" and method in ("POST", "GET", "DELETE"):
+        if not _auth_ok(scope):
+            await _send_json(scope, send_with_cors, 401, {"error": "unauthorized"})
+            return
         await handle_mcp(scope, receive, send_with_cors)
     elif path == "/health" and method == "GET":
         await handle_health(scope, receive, send_with_cors)
@@ -408,4 +485,6 @@ async def app(scope, receive, send):
 
 if __name__ == "__main__":
     import uvicorn
+    auth_mode = "open" if not MCP_API_KEY else f"bearer-token for untrusted sources (trusted: {', '.join(sorted(_TRUSTED_CIDRS))})"
+    logger.info("MCP server starting on port %d (auth: %s)", MCP_PORT, auth_mode)
     uvicorn.run(app, host="0.0.0.0", port=MCP_PORT, log_level="info")

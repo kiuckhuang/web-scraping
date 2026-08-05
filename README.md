@@ -186,6 +186,22 @@ Copy `opencode.jsonc.example` to `opencode.jsonc` (or merge into your existing c
 }
 ```
 
+For a **remote** connection (different machine), add the `Authorization` header:
+
+```jsonc
+{
+  "mcp": {
+    "web-scrape": {
+      "type": "remote",
+      "url": "http://YOUR_HOST:9100/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_MCP_API_KEY"
+      }
+    }
+  }
+}
+```
+
 ### Add to Claude Desktop
 
 ```json
@@ -197,6 +213,23 @@ Copy `opencode.jsonc.example` to `opencode.jsonc` (or merge into your existing c
   }
 }
 ```
+
+For a **remote** connection, include the token:
+
+```json
+{
+  "mcpServers": {
+    "web-scrape": {
+      "url": "http://YOUR_HOST:9100/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_MCP_API_KEY"
+      }
+    }
+  }
+}
+```
+
+> **Auth model:** Localhost (and podman-forwarded host connections) bypass auth automatically based on the container's trusted subnet. Remote clients must send `Authorization: Bearer <MCP_API_KEY>`. Set the key in `.env` (`MCP_API_KEY`) — `make init` generates one automatically.
 
 ### MCP Tools
 
@@ -253,6 +286,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | `PORT_FORTRESS`         | `9222`                   | Host port for Fortress CDP           |
 | `PORT_BRIDGE`           | `8000`                   | Host port for Bridge REST API        |
 | `PORT_MCP`              | `9100`                   | Host port for MCP server             |
+| `MCP_API_KEY`           | (auto-generated)         | Bearer token for remote MCP clients (localhost bypasses auth) |
 | `APP_UID`               | `1000`                   | Host user UID for bridge/mcp containers |
 | `APP_GID`               | `1000`                   | Host user GID for bridge/mcp containers |
 | `TILION_PROXY`          | —                        | Residential proxy for Fortress       |
