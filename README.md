@@ -14,6 +14,12 @@ A self-hosted, Podman-based search-and-scrape stack that combines:
 - [Podman](https://podman.io/) 4.x+ with `podman compose` (or [podman-compose](https://github.com/containers/podman-compose))
 - ~2 GB RAM (SearXNG ~512 MB, Fortress ~850 MB, Bridge ~128 MB)
 
+```bash
+make init && make up && make test
+```
+
+That's it — generates secrets, starts all services, and verifies everything works. Then point your AI agent at the MCP server (see [MCP Server](#mcp-server-for-ai-agents) below).
+
 ### Architecture
 
 ```mermaid
@@ -64,23 +70,7 @@ sequenceDiagram
     M-->>A: MCP tool result
 ```
 
-### 1. Init
-
-```bash
-make init
-```
-
-This creates `.env` from `.env.example`, auto-fills your host `APP_UID`/`APP_GID` (so containers run as your user), and generates random `SEARXNG_SECRET_KEY` and `MCP_API_KEY`.
-
-### 2. Launch
-
-```bash
-make up
-```
-
-Or manually: `podman compose up -d`
-
-This starts five containers:
+### Services
 
 | Service    | Port (bind)  | Purpose                                      |
 |------------|--------------|----------------------------------------------|
@@ -89,26 +79,6 @@ This starts five containers:
 | [Fortress](https://github.com/tiliondev/fortress) | 9222 (127.0.0.1) | Stealth Chromium (CDP endpoint)       |
 | Bridge     | 8000 (127.0.0.1) | Unified REST API ([FastAPI](https://fastapi.tiangolo.com/)) |
 | MCP        | 9100 (0.0.0.0)   | Streamable HTTP server for AI agents ([MCP](https://modelcontextprotocol.io/)) |
-
-### 3. Verify
-
-```bash
-# Check all services
-curl http://localhost:8000/health
-
-# Search the web (SearXNG)
-curl 'http://localhost:8000/search?q=podman+tutorial&max_results=3'
-
-# Scrape a bot-protected page (Fortress)
-curl -X POST http://localhost:8000/scrape \
-  -H 'Content-Type: application/json' \
-  -d '{"url": "https://example.com", "mode": "extract"}'
-
-# Search + scrape in one call (Exa-style)
-curl -X POST http://localhost:8000/search_and_scrape \
-  -H 'Content-Type: application/json' \
-  -d '{"query": "rust async programming", "max_results": 3}'
-```
 
 Interactive API docs at `http://localhost:8000/docs`.
 
