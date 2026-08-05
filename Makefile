@@ -56,37 +56,42 @@ logs:
 	$(CONTAINER) compose logs -f
 
 test:
-	@PASS=0; FAIL=0; \
+	@BRIDGE_PORT=$$(sed -n 's/^PORT_BRIDGE=//p' .env); \
+	MCP_PORT=$$(sed -n 's/^PORT_MCP=//p' .env); \
+	BRIDGE_PORT=$${BRIDGE_PORT:-8000}; \
+	MCP_PORT=$${MCP_PORT:-9100}; \
+	PASS=0; FAIL=0; \
 	echo "=== Integration Tests ==="; \
+	echo "  bridge at localhost:$$BRIDGE_PORT, mcp at localhost:$$MCP_PORT"; \
 	echo ""; \
-	echo "[1/4] Bridge health (localhost:8000) ..."; \
-	if curl -sf http://localhost:8000/health | python3 -m json.tool; then \
+	echo "[1/4] Bridge health (localhost:$$BRIDGE_PORT) ..."; \
+	if curl -sf "http://localhost:$$BRIDGE_PORT/health" | python3 -m json.tool; then \
 		PASS=$$((PASS+1)); echo "  PASS"; \
 	else \
 		FAIL=$$((FAIL+1)); echo "  FAIL"; \
 	fi; \
 	echo ""; \
 	echo "[2/4] Bridge search endpoint ..."; \
-	if curl -sf "http://localhost:8000/search?q=hello+world&max_results=1" | python3 -m json.tool; then \
+	if curl -sf "http://localhost:$$BRIDGE_PORT/search?q=hello+world&max_results=1" | python3 -m json.tool; then \
 		PASS=$$((PASS+1)); echo "  PASS"; \
 	else \
 		FAIL=$$((FAIL+1)); echo "  FAIL"; \
 	fi; \
 	echo ""; \
-	echo "[3/4] MCP health (localhost:9100) ..."; \
-	if curl -sf http://localhost:9100/health | python3 -m json.tool; then \
+	echo "[3/4] MCP health (localhost:$$MCP_PORT) ..."; \
+	if curl -sf "http://localhost:$$MCP_PORT/health" | python3 -m json.tool; then \
 		PASS=$$((PASS+1)); echo "  PASS"; \
 	else \
 		FAIL=$$((FAIL+1)); echo "  FAIL (check MCP server code)"; \
 	fi; \
 	echo ""; \
 	echo "[4/4] MCP tools list ..."; \
-	MCP_SID=$$(curl -sf -D- -X POST http://localhost:9100/mcp \
+	MCP_SID=$$(curl -sf -D- -X POST "http://localhost:$$MCP_PORT/mcp" \
 		-H "Content-Type: application/json" \
 		-d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-06","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' 2>/dev/null \
 		| grep -i '^mcp-session-id' | head -1 | tr -d '\r' | awk '{print $$2}'); \
 	if [ -n "$$MCP_SID" ]; then \
-		curl -sf -X POST http://localhost:9100/mcp \
+		curl -sf -X POST "http://localhost:$$MCP_PORT/mcp" \
 			-H "Content-Type: application/json" \
 			-H "Mcp-Session-Id: $$MCP_SID" \
 			-d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
