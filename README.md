@@ -70,7 +70,7 @@ sequenceDiagram
 make init
 ```
 
-This creates `.env` from `.env.example`, auto-fills your host `APP_UID`/`APP_GID` (so containers run as your user), and generates a random `SEARXNG_SECRET_KEY`.
+This creates `.env` from `.env.example`, auto-fills your host `APP_UID`/`APP_GID` (so containers run as your user), and generates random `SEARXNG_SECRET_KEY` and `MCP_API_KEY`.
 
 ### 2. Launch
 
