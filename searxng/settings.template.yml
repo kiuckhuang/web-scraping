@@ -1,5 +1,7 @@
 # SearXNG configuration — JSON API enabled for the bridge service
 # Docs: https://docs.searxng.org/admin/settings/settings.html
+# This file is rendered at container start from environment overrides
+# (see render_settings.py and searxng-entrypoint.sh).
 
 use_default_settings:
   engines:
@@ -37,8 +39,12 @@ search:
   safe_search: 0
   default_lang: "en"
   autocomplete: "google"
-  ban_time_on_fail: 5
-  max_ban_time_on_fail: 120
+  ban_time_on_fail: ${SEARXNG_BAN_TIME_ON_FAIL}
+  max_ban_time_on_fail: ${SEARXNG_MAX_BAN_TIME_ON_FAIL}
+  # How long an engine is suspended (in seconds) after it returns 429
+  # "Too many requests". Tune via SEARXNG_SUSPEND_TOO_MANY.
+  suspended_times:
+    SearxEngineTooManyRequests: ${SEARXNG_SUSPEND_TOO_MANY}
   # CRITICAL: enable json format so the bridge can consume the API
   formats:
     - html
@@ -54,8 +60,8 @@ ui:
 
 # Outgoing requests — optionally route through a proxy
 outgoing:
-  request_timeout: 10
-  max_request_timeout: 15
+  request_timeout: ${SEARXNG_REQUEST_TIMEOUT}
+  max_request_timeout: ${SEARXNG_MAX_REQUEST_TIMEOUT}
   # Uncomment to route SearXNG engine requests through a proxy:
   # proxies:
   #   all://:

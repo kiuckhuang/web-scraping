@@ -233,6 +233,11 @@ await page.screenshot({ path: "stealth-check.png" });
 |-------------------------|--------------------------|--------------------------------------|
 | `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
+| `SEARXNG_REQUEST_TIMEOUT` | `10`                   | Outgoing request timeout (s) per engine |
+| `SEARXNG_MAX_REQUEST_TIMEOUT` | `15`              | Max allowed request timeout (s)     |
+| `SEARXNG_BAN_TIME_ON_FAIL` | `5`                   | Engine ban duration (s) after a failed request |
+| `SEARXNG_MAX_BAN_TIME_ON_FAIL` | `120`            | Upper cap on the engine ban (s)     |
+| `SEARXNG_SUSPEND_TOO_MANY` | `180`                | How long an engine is suspended (s) after a 429 / rate-limit |
 | `FORTRESS_CDP_URL`      | `http://fortress:9222`   | Fortress CDP endpoint                |
 | `FORTRESS_CHANNEL`      | `latest`                 | Fortress image channel (`stable` or `latest`) |
 | `FORTRESS_TZ`           | host `TZ`                | Browser timezone override             |
@@ -252,13 +257,21 @@ await page.screenshot({ path: "stealth-check.png" });
 
 ### [SearXNG](https://docs.searxng.org/) Configuration
 
-Edit `searxng/settings.yml` to:
+Settings are rendered from `searxng/settings.template.yml` at container start,
+pulling the engine-tuning values above from `.env`. Edit the template to:
 - Enable/disable specific search engines
 - Change default language or safe search level
-- Adjust rate limiting
 - Add outgoing proxies
 
-Restart after changes: `podman compose restart searxng`
+The rate-limiting / engine-suspension knobs are exposed as environment
+variables (see the table above) — e.g. to fail over faster after a 429:
+
+```bash
+# In .env
+SEARXNG_SUSPEND_TOO_MANY=60
+```
+
+Apply changes: `podman compose up -d --force-recreate searxng` (or `make up`)
 
 ### [Fortress](https://github.com/tiliondev/fortress) Proxy (for hard targets)
 
@@ -305,8 +318,10 @@ web-scraping/
 ├── .env.example                # environment variable template
 ├── opencode.jsonc.example      # MCP config template (copy to opencode.jsonc)
 ├── searxng/
-│   ├── settings.yml            # SearXNG config (JSON API enabled, 70+ engines)
+│   ├── settings.template.yml   # SearXNG config template (JSON API, 70+ engines)
+│   ├── render_settings.py      # renders template -> settings.yml from .env
 │   └── limiter.toml            # rate limiter config
+├── searxng-entrypoint.sh       # renders settings, then runs upstream entrypoint
 ├── bridge/
 │   ├── Dockerfile              # Python 3.12 + FastAPI + Playwright
 │   ├── pyproject.toml          # dependencies
@@ -378,7 +393,7 @@ podman compose pull fortress && podman compose up -d fortress
 
 ### SearXNG returns 403 on JSON API
 
-Ensure `json` is in the `search.formats` list in `searxng/settings.yml` (it is by default in this config). Restart: `podman compose restart searxng`.
+Ensure `json` is in the `search.formats` list in `searxng/settings.template.yml` (it is by default in this config). Recreate: `podman compose up -d --force-recreate searxng`.
 
 ### Fortress container won't start
 

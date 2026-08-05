@@ -38,8 +38,16 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT_SEARXNG:-8888}:8080"
+    # settings.template.yml is rendered into settings.yml at startup from the
+    # SEARXNG_* overrides below (see searxng-entrypoint.sh + render_settings.py).
+    entrypoint: ["/bin/sh", "/usr/local/bin/ws-searxng-entrypoint.sh"]
     volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - ./searxng-entrypoint.sh:/usr/local/bin/ws-searxng-entrypoint.sh:ro
+      - ./searxng/render_settings.py:/usr/local/bin/ws-render-settings.py:ro
+      - ./searxng/settings.template.yml:/etc/searxng-templates/settings.template.yml:ro
+      # Placeholder so the upstream entrypoint's existence check passes; the
+      # real (rendered) settings are loaded via SEARXNG_SETTINGS_PATH=/tmp.
+      - ./searxng/settings.template.yml:/etc/searxng/settings.yml:ro
       - ./searxng/limiter.toml:/etc/searxng/limiter.toml:ro
       - searxng-data:/var/cache/searxng
     environment:
@@ -47,6 +55,12 @@ services:
       - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-please-change-this-secret-key}
       - FORCE_OWNERSHIP=true
       - UWSGI_THREADS=4
+      # Engine tuning — customizable via .env, with defaults if unset
+      - SEARXNG_REQUEST_TIMEOUT=${SEARXNG_REQUEST_TIMEOUT:-10}
+      - SEARXNG_MAX_REQUEST_TIMEOUT=${SEARXNG_MAX_REQUEST_TIMEOUT:-15}
+      - SEARXNG_BAN_TIME_ON_FAIL=${SEARXNG_BAN_TIME_ON_FAIL:-5}
+      - SEARXNG_MAX_BAN_TIME_ON_FAIL=${SEARXNG_MAX_BAN_TIME_ON_FAIL:-120}
+      - SEARXNG_SUSPEND_TOO_MANY=${SEARXNG_SUSPEND_TOO_MANY:-180}
     depends_on:
       valkey:
         condition: service_healthy
