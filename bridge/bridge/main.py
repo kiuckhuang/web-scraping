@@ -97,14 +97,11 @@ async def search(
     categories: str | None = Query(None),
     language: str = Query("en"),
     pageno: int = Query(1, ge=1),
-    time_range: str | None = Query(None),
+    time_range: str | None = Query(None, description="Time range: day, week, month, year"),
     safesearch: int = Query(0, ge=0, le=2),
     max_results: int = Query(10, ge=1, le=50),
 ) -> dict[str, Any]:
     """Search the web via SearXNG (70+ engines aggregated)."""
-    # Sanitize — SearXNG only accepts day/month/year; ignore anything else
-    if time_range not in ("day", "month", "year", None):
-        time_range = None
     try:
         return await searxng_search(
             q,

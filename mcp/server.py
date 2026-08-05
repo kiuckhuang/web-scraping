@@ -83,7 +83,7 @@ TOOLS: list[Tool] = [
                 "categories": {"type": "string", "description": "Comma-separated categories: general, it, images, news, etc."},
                 "language": {"type": "string", "description": "Language code (e.g. 'en', 'all')", "default": "en"},
                 "max_results": {"type": "integer", "description": "Max results to return (1-50)", "default": 10},
-                "time_range": {"type": "string", "enum": ["day", "month", "year"], "description": "Time range filter — must be one of: day, month, year. Do not use other values like 'week'."},
+                "time_range": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "Time range filter — day, week, month, or year."},
             },
             "required": ["query"],
         },
