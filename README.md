@@ -364,6 +364,10 @@ The stack is split into two bridge networks:
 - Valkey and SearXNG drop all capabilities except `SETGID`/`SETUID`/`CHOWN`.
 - SearXNG is configured with `public_instance: false` and `limiter: false` (private, internal-only).
 
+### SSRF protection
+
+The bridge validates all URLs passed to `/scrape` and `/crawl` — requests to private/internal networks (localhost, `10.x`, `192.168.x`, container names like `searxng:8080`) are rejected with `403`. This prevents a malicious AI agent from using the scrape endpoint to probe internal services.
+
 ### Project Structure
 
 ```

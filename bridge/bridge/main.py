@@ -12,10 +12,13 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
+import socket
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
@@ -65,6 +68,36 @@ class SearchAndScrapeRequest(BaseModel):
     language: str = Field("en")
     max_results: int = Field(5, description="How many results to scrape (default 5)")
     scrape_mode: str = Field("extract", description='"extract" or "fetch"')
+
+
+# ---------------------------------------------------------------------------
+#  URL validation — block private/internal networks (SSRF protection)
+# ---------------------------------------------------------------------------
+
+def _validate_public_url(url: str) -> str:
+    """Reject URLs pointing to private/internal networks.
+
+    Raises HTTPException(403) for SSRF attempts.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail=f"Unsupported scheme: {parsed.scheme}")
+    host = parsed.hostname or ""
+    # Block obvious local names
+    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+        raise HTTPException(status_code=403, detail="Access to internal addresses is blocked")
+    # Resolve and block private ranges
+    try:
+        for info in socket.getaddrinfo(host, None):
+            addr = info[4][0]
+            ip = ipaddress.ip_address(addr)
+            if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+                raise HTTPException(status_code=403, detail="Access to internal addresses is blocked")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # If resolution fails, let Fortress handle it (likely a public domain)
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +160,7 @@ async def scrape(req: ScrapeRequest) -> dict[str, Any]:
     Bypasses Cloudflare, DataDome, PerimeterX, Akamai, and other bot detection.
     Returns clean markdown (extract mode) or raw HTML + text (fetch mode).
     """
+    _validate_public_url(req.url)
     try:
         return await fortress_scrape(req.url, mode=req.mode)
     except Exception as exc:
@@ -185,6 +219,7 @@ async def crawl(
     max_pages: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
     """Crawl a whole site via Fortress (auto-handles SPA/JS + lazy-load)."""
+    _validate_public_url(url)
     try:
         return await fortress_crawl(url, depth=depth, max_pages=max_pages)
     except Exception as exc:
