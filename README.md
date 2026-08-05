@@ -276,12 +276,17 @@ await page.screenshot({ path: "stealth-check.png" });
 | `SEARXNG_BAN_TIME_ON_FAIL` | `5`                   | Engine ban duration (s) after a failed request |
 | `SEARXNG_MAX_BAN_TIME_ON_FAIL` | `120`            | Upper cap on the engine ban (s)     |
 | `SEARXNG_SUSPEND_TOO_MANY` | `180`                | How long an engine is suspended (s) after a 429 / rate-limit |
+| `SEARXNG_FORCE_OWNERSHIP` | `true`                | Force SearXNG file ownership on start |
+| `SEARXNG_UWSGI_THREADS` | `4`                    | SearXNG worker thread count          |
 | `FORTRESS_CDP_URL`      | `http://fortress:9222`   | Fortress CDP endpoint                |
 | `FORTRESS_CHANNEL`      | `latest`                 | Fortress image channel (`stable` or `latest`) |
 | `FORTRESS_TZ`           | host `TZ`                | Browser timezone override             |
 | `FORTRESS_LANG`         | host `LANG`              | Browser language override             |
 | `FORTRESS_PROFILE_DIR`  | `./fortress-profile`     | Persistent host directory for Chromium profile |
 | `FORTRESS_SHM_SIZE`     | `1gb`                    | Fortress shared memory size (increase for heavy workloads) |
+| `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen address (internal container) |
+| `BRIDGE_PORT`           | `8000`                   | Bridge listen port (internal container) |
+| `BRIDGE_URL`            | `http://bridge:8000`     | Bridge URL used by MCP (container-internal) |
 | `PORT_SEARXNG`          | `8888`                   | Host port for SearXNG                |
 | `PORT_FORTRESS`         | `9222`                   | Host port for Fortress CDP           |
 | `PORT_BRIDGE`           | `8000`                   | Host port for Bridge REST API        |

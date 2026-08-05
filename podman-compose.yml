@@ -55,8 +55,8 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://localhost:${PORT_SEARXNG:-8888}/
       - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-please-change-this-secret-key}
-      - FORCE_OWNERSHIP=true
-      - UWSGI_THREADS=4
+      - FORCE_OWNERSHIP=${SEARXNG_FORCE_OWNERSHIP:-true}
+      - UWSGI_THREADS=${SEARXNG_UWSGI_THREADS:-4}
       # Engine tuning — customizable via .env, with defaults if unset
       - SEARXNG_REQUEST_TIMEOUT=${SEARXNG_REQUEST_TIMEOUT:-10}
       - SEARXNG_MAX_REQUEST_TIMEOUT=${SEARXNG_MAX_REQUEST_TIMEOUT:-15}
@@ -140,10 +140,10 @@ services:
     ports:
       - "127.0.0.1:${PORT_BRIDGE:-8000}:8000"
     environment:
-      - SEARXNG_URL=http://searxng:8080
-      - FORTRESS_CDP_URL=http://fortress:9222
-      - BRIDGE_HOST=0.0.0.0
-      - BRIDGE_PORT=8000
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
+      - FORTRESS_CDP_URL=${FORTRESS_CDP_URL:-http://fortress:9222}
+      - BRIDGE_HOST=${BRIDGE_HOST:-0.0.0.0}
+      - BRIDGE_PORT=${BRIDGE_PORT:-8000}
       # Optional: residential proxy for Fortress egress
       # - TILION_PROXY=http://user:pass@proxy-host:port
       # - TILION_REGION=us
@@ -178,7 +178,7 @@ services:
     ports:
       - "${PORT_MCP:-9100}:9100"
     environment:
-      - BRIDGE_URL=http://bridge:8000
+      - BRIDGE_URL=${BRIDGE_URL:-http://bridge:8000}
       - MCP_PORT=9100
       - MCP_API_KEY=${MCP_API_KEY:-}
     depends_on:
