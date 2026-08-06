@@ -225,7 +225,7 @@ async def search(
     safesearch: int = Query(0, ge=0, le=2),
     max_results: int = Query(10, ge=1, le=50),
 ) -> dict[str, Any]:
-    """Search the web via SearXNG (70+ engines aggregated)."""
+    """Search the web via the configured SearXNG engines."""
     try:
         return await searxng_search(
             q,

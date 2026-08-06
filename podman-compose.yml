@@ -12,6 +12,8 @@ services:
     image: docker.io/valkey/valkey:8-alpine
     container_name: ws-valkey
     restart: unless-stopped
+    mem_limit: 256m
+    pids_limit: 256
     command: valkey-server --save 30 1 --loglevel warning
     volumes:
       - valkey-data:/data
@@ -30,14 +32,16 @@ services:
       start_period: 5s
 
   # ---------------------------------------------------------------------------
-  #  SearXNG — privacy metasearch engine (70+ engines, JSON API enabled)
+  #  SearXNG — privacy metasearch engine (focused engine set, JSON API enabled)
   #  Bind: 127.0.0.1 only (core service, localhost access)
   #  Network: internal only
   # ---------------------------------------------------------------------------
   searxng:
-    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-latest}
+    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.8.4-c63835bd2}
     container_name: ws-searxng
     restart: unless-stopped
+    mem_limit: 1g
+    pids_limit: 512
     ports:
       - "127.0.0.1:${PORT_SEARXNG:-8888}:8080"
     # settings.template.yml is rendered into settings.yml at startup from the
@@ -54,7 +58,7 @@ services:
       - searxng-data:/var/cache/searxng
     environment:
       - SEARXNG_BASE_URL=http://localhost:${PORT_SEARXNG:-8888}/
-      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-please-change-this-secret-key}
+       - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-}
       - FORCE_OWNERSHIP=${SEARXNG_FORCE_OWNERSHIP:-true}
       - UWSGI_THREADS=${SEARXNG_UWSGI_THREADS:-4}
       # Engine tuning — customizable via .env, with defaults if unset
@@ -92,6 +96,8 @@ services:
     image: docker.io/tilion/fortress:${FORTRESS_CHANNEL:-latest}
     container_name: ws-fortress
     restart: unless-stopped
+    mem_limit: 4g
+    pids_limit: 1024
     shm_size: ${FORTRESS_SHM_SIZE:-2gb}
     ports:
       - "127.0.0.1:${PORT_FORTRESS:-9222}:9222"
@@ -133,10 +139,14 @@ services:
       context: ./bridge
       dockerfile: Dockerfile
       args:
-        APP_UID: ${APP_UID}
-        APP_GID: ${APP_GID}
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
     container_name: ws-bridge
     restart: unless-stopped
+    mem_limit: 1g
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "127.0.0.1:${PORT_BRIDGE:-8000}:8000"
     environment:
@@ -156,12 +166,6 @@ services:
       - FORTRESS_MAX_CONCURRENT_PAGES=${FORTRESS_MAX_CONCURRENT_PAGES:-3}
       - FORTRESS_WAF_WAIT=${FORTRESS_WAF_WAIT:-15}
       - FORTRESS_ISOLATE_CONTEXTS=${FORTRESS_ISOLATE_CONTEXTS:-true}
-      # Optional: residential proxy for Fortress egress
-      # - TILION_PROXY=http://user:pass@proxy-host:port
-      # - TILION_REGION=us
-      # Optional: CAPTCHA solver for hard targets
-      # - CAPTCHA_API_KEY=your-key
-      # - CAPTCHA_PROVIDER=2captcha
     depends_on:
       searxng:
         condition: service_healthy
@@ -189,10 +193,14 @@ services:
       context: ./mcp
       dockerfile: Dockerfile
       args:
-        APP_UID: ${APP_UID}
-        APP_GID: ${APP_GID}
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
     container_name: ws-mcp
     restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "${MCP_BIND_HOST:-127.0.0.1}:${PORT_MCP:-9100}:9100"
     environment:

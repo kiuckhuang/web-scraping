@@ -34,18 +34,8 @@ help:
 	@echo "  make init && make up"
 
 init:
-	@if [ -f .env ]; then \
-		echo ".env already exists — skipping. Delete it first to regenerate."; \
-	else \
-		cp .env.example .env; \
-		sed -i "s/^APP_UID=.*/APP_UID=$$(id -u)/" .env; \
-		sed -i "s/^APP_GID=.*/APP_GID=$$(id -g)/" .env; \
-		sed -i "s/^SEARXNG_SECRET_KEY=.*/SEARXNG_SECRET_KEY=$$(openssl rand -hex 32)/" .env; \
-		sed -i "s|^MCP_API_KEY=.*|MCP_API_KEY=$$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")|" .env; \
-		echo "Created .env (UID=$$(id -u), GID=$$(id -g), secret key + MCP token generated)"; \
-	fi
-	@mkdir -p fortress-profile && chmod 777 fortress-profile && \
-		echo "fortress-profile ready (chmod 777 for Fortress container user)"
+	@python3 scripts/init.py
+	@echo "fortress-profile ready (owner-only permissions)"
 
 build:
 	$(CONTAINER) compose build
@@ -64,6 +54,12 @@ test: test-unit
 	MCP_PORT=$$(sed -n 's/^PORT_MCP=//p' .env); \
 	BRIDGE_PORT=$${BRIDGE_PORT:-8000}; \
 	MCP_PORT=$${MCP_PORT:-9100}; \
+	ready=0; \
+	for attempt in 1 2 3 4 5 6 7 8 9 10; do \
+		if curl -sf "http://localhost:$$BRIDGE_PORT/health" >/dev/null 2>&1 && curl -sf "http://localhost:$$MCP_PORT/health" >/dev/null 2>&1; then ready=1; break; fi; \
+		sleep 2; \
+	done; \
+	if [ $$ready -ne 1 ]; then echo "Services did not become ready"; exit 1; fi; \
 	PASS=0; FAIL=0; \
 	echo "=== Integration Tests ==="; \
 	echo "  bridge at localhost:$$BRIDGE_PORT, mcp at localhost:$$MCP_PORT"; \

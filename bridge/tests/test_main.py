@@ -177,3 +177,27 @@ def test_cache_respects_max_entries(monkeypatch):
         main_mod.BRIDGE_CACHE_MAX = old_max
         main_mod._cache.clear()
         main_mod._cache_bytes = 0
+
+
+def test_cache_respects_max_bytes(monkeypatch):
+    """The cache evicts entries when the serialized byte budget is exceeded."""
+    import bridge.main as main_mod
+
+    async def fake_scrape(url, *, mode):
+        return {"url": url, "markdown": "x" * 100}
+
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+    old_bytes = main_mod.BRIDGE_CACHE_MAX_BYTES
+    main_mod.BRIDGE_CACHE_MAX_BYTES = 150
+    main_mod._cache.clear()
+    main_mod._cache_bytes = 0
+    try:
+        for i in range(3):
+            req = ScrapeRequest(url=f"https://example.com/{i}", mode="extract")
+            asyncio.run(main_mod.scrape(req))
+        assert main_mod._cache_bytes <= main_mod.BRIDGE_CACHE_MAX_BYTES
+    finally:
+        main_mod.BRIDGE_CACHE_MAX_BYTES = old_bytes
+        main_mod._cache.clear()
+        main_mod._cache_bytes = 0

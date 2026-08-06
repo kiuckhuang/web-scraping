@@ -112,7 +112,7 @@ async def _api_post(path: str, body: dict) -> dict:
 TOOLS: list[Tool] = [
     Tool(
         name="search_web",
-        description="Search the web via SearXNG (70+ engines: Google, Bing, DuckDuckGo, Brave...). Returns titles, URLs, snippets.",
+        description="Search the web via the configured SearXNG engines. Returns titles, URLs, and snippets.",
         inputSchema={
             "type": "object",
             "properties": {

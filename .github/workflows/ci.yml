@@ -26,3 +26,12 @@ jobs:
           python-version: "3.12"
       - run: pip install -r mcp/requirements.txt pytest
       - run: python -m pytest mcp/tests -q
+
+  validate-containers:
+    name: Validate Compose and images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f podman-compose.yml config --quiet
+      - run: docker build --build-arg APP_UID=1000 --build-arg APP_GID=1000 -t web-scrape-bridge bridge
+      - run: docker build --build-arg APP_UID=1000 --build-arg APP_GID=1000 -t web-scrape-mcp mcp

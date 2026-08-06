@@ -3,14 +3,15 @@ FROM python:3.12-slim
 ARG APP_UID=1000
 ARG APP_GID=1000
 
-RUN groupadd -g ${APP_GID} appuser && \
+RUN test "${APP_UID}" -ne 0 && test "${APP_GID}" -ne 0 && \
+    groupadd -g ${APP_GID} appuser && \
     useradd -u ${APP_UID} -g ${APP_GID} -m appuser
 
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir pytest
+    pip install --no-cache-dir pytest==9.1.1
 
 COPY server.py .
 COPY tests/ ./tests/
