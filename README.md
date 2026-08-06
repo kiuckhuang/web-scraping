@@ -286,6 +286,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | `FORTRESS_MAX_CONCURRENT_PAGES` | `3`              | Maximum concurrent browser pages |
 | `FORTRESS_WAF_WAIT`      | `15`                    | Maximum WAF challenge wait (s) |
 | `FORTRESS_ISOLATE_CONTEXTS` | `true`                | Isolate cookies/storage for each request |
+| `UBLOCK_ORIGIN_LITE_ENABLED` | `true`              | Enable the bundled uBlock Origin Lite extension |
 | `BRIDGE_URL`            | `http://bridge:8000`     | Bridge URL used by MCP (container-internal) |
 | `PORT_SEARXNG`          | `8888`                   | Host port for SearXNG                |
 | `PORT_FORTRESS`         | `9222`                   | Host port for Fortress CDP           |
@@ -335,6 +336,11 @@ FORTRESS_LANG=zh-HK
 FORTRESS_PROFILE_DIR=./fortress-profile
 podman compose up -d
 ```
+
+On first startup, Fortress installs the official [uBlock Origin Lite](https://github.com/uBlockOrigin/uBOL-home)
+Chromium extension into the persistent profile by default. Set
+`UBLOCK_ORIGIN_LITE_ENABLED=false` in `.env` and recreate Fortress to disable loading it.
+The extension is pinned to a release and verified by SHA-256 before installation.
 
 Stop the stack before copying or reusing the profile directory elsewhere. The bridge
 uses isolated browser contexts by default. The profile is mounted at both

@@ -107,11 +107,16 @@ services:
       - LANG=${LANG:-en_US.UTF-8}
       - FORTRESS_TZ=${FORTRESS_TZ:-}
       - FORTRESS_LANG=${FORTRESS_LANG:-}
+      - UBLOCK_ORIGIN_LITE_ENABLED=${UBLOCK_ORIGIN_LITE_ENABLED:-true}
+    depends_on:
+      ublock-init:
+        condition: service_healthy
     volumes:
       # Upstream documents /tmp/tilion-profile; current image builds use the
       # historical /tmp/tillion-profile path. Mount both for compatibility.
       - ${FORTRESS_PROFILE_DIR:-./fortress-profile}:/tmp/tilion-profile:Z
       - ${FORTRESS_PROFILE_DIR:-./fortress-profile}:/tmp/tillion-profile:Z
+      - ./scripts/init-ublock.sh:/usr/local/bin/ws-init-ublock.sh:ro,Z
       - ./fortress-entrypoint.sh:/usr/local/bin/ws-fortress-entrypoint.sh:ro,Z
     entrypoint: ["/bin/sh", "/usr/local/bin/ws-fortress-entrypoint.sh"]
     # The image's entrypoint already starts Chromium on :9223 (internal) and
@@ -127,6 +132,25 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  ublock-init:
+    image: docker.io/library/alpine:3.22
+    container_name: ws-ublock-init
+    restart: unless-stopped
+    environment:
+      - UBLOCK_ORIGIN_LITE_ENABLED=${UBLOCK_ORIGIN_LITE_ENABLED:-true}
+    volumes:
+      - ${FORTRESS_PROFILE_DIR:-./fortress-profile}:/profile:Z
+      - ./scripts/init-ublock.sh:/usr/local/bin/ws-init-ublock.sh:ro,Z
+    entrypoint: ["/bin/sh", "/usr/local/bin/ws-init-ublock.sh"]
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "test", "-f", "/profile/.ublock-init-ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
 
   # ---------------------------------------------------------------------------
   #  Bridge — orchestrates SearXNG search + Fortress scrape into a unified API
