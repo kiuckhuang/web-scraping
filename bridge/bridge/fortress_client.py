@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 import httpx
+from markdownify import markdownify
 from playwright.async_api import async_playwright, Browser, Error as PlaywrightError
 
 logger = logging.getLogger(__name__)
@@ -240,7 +241,7 @@ async def _extract_tables(page) -> list[dict[str, Any]]:
 
 
 async def _extract_markdown(page) -> str:
-    """Extract the main content as clean markdown."""
+    """Extract the main content as clean markdown (headings, links, lists, code)."""
     try:
         # Remove noise elements
         await page.evaluate("""
@@ -256,16 +257,17 @@ async def _extract_markdown(page) -> str:
         pass
 
     try:
-        # Get the main content text
-        text = await page.evaluate("""
+        # Grab the main content as HTML and convert it to real markdown
+        html = await page.evaluate("""
             () => {
                 const main = document.querySelector('main, article, [role="main"], #content, .content')
                     || document.body;
-                return main ? main.innerText : document.body.innerText;
+                return main ? main.innerHTML : document.body.innerHTML;
             }
         """)
-        # Basic cleanup: collapse excessive whitespace
-        lines = [line.rstrip() for line in text.split("\n")]
+        md = markdownify(f"<body>{html}</body>", heading_style="ATX", bullets="-")
+        # Collapse excessive blank lines
+        lines = [line.rstrip() for line in md.split("\n")]
         result = []
         prev_blank = False
         for line in lines:
@@ -278,6 +280,7 @@ async def _extract_markdown(page) -> str:
                 prev_blank = False
         return "\n".join(result).strip()[:50000]
     except Exception:
+        # Fall back to plain text if conversion fails
         return await page.inner_text("body")
 
 
