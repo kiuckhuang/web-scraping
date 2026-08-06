@@ -13,6 +13,7 @@ provides high-level operations using Playwright:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import socket
@@ -32,6 +33,7 @@ NAV_WAIT = os.environ.get("FORTRESS_NAV_WAIT", "domcontentloaded")
 NAV_DELAY = float(os.environ.get("FORTRESS_NAV_DELAY", "400"))
 MAX_CONCURRENT_PAGES = int(os.environ.get("FORTRESS_MAX_CONCURRENT_PAGES", "3"))
 WAF_WAIT = float(os.environ.get("FORTRESS_WAF_WAIT", "15"))
+ISOLATE_CONTEXTS = os.environ.get("FORTRESS_ISOLATE_CONTEXTS", "true").lower() not in {"0", "false", "no"}
 WAF_MARKERS = (
     "just a moment",
     "performing security verification",
@@ -107,11 +109,71 @@ async def _get_browser() -> Browser:
 
 
 async def _new_page():
-    """Get a new page in Fortress's persistent default browser context."""
+    """Get a page with isolated storage and browser-side SSRF filtering."""
     browser = await _get_browser()
-    context = browser.contexts[0] if browser.contexts else await browser.new_context()
+    if ISOLATE_CONTEXTS:
+        context = await browser.new_context()
+    else:
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
     page = await context.new_page()
+    await page.route("**/*", _guard_request)
     return page
+
+
+def _is_public_http_url(url: str) -> bool:
+    """Reject browser requests to local, private, or otherwise special hosts."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return parsed.scheme in ("data", "blob", "about")
+    host = parsed.hostname
+    if host.lower() in {"localhost", "0.0.0.0"}:
+        return False
+    try:
+        addresses = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    return all(
+        not (
+            (ip := ipaddress.ip_address(info[4][0])).is_private
+            or ip.is_loopback
+            or ip.is_reserved
+            or ip.is_link_local
+        )
+        for info in addresses
+    )
+
+
+async def _guard_request(route, request) -> None:
+    """Abort private redirects and subresource requests inside Chromium."""
+    url = request.url
+    if await asyncio.to_thread(_is_public_http_url, url):
+        await route.continue_()
+    else:
+        logger.warning("Blocked browser request to non-public URL: %s", url)
+        await route.abort("blockedbyclient")
+
+
+async def _close_page(page) -> None:
+    """Close a page and its isolated context."""
+    context = page.context
+    try:
+        await _close_page(page)
+    finally:
+        if ISOLATE_CONTEXTS and context is not None:
+            await context.close()
+
+
+def _same_origin(left: str, right: str) -> bool:
+    """Compare scheme, hostname, and effective port."""
+    a, b = urlparse(left), urlparse(right)
+    try:
+        a_port = a.port or (443 if a.scheme == "https" else 80)
+        b_port = b.port or (443 if b.scheme == "https" else 80)
+    except ValueError:
+        return False
+    return (a.scheme.lower(), a.hostname.lower() if a.hostname else "", a_port) == (
+        b.scheme.lower(), b.hostname.lower() if b.hostname else "", b_port
+    )
 
 
 async def _is_waf_challenge(page) -> bool:
@@ -183,7 +245,7 @@ async def fetch_page(url: str) -> dict[str, Any]:
             result["waf_challenge"] = True
         return result
     finally:
-        await page.close()
+        await _close_page(page)
 
 
 async def extract_page(url: str) -> dict[str, Any]:
@@ -218,7 +280,7 @@ async def extract_page(url: str) -> dict[str, Any]:
             result["waf_challenge"] = True
         return result
     finally:
-        await page.close()
+        await _close_page(page)
 
 
 async def _extract_tables(page) -> list[dict[str, Any]]:
@@ -322,9 +384,6 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
     Returns:
         dict with keys: pages[], sitemap[]
     """
-    parsed_root = urlparse(url)
-    root_domain = f"{parsed_root.scheme}://{parsed_root.netloc}"
-
     visited: set[str] = set()
     pages: list[dict] = []
     sitemap: list[str] = []
@@ -364,10 +423,10 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
                                 .filter(href => href.startsWith('http'))
                         """)
                         for link in links:
-                            if link not in visited and link.startswith(root_domain):
+                            if link not in visited and _same_origin(url, link) and _is_public_http_url(link):
                                 queue.append((link, current_depth + 1))
                 finally:
-                    await page.close()
+                    await _close_page(page)
         except Exception as exc:
             logger.warning("Crawl failed for %s: %s", current_url, exc)
 
@@ -415,7 +474,7 @@ async def search_web(query: str, count: int = 10) -> dict[str, Any]:
                 "results": results[:count],
             }
         finally:
-            await page.close()
+            await _close_page(page)
 
 
 async def health() -> bool:

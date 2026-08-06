@@ -92,7 +92,7 @@ services:
     image: docker.io/tilion/fortress:${FORTRESS_CHANNEL:-latest}
     container_name: ws-fortress
     restart: unless-stopped
-    shm_size: ${FORTRESS_SHM_SIZE:-1gb}
+    shm_size: ${FORTRESS_SHM_SIZE:-2gb}
     ports:
       - "127.0.0.1:${PORT_FORTRESS:-9222}:9222"
     environment:
@@ -148,8 +148,14 @@ services:
       # served from memory instead of re-navigating the browser.
       - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:-300}
       - BRIDGE_CACHE_MAX=${BRIDGE_CACHE_MAX:-100}
+      - BRIDGE_CACHE_MAX_BYTES=${BRIDGE_CACHE_MAX_BYTES:-26214400}
       # Post-navigation pause (ms) before extraction
       - FORTRESS_NAV_DELAY=${FORTRESS_NAV_DELAY:-400}
+      - FORTRESS_TIMEOUT=${FORTRESS_TIMEOUT:-60}
+      - FORTRESS_NAV_WAIT=${FORTRESS_NAV_WAIT:-domcontentloaded}
+      - FORTRESS_MAX_CONCURRENT_PAGES=${FORTRESS_MAX_CONCURRENT_PAGES:-3}
+      - FORTRESS_WAF_WAIT=${FORTRESS_WAF_WAIT:-15}
+      - FORTRESS_ISOLATE_CONTEXTS=${FORTRESS_ISOLATE_CONTEXTS:-true}
       # Optional: residential proxy for Fortress egress
       # - TILION_PROXY=http://user:pass@proxy-host:port
       # - TILION_REGION=us
@@ -201,7 +207,7 @@ services:
       - MCP_SESSION_TTL=${MCP_SESSION_TTL:-1800}
       - MCP_RATE_LIMIT=${MCP_RATE_LIMIT:-120}
       - MCP_MAX_BODY=${MCP_MAX_BODY:-1048576}
-      - MCP_ALLOWED_ORIGIN=${MCP_ALLOWED_ORIGIN:-*}
+      - MCP_ALLOWED_ORIGIN=${MCP_ALLOWED_ORIGIN:-}
       # Result token budgets (chars per item)
       - MCP_SNIPPET_CHARS=${MCP_SNIPPET_CHARS:-300}
       - MCP_CONTENT_CHARS=${MCP_CONTENT_CHARS:-5000}

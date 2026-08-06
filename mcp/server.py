@@ -56,7 +56,7 @@ MCP_COMBINED_CHARS = int(os.environ.get("MCP_COMBINED_CHARS", "1200"))
 MCP_SESSION_TTL = float(os.environ.get("MCP_SESSION_TTL", "1800"))  # idle session lifetime (s)
 MCP_RATE_LIMIT = int(os.environ.get("MCP_RATE_LIMIT", "120"))  # requests/minute/IP, 0 = unlimited
 MCP_MAX_BODY = int(os.environ.get("MCP_MAX_BODY", "1048576"))  # max request body bytes
-MCP_ALLOWED_ORIGIN = os.environ.get("MCP_ALLOWED_ORIGIN", "*")
+MCP_ALLOWED_ORIGIN = os.environ.get("MCP_ALLOWED_ORIGIN", "").strip()
 
 
 def _is_local_bind_host(host: str) -> bool:
@@ -575,7 +575,7 @@ async def handle_health(scope, receive, send):
 # ---------------------------------------------------------------------------
 
 CORS_HEADERS = [
-    (b"access-control-allow-origin", MCP_ALLOWED_ORIGIN.encode()),
+    *(([(b"access-control-allow-origin", MCP_ALLOWED_ORIGIN.encode())] if MCP_ALLOWED_ORIGIN else [])),
     (b"access-control-allow-methods", b"GET, POST, DELETE, OPTIONS"),
     (b"access-control-allow-headers", b"Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version"),
     (b"access-control-expose-headers", b"Mcp-Session-Id"),

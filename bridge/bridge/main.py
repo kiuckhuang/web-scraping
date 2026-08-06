@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
 import os
 import socket
@@ -42,6 +43,7 @@ logger = logging.getLogger(__name__)
 # (slow) browser round-trip. Big win for AI agents that re-visit pages.
 BRIDGE_CACHE_TTL = float(os.environ.get("BRIDGE_CACHE_TTL", "300"))
 BRIDGE_CACHE_MAX = int(os.environ.get("BRIDGE_CACHE_MAX", "100"))
+BRIDGE_CACHE_MAX_BYTES = int(os.environ.get("BRIDGE_CACHE_MAX_BYTES", str(25 * 1024 * 1024)))
 
 
 @asynccontextmanager
@@ -81,15 +83,15 @@ async def request_id_middleware(request, call_next):
 # ---------------------------------------------------------------------------
 
 class ScrapeRequest(BaseModel):
-    url: str = Field(..., description="URL to scrape")
+    url: str = Field(..., max_length=8192, description="URL to scrape")
     mode: Literal["extract", "fetch"] = Field("extract", description='"extract" for clean markdown, "fetch" for raw HTML')
 
 
 class SearchAndScrapeRequest(BaseModel):
-    query: str = Field(..., description="Search query")
+    query: str = Field(..., min_length=1, max_length=1000, description="Search query")
     categories: str | None = Field(None, description="Comma-separated SearXNG categories")
     language: str = Field("en")
-    max_results: int = Field(5, description="How many results to scrape (default 5)")
+    max_results: int = Field(5, ge=1, le=50, description="How many results to scrape (default 5)")
     scrape_mode: Literal["extract", "fetch"] = Field("extract", description='"extract" or "fetch"')
 
 
@@ -142,25 +144,51 @@ def _is_public_url(url: str) -> bool:
 #  Scrape cache — TTL + size-bounded, keyed by (url, mode)
 # ---------------------------------------------------------------------------
 
-_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_cache: dict[tuple[str, str], tuple[float, dict[str, Any], int]] = {}
+_cache_bytes = 0
 
 
 async def _cache_get(url: str, mode: str) -> dict[str, Any] | None:
+    global _cache_bytes
     item = _cache.get((url, mode))
     if item is None:
         return None
     if time.monotonic() - item[0] > BRIDGE_CACHE_TTL:
         _cache.pop((url, mode), None)
+        _cache_bytes -= item[2]
         return None
     logger.info("Cache hit: %s (mode=%s)", url, mode)
     return item[1]
 
 
+def _same_origin(left: str, right: str) -> bool:
+    """Compare scheme, hostname, and effective port for crawl boundaries."""
+    a, b = urlparse(left), urlparse(right)
+    try:
+        a_port = a.port or (443 if a.scheme == "https" else 80)
+        b_port = b.port or (443 if b.scheme == "https" else 80)
+    except ValueError:
+        return False
+    return (a.scheme.lower(), a.hostname.lower() if a.hostname else "", a_port) == (
+        b.scheme.lower(), b.hostname.lower() if b.hostname else "", b_port
+    )
+
+
 def _cache_set(url: str, mode: str, value: dict[str, Any]) -> None:
-    if len(_cache) >= BRIDGE_CACHE_MAX:
+    global _cache_bytes
+    size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+    if size > BRIDGE_CACHE_MAX_BYTES:
+        return
+    existing = _cache.pop((url, mode), None)
+    if existing is not None:
+        _cache_bytes -= existing[2]
+    while _cache and (
+        len(_cache) >= BRIDGE_CACHE_MAX or _cache_bytes + size > BRIDGE_CACHE_MAX_BYTES
+    ):
         oldest = min(_cache, key=lambda k: _cache[k][0])
-        _cache.pop(oldest, None)
-    _cache[(url, mode)] = (time.monotonic(), value)
+        _cache_bytes -= _cache.pop(oldest)[2]
+    _cache[(url, mode)] = (time.monotonic(), value, size)
+    _cache_bytes += size
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +217,7 @@ async def health_check() -> dict[str, Any]:
 
 @app.get("/search")
 async def search(
-    q: str = Query(..., description="Search query"),
+    q: str = Query(..., min_length=1, max_length=1000, description="Search query"),
     categories: str | None = Query(None),
     language: str = Query("en"),
     pageno: int = Query(1, ge=1),
@@ -290,7 +318,7 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
 
 @app.get("/crawl")
 async def crawl(
-    url: str = Query(..., description="Root URL to crawl"),
+    url: str = Query(..., max_length=8192, description="Root URL to crawl"),
     depth: int = Query(2, ge=1, le=5),
     max_pages: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
@@ -308,7 +336,7 @@ async def crawl(
 
 @app.get("/web_search")
 async def web_search(
-    q: str = Query(..., description="Search query"),
+    q: str = Query(..., min_length=1, max_length=1000, description="Search query"),
     count: int = Query(10, ge=1, le=30),
 ) -> dict[str, Any]:
     """Web search through the Fortress stealth browser (real browser, no SERP API)."""

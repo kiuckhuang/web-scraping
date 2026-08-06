@@ -83,6 +83,13 @@ def test_request_models_validate_modes():
     assert ok2.scrape_mode == "extract"
 
 
+def test_search_and_scrape_limits_results():
+    with pytest.raises(ValueError):
+        SearchAndScrapeRequest(query="q", max_results=51)
+    with pytest.raises(ValueError):
+        SearchAndScrapeRequest(query="q", max_results=0)
+
+
 def test_is_public_url(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _mixed_getaddrinfo)
     assert _is_public_url("https://example.com/") is True
@@ -133,6 +140,7 @@ def test_scrape_cache_hits(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
     monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
     main_mod._cache.clear()
+    main_mod._cache_bytes = 0
 
     try:
         req = ScrapeRequest(url="https://example.com/", mode="extract")
@@ -144,6 +152,7 @@ def test_scrape_cache_hits(monkeypatch):
         assert second["markdown"] == "cached body"
     finally:
         main_mod._cache.clear()
+        main_mod._cache_bytes = 0
 
 
 def test_cache_respects_max_entries(monkeypatch):
@@ -158,6 +167,7 @@ def test_cache_respects_max_entries(monkeypatch):
     old_max = main_mod.BRIDGE_CACHE_MAX
     main_mod.BRIDGE_CACHE_MAX = 2
     main_mod._cache.clear()
+    main_mod._cache_bytes = 0
     try:
         for i in range(3):
             req = ScrapeRequest(url=f"https://example.com/{i}", mode="extract")
@@ -166,3 +176,4 @@ def test_cache_respects_max_entries(monkeypatch):
     finally:
         main_mod.BRIDGE_CACHE_MAX = old_max
         main_mod._cache.clear()
+        main_mod._cache_bytes = 0
