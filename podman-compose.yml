@@ -181,6 +181,11 @@ services:
       - BRIDGE_URL=${BRIDGE_URL:-http://bridge:8000}
       - MCP_PORT=9100
       - MCP_API_KEY=${MCP_API_KEY:-}
+      # Security knobs
+      - MCP_SESSION_TTL=${MCP_SESSION_TTL:-1800}
+      - MCP_RATE_LIMIT=${MCP_RATE_LIMIT:-120}
+      - MCP_MAX_BODY=${MCP_MAX_BODY:-1048576}
+      - MCP_ALLOWED_ORIGIN=${MCP_ALLOWED_ORIGIN:-*}
     depends_on:
       - bridge
     networks:

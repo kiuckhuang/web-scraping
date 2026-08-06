@@ -4,7 +4,9 @@ Run inside the mcp container:  python -m pytest tests -q
 or via CI / `make test-unit`.
 """
 
+import asyncio
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -77,3 +79,78 @@ def test_trusted_cidrs():
         assert server_mod._is_trusted({"client": ("127.0.0.1", 1)}) is True
     finally:
         server_mod._TRUSTED_CIDRS = old
+
+
+def test_rate_limit():
+    old_limit = server_mod.MCP_RATE_LIMIT
+    server_mod.MCP_RATE_LIMIT = 2
+    server_mod._RATE_WINDOW.clear()
+    try:
+        scope = {"client": ("9.9.9.9", 1)}
+        assert server_mod._rate_limit_ok(scope) is True
+        assert server_mod._rate_limit_ok(scope) is True
+        assert server_mod._rate_limit_ok(scope) is False
+        # other IPs are unaffected
+        assert server_mod._rate_limit_ok({"client": ("8.8.8.8", 1)}) is True
+    finally:
+        server_mod.MCP_RATE_LIMIT = old_limit
+        server_mod._RATE_WINDOW.clear()
+
+
+def test_rate_limit_disabled():
+    old_limit = server_mod.MCP_RATE_LIMIT
+    server_mod.MCP_RATE_LIMIT = 0
+    server_mod._RATE_WINDOW.clear()
+    try:
+        scope = {"client": ("9.9.9.9", 1)}
+        for _ in range(50):
+            assert server_mod._rate_limit_ok(scope) is True
+    finally:
+        server_mod.MCP_RATE_LIMIT = old_limit
+        server_mod._RATE_WINDOW.clear()
+
+
+def test_session_sweep_expires_idle():
+    async def go():
+        class FakeCM:
+            async def __aenter__(self):
+                return None, None
+
+            async def __aexit__(self, *args):
+                return None
+
+        async def noop():
+            pass
+
+        task = asyncio.create_task(noop())
+        await task
+        old_ttl = server_mod.MCP_SESSION_TTL
+        server_mod.MCP_SESSION_TTL = 1800
+        try:
+            server_mod._sessions.clear()
+            stale = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic() - 99999)
+            fresh = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic())
+            server_mod._sessions["stale"] = stale
+            server_mod._sessions["fresh"] = fresh
+            await server_mod._sweep_sessions()
+            assert "stale" not in server_mod._sessions
+            assert "fresh" in server_mod._sessions
+        finally:
+            server_mod._sessions.clear()
+            server_mod.MCP_SESSION_TTL = old_ttl
+
+    asyncio.run(go())
+
+
+def test_redact_args():
+    args = {
+        "url": "https://user:pass@example.com/page?token=abc123&q=keep",
+        "query": "plain query",
+        "max_results": 5,
+    }
+    out = server_mod._redact_args(args)
+    assert "user:***@example.com" in out["url"]
+    assert "abc123" not in out["url"]
+    assert "q=keep" in out["url"]
+    assert out["query"] == "plain query"
+    assert out["max_results"] == 5

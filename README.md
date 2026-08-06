@@ -282,6 +282,10 @@ await page.screenshot({ path: "stealth-check.png" });
 | `PORT_BRIDGE`           | `8000`                   | Host port for Bridge REST API        |
 | `PORT_MCP`              | `9100`                   | Host port for MCP server             |
 | `MCP_API_KEY`           | (auto-generated)         | Bearer token for remote MCP clients (localhost bypasses auth) |
+| `MCP_SESSION_TTL`       | `1800`                   | Idle MCP session lifetime (s) before expiry |
+| `MCP_RATE_LIMIT`        | `120`                    | Max MCP requests/min per client IP (`0` = unlimited) |
+| `MCP_MAX_BODY`          | `1048576`                | Max MCP request body size (bytes)    |
+| `MCP_ALLOWED_ORIGIN`    | `*`                      | CORS origin allowed for browser clients |
 | `APP_UID`               | `1000`                   | Host user UID for bridge/mcp containers |
 | `APP_GID`               | `1000`                   | Host user GID for bridge/mcp containers |
 | `TILION_PROXY`          | —                        | Residential proxy for Fortress       |
@@ -363,6 +367,16 @@ The stack is split into two bridge networks:
 - Bridge and MCP run as non-root (`appuser`).
 - Valkey and SearXNG drop all capabilities except `SETGID`/`SETUID`/`CHOWN`.
 - SearXNG is configured with `public_instance: false` and `limiter: false` (private, internal-only).
+
+### MCP hardening
+
+- **Idle session expiry** — MCP sessions are garbage-collected after `MCP_SESSION_TTL` seconds of inactivity (default 30 min), so abandoned client connections cannot leak memory or background tasks forever.
+- **Per-IP rate limiting** — `MCP_RATE_LIMIT` (default 120/min per IP) throttles abusive clients; excess requests get `429`. Set `0` to disable.
+- **Request body limit** — requests larger than `MCP_MAX_BODY` (default 1 MB) are rejected with `413`.
+- **Fail-closed warning** — if `MCP_API_KEY` is empty, auth is disabled; the server logs a loud warning at startup. `make init` always generates a key.
+- **Auth failures are logged** — every rejected request logs the client address, so "why can't my client connect" is answerable from `podman compose logs mcp`.
+- **Log redaction** — tool arguments with embedded credentials (`user:pass@`, `?token=`, `?key=`...) are masked in logs.
+- **Configurable CORS** — `MCP_ALLOWED_ORIGIN` (default `*`) restricts which browser origins may call the MCP endpoint.
 
 ### SSRF protection
 

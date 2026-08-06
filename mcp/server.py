@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import socket
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -42,8 +45,20 @@ HTTP_TIMEOUT = float(os.environ.get("BRIDGE_TIMEOUT", "120"))
 MCP_PORT = int(os.environ.get("MCP_PORT", "9100"))
 MCP_API_KEY = os.environ.get("MCP_API_KEY", "").strip()
 
+# Security knobs
+MCP_SESSION_TTL = float(os.environ.get("MCP_SESSION_TTL", "1800"))  # idle session lifetime (s)
+MCP_RATE_LIMIT = int(os.environ.get("MCP_RATE_LIMIT", "120"))  # requests/minute/IP, 0 = unlimited
+MCP_MAX_BODY = int(os.environ.get("MCP_MAX_BODY", "1048576"))  # max request body bytes
+MCP_ALLOWED_ORIGIN = os.environ.get("MCP_ALLOWED_ORIGIN", "*")
+
 # Masked key for logging (never leak the full key)
 _key_preview = f"{MCP_API_KEY[:4]}...{MCP_API_KEY[-4:]}" if len(MCP_API_KEY) > 8 else ("set" if MCP_API_KEY else "unset")
+
+if not MCP_API_KEY:
+    logger.warning(
+        "MCP_API_KEY is NOT set — authentication is DISABLED. Anyone who can reach this "
+        "server can use it. Set MCP_API_KEY in .env (make init generates one)."
+    )
 
 server = Server("web-scrape-bridge")
 
@@ -147,10 +162,24 @@ async def _list_tools_handler(_ctx, _params):
     return ListToolsResult(tools=TOOLS)
 
 
+_URL_CREDS = re.compile(r"//([^/@:]+):([^/@]+)@")
+_SENSITIVE_PARAM = re.compile(r"([?&](?:token|key|secret|auth|password|api_key|apikey|signature|sig)=)[^&#]*", re.IGNORECASE)
+
+
+def _redact(value: str) -> str:
+    """Mask embedded credentials in URLs before they hit the logs."""
+    value = _URL_CREDS.sub(r"//\1:***@", value)
+    return _SENSITIVE_PARAM.sub(r"\1***", value)
+
+
+def _redact_args(arguments: dict) -> dict:
+    return {k: (_redact(v) if isinstance(v, str) else v) for k, v in arguments.items()}
+
+
 async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolResult:
     name = params.name
     arguments = params.arguments or {}
-    logger.info("MCP tool called: %s args=%s", name, arguments)
+    logger.info("MCP tool called: %s args=%s", name, _redact_args(arguments))
 
     try:
         if name == "search_web":
@@ -240,15 +269,6 @@ def _get_trusted_cidrs() -> set[str]:
 _TRUSTED_CIDRS = _get_trusted_cidrs()
 
 
-def _ip_in_cidr(ip: str, cidr: str) -> bool:
-    """Check if dotted-quad ip belongs to cidr (IPv4 only)."""
-    addr = int.from_bytes(socket.inet_aton(ip), "big")
-    net, prefix = cidr.split("/")
-    net_int = int.from_bytes(socket.inet_aton(net), "big")
-    mask = (0xFFFFFFFF << (32 - int(prefix))) & 0xFFFFFFFF
-    return (addr & mask) == (net_int & mask)
-
-
 def _is_trusted(scope) -> bool:
     """True if the request originates from a trusted (local/podman-forwarded) address."""
     client = scope.get("client")
@@ -257,13 +277,11 @@ def _is_trusted(scope) -> bool:
     host = client[0]
     if host in ("127.0.0.1", "::1", "localhost"):
         return True
-    for cidr in _TRUSTED_CIDRS:
-        try:
-            if "/" in cidr and ":" not in cidr and _ip_in_cidr(host, cidr):
-                return True
-        except Exception:
-            continue
-    return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(ip in ipaddress.ip_network(cidr, strict=False) for cidr in _TRUSTED_CIDRS)
 
 
 def _auth_ok(scope) -> bool:
@@ -278,6 +296,36 @@ def _auth_ok(scope) -> bool:
         token = auth[7:].strip()
         return hmac.compare_digest(token, MCP_API_KEY)
     return False
+
+
+# ---------------------------------------------------------------------------
+#  Rate limiting — sliding window per client IP
+# ---------------------------------------------------------------------------
+
+_RATE_WINDOW: dict[str, list[float]] = {}
+
+
+def _rate_limit_ok(scope) -> bool:
+    """True if the request is within the per-IP rate limit (MCP_RATE_LIMIT/min)."""
+    if MCP_RATE_LIMIT <= 0:
+        return True
+    client = scope.get("client")
+    ip = client[0] if client else "unknown"
+    now = time.monotonic()
+    hits = [t for t in _RATE_WINDOW.get(ip, []) if now - t < 60.0]
+    if len(hits) >= MCP_RATE_LIMIT:
+        _RATE_WINDOW[ip] = hits
+        return False
+    hits.append(now)
+    _RATE_WINDOW[ip] = hits
+    if len(_RATE_WINDOW) > 10000:  # bound memory: drop stale IPs
+        _RATE_WINDOW.clear()
+    return True
+
+
+# ---------------------------------------------------------------------------
+#  Session lifecycle — expire idle sessions so they can't leak forever
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -346,9 +394,47 @@ class Session:
     transport: StreamableHTTPServerTransport
     task: asyncio.Task
     cm: Any  # the connect() async context manager
+    last_seen: float  # time.monotonic() of the most recent request
 
 
 _sessions: dict[str, Session] = {}
+_cleanup_task: asyncio.Task | None = None
+
+
+async def _sweep_sessions() -> None:
+    """Close and remove sessions idle for longer than MCP_SESSION_TTL."""
+    now = time.monotonic()
+    expired = [sid for sid, s in _sessions.items() if now - s.last_seen > MCP_SESSION_TTL]
+    for sid in expired:
+        session = _sessions.pop(sid, None)
+        if session is None:
+            continue
+        logger.info("MCP session expired after %ss idle: %s", MCP_SESSION_TTL, sid)
+        session.task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(session.task), timeout=5)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+        try:
+            await session.cm.__aexit__(None, None, None)
+        except Exception:
+            pass
+
+
+async def _cleanup_loop() -> None:
+    while True:
+        await asyncio.sleep(max(MCP_SESSION_TTL / 2, 30))
+        try:
+            await _sweep_sessions()
+        except Exception:
+            logger.exception("Session sweep failed")
+
+
+def _ensure_cleanup() -> None:
+    """Start the background session-sweep task once."""
+    global _cleanup_task
+    if _cleanup_task is None or _cleanup_task.done():
+        _cleanup_task = asyncio.create_task(_cleanup_loop())
 
 
 async def _send_json(scope, send, status: int, body: dict):
@@ -388,13 +474,14 @@ async def handle_mcp(scope, receive, send):
         await transport.handle_request(scope, receive, send)
         sid = transport.mcp_session_id or ""
         if sid:
-            _sessions[sid] = Session(transport=transport, task=task, cm=cm)
+            _sessions[sid] = Session(transport=transport, task=task, cm=cm, last_seen=time.monotonic())
             logger.info("MCP session created: %s", sid)
     else:
         session = _sessions.get(session_id)
         if session is None:
-            await _send_json(scope, send, 404, {"error": "Session not found"})
+            await _send_json(scope, send, 404, {"error": "Session not found or expired"})
             return
+        session.last_seen = time.monotonic()
         await session.transport.handle_request(scope, receive, send)
 
 
@@ -411,10 +498,11 @@ async def handle_health(scope, receive, send):
 
 # ---------------------------------------------------------------------------
 #  CORS — allow browser-based MCP clients (llama.cpp web UI, etc.)
+#  Restrict the allowed origin via MCP_ALLOWED_ORIGIN if needed.
 # ---------------------------------------------------------------------------
 
 CORS_HEADERS = [
-    (b"access-control-allow-origin", b"*"),
+    (b"access-control-allow-origin", MCP_ALLOWED_ORIGIN.encode()),
     (b"access-control-allow-methods", b"GET, POST, DELETE, OPTIONS"),
     (b"access-control-allow-headers", b"Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version"),
     (b"access-control-expose-headers", b"Mcp-Session-Id"),
@@ -473,7 +561,19 @@ async def app(scope, receive, send):
     send_with_cors = _wrap_send_with_cors(send)
 
     if path == "/mcp" and method in ("POST", "GET", "DELETE"):
+        _ensure_cleanup()
+        if not _rate_limit_ok(scope):
+            logger.warning("Rate limit exceeded from %s", scope.get("client"))
+            await _send_json(scope, send_with_cors, 429, {"error": "rate limit exceeded"})
+            return
+        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        content_length = headers.get("content-length")
+        if method == "POST" and content_length and int(content_length) > MCP_MAX_BODY:
+            await _send_json(scope, send_with_cors, 413, {"error": "request body too large"})
+            return
         if not _auth_ok(scope):
+            client = scope.get("client")
+            logger.warning("Unauthorized request to %s from %s", path, client)
             await _send_json(scope, send_with_cors, 401, {"error": "unauthorized"})
             return
         await handle_mcp(scope, receive, send_with_cors)
