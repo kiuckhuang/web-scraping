@@ -16,8 +16,9 @@ import asyncio
 import logging
 import os
 import socket
+from collections import deque
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 from playwright.async_api import async_playwright, Browser, Error as PlaywrightError
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 FORTRESS_CDP_URL = os.environ.get("FORTRESS_CDP_URL", "http://fortress:9222")
 SCRAPE_TIMEOUT = float(os.environ.get("FORTRESS_TIMEOUT", "60"))
 NAV_WAIT = os.environ.get("FORTRESS_NAV_WAIT", "domcontentloaded")
+NAV_DELAY = float(os.environ.get("FORTRESS_NAV_DELAY", "400"))
 MAX_CONCURRENT_PAGES = int(os.environ.get("FORTRESS_MAX_CONCURRENT_PAGES", "3"))
 WAF_WAIT = float(os.environ.get("FORTRESS_WAF_WAIT", "15"))
 WAF_MARKERS = (
@@ -112,10 +114,30 @@ async def _new_page():
 
 
 async def _is_waf_challenge(page) -> bool:
-    """Detect common WAF challenge pages before returning their HTML."""
+    """Detect common WAF challenge pages cheaply.
+
+    Avoids reading the full page body (innerText on large pages is expensive
+    both to compute and to serialize over CDP): checks the title, known
+    challenge selectors, and at most the first 4 KB of text.
+    """
     try:
-        content = (await page.title() + "\n" + await page.locator("body").inner_text()).lower()
-        return any(marker in content for marker in WAF_MARKERS)
+        title = (await page.title()).lower()
+        if any(marker in title for marker in WAF_MARKERS):
+            return True
+        return bool(await page.evaluate("""(markers) => {
+            const challengeSelectors = [
+                '#challenge-running', '#challenge-form', '#cf-chl-widget',
+                'iframe[src*="challenges.cloudflare.com"]',
+                '[id*="cf-chl-"]', '[class*="cf-chl-"]',
+                'div[data-translate*="checking your browser"]',
+                '.g-recaptcha', 'form[action*="recaptcha"]',
+            ];
+            if (document.querySelector(challengeSelectors.join(','))) return true;
+            const body = document.body;
+            if (!body) return false;
+            const text = body.textContent.slice(0, 4000).toLowerCase();
+            return markers.some(m => text.includes(m));
+        }""", list(WAF_MARKERS)))
     except PlaywrightError:
         return False
 
@@ -303,43 +325,46 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
     visited: set[str] = set()
     pages: list[dict] = []
     sitemap: list[str] = []
-    queue: list[tuple[str, int]] = [(url, 0)]
+    queue: deque[tuple[str, int]] = deque([(url, 0)])
 
     while queue and len(pages) < max_pages:
-        current_url, current_depth = queue.pop(0)
+        current_url, current_depth = queue.popleft()
 
         if current_url in visited:
             continue
         visited.add(current_url)
 
         try:
-            page = await _new_page()
-            try:
-                await page.goto(current_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
-                await page.wait_for_timeout(800)
+            # Each page holds a slot so concurrent crawls/scrapes stay within
+            # MAX_CONCURRENT_PAGES and cannot overwhelm Fortress.
+            async with _page_slots:
+                page = await _new_page()
+                try:
+                    await page.goto(current_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
+                    await page.wait_for_timeout(int(NAV_DELAY))
 
-                title = await page.title()
-                text = await page.inner_text("body")
-                pages.append({
-                    "url": page.url,
-                    "title": title,
-                    "text": text[:2000],
-                    "depth": current_depth,
-                })
-                sitemap.append(page.url)
-                logger.info("Crawled [%d/%d] %s", len(pages), max_pages, current_url)
+                    title = await page.title()
+                    text = await page.inner_text("body")
+                    pages.append({
+                        "url": page.url,
+                        "title": title,
+                        "text": text[:2000],
+                        "depth": current_depth,
+                    })
+                    sitemap.append(page.url)
+                    logger.info("Crawled [%d/%d] %s", len(pages), max_pages, current_url)
 
-                if current_depth < depth - 1:
-                    links = await page.evaluate("""
-                        () => [...document.querySelectorAll('a[href]')]
-                            .map(a => a.href)
-                            .filter(href => href.startsWith('http'))
-                    """)
-                    for link in links:
-                        if link not in visited and link.startswith(root_domain):
-                            queue.append((link, current_depth + 1))
-            finally:
-                await page.close()
+                    if current_depth < depth - 1:
+                        links = await page.evaluate("""
+                            () => [...document.querySelectorAll('a[href]')]
+                                .map(a => a.href)
+                                .filter(href => href.startsWith('http'))
+                        """)
+                        for link in links:
+                            if link not in visited and link.startswith(root_domain):
+                                queue.append((link, current_depth + 1))
+                finally:
+                    await page.close()
         except Exception as exc:
             logger.warning("Crawl failed for %s: %s", current_url, exc)
 
@@ -354,14 +379,17 @@ async def search_web(query: str, count: int = 10) -> dict[str, Any]:
     async with _page_slots:
         page = await _new_page()
         try:
-            search_url = f"https://duckduckgo.com/html/?q={query.replace(' ', '+')}"
+            search_url = f"https://duckduckgo.com/html/?q={quote(query)}"
             await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(int(NAV_DELAY))
 
             results = await page.evaluate("""
             (count) => {
                 const results = [];
-                const items = document.querySelectorAll('.result, .web-result, [data-testid="result"]');
+                const items = document.querySelectorAll(
+                    '.result, .web-result, .result--more, ' +
+                    '[data-testid="result"], article[data-testid="result"], li.result'
+                );
                 for (const item of items) {
                     if (results.length >= count) break;
                     const titleEl = item.querySelector('h2 a, .result__title a, .result__a');

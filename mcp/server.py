@@ -366,8 +366,11 @@ def _format_combined_results(result: dict) -> str:
         lines.append(f"### {i}. {r.get('title', 'Untitled')}")
         lines.append(f"   URL: {r.get('url', '')}")
         content = r.get("content")
-        if content and isinstance(content, dict) and content.get("markdown"):
-            lines.append(f"   {content['markdown'][:500]}")
+        if isinstance(content, dict):
+            # extract mode -> markdown, fetch mode -> text/html
+            body = content.get("markdown") or content.get("text") or ""
+            if body:
+                lines.append(f"   {body[:500]}")
         elif r.get("scrape_error"):
             lines.append(f"   [scrape failed: {r['scrape_error']}]")
         lines.append("")

@@ -45,6 +45,20 @@ def test_format_combined_results_markdown_content():
     assert "full content" in out
 
 
+def test_format_combined_results_fetch_mode():
+    """Fetch-mode results carry text/html, not markdown — they must render too."""
+    result = {
+        "query": "q",
+        "results": [
+            {"title": "A", "url": "https://a.com", "content": {"url": "https://a.com", "text": "raw text here"}},
+            {"title": "B", "url": "https://b.com", "content": None, "scrape_error": "boom"},
+        ],
+    }
+    out = server_mod._format_combined_results(result)
+    assert "raw text here" in out
+    assert "boom" in out
+
+
 def test_auth_no_key_allows_everything():
     old = server_mod.MCP_API_KEY
     server_mod.MCP_API_KEY = ""

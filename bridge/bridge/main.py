@@ -17,7 +17,7 @@ import logging
 import os
 import socket
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import uvicorn
@@ -59,7 +59,7 @@ app = FastAPI(
 
 class ScrapeRequest(BaseModel):
     url: str = Field(..., description="URL to scrape")
-    mode: str = Field("extract", description='"extract" for clean markdown, "fetch" for raw HTML')
+    mode: Literal["extract", "fetch"] = Field("extract", description='"extract" for clean markdown, "fetch" for raw HTML')
 
 
 class SearchAndScrapeRequest(BaseModel):
@@ -67,7 +67,7 @@ class SearchAndScrapeRequest(BaseModel):
     categories: str | None = Field(None, description="Comma-separated SearXNG categories")
     language: str = Field("en")
     max_results: int = Field(5, description="How many results to scrape (default 5)")
-    scrape_mode: str = Field("extract", description='"extract" or "fetch"')
+    scrape_mode: Literal["extract", "fetch"] = Field("extract", description='"extract" or "fetch"')
 
 
 # ---------------------------------------------------------------------------
