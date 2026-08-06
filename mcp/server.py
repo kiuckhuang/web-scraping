@@ -569,6 +569,9 @@ def _wrap_send_with_cors(send):
 async def app(scope, receive, send):
     path = scope.get("path", "")
     method = scope.get("method", "")
+    rid = uuid.uuid4().hex[:8]
+    client = scope.get("client")
+    headers_in = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
 
     # Handle CORS preflight
     if method == "OPTIONS":
@@ -581,19 +584,18 @@ async def app(scope, receive, send):
     if path == "/mcp" and method in ("POST", "GET", "DELETE"):
         _ensure_cleanup()
         if not _rate_limit_ok(scope):
-            logger.warning("Rate limit exceeded from %s", scope.get("client"))
-            await _send_json(scope, send_with_cors, 429, {"error": "rate limit exceeded"})
+            logger.warning("req=%s rate limited: %s %s from %s", rid, method, path, client)
+            await _send_json(scope, send_with_cors, 429, {"error": "rate limit exceeded", "request_id": rid})
             return
-        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-        content_length = headers.get("content-length")
+        content_length = headers_in.get("content-length")
         if method == "POST" and content_length and int(content_length) > MCP_MAX_BODY:
-            await _send_json(scope, send_with_cors, 413, {"error": "request body too large"})
+            await _send_json(scope, send_with_cors, 413, {"error": "request body too large", "request_id": rid})
             return
         if not _auth_ok(scope):
-            client = scope.get("client")
-            logger.warning("Unauthorized request to %s from %s", path, client)
-            await _send_json(scope, send_with_cors, 401, {"error": "unauthorized"})
+            logger.warning("req=%s unauthorized: %s %s from %s", rid, method, path, client)
+            await _send_json(scope, send_with_cors, 401, {"error": "unauthorized", "request_id": rid})
             return
+        logger.info("req=%s %s %s from %s", rid, method, path, client)
         await handle_mcp(scope, receive, send_with_cors)
     elif path == "/health" and method == "GET":
         await handle_health(scope, receive, send_with_cors)

@@ -35,7 +35,7 @@ services:
   #  Network: internal only
   # ---------------------------------------------------------------------------
   searxng:
-    image: docker.io/searxng/searxng:latest
+    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-latest}
     container_name: ws-searxng
     restart: unless-stopped
     ports:
@@ -148,6 +148,8 @@ services:
       # served from memory instead of re-navigating the browser.
       - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:-300}
       - BRIDGE_CACHE_MAX=${BRIDGE_CACHE_MAX:-100}
+      # Post-navigation pause (ms) before extraction
+      - FORTRESS_NAV_DELAY=${FORTRESS_NAV_DELAY:-400}
       # Optional: residential proxy for Fortress egress
       # - TILION_PROXY=http://user:pass@proxy-host:port
       # - TILION_REGION=us

@@ -260,6 +260,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | Variable                | Default                  | Description                          |
 |-------------------------|--------------------------|--------------------------------------|
 | `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
+| `SEARXNG_CHANNEL`       | `latest`                 | SearXNG image tag (pin for reproducible deploys) |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
 | `SEARXNG_REQUEST_TIMEOUT` | `10`                   | Outgoing request timeout (s) per engine |
 | `SEARXNG_MAX_REQUEST_TIMEOUT` | `15`              | Max allowed request timeout (s)     |
@@ -383,6 +384,8 @@ The stack is split into two bridge networks:
 - **Auth failures are logged** — every rejected request logs the client address, so "why can't my client connect" is answerable from `podman compose logs mcp`.
 - **Log redaction** — tool arguments with embedded credentials (`user:pass@`, `?token=`, `?key=`...) are masked in logs.
 - **Configurable CORS** — `MCP_ALLOWED_ORIGIN` (default `*`) restricts which browser origins may call the MCP endpoint.
+- **Request IDs** — every MCP request gets a short `req=...` log tag (also echoed in error bodies), and the bridge logs one per REST call with an `X-Request-ID` response header, so a failing agent call can be traced across the stack.
+- **Known limitation: no TLS.** The MCP endpoint serves plain HTTP (a valid trusted certificate requires operational setup, which this project deliberately avoids). For exposure beyond a trusted LAN, terminate TLS in front of `:9100` with a reverse proxy (e.g. Caddy or Traefik with automatic HTTPS) and send the bearer token over that connection.
 
 ### SSRF protection
 
@@ -396,6 +399,9 @@ web-scraping/
 ├── podman-compose.yml          # 5 services: valkey, searxng, fortress, bridge, mcp
 ├── .env.example                # environment variable template
 ├── opencode.jsonc.example      # MCP config template (copy to opencode.jsonc)
+├── scripts/
+│   └── doctor.sh               # make doctor — setup diagnostics
+├── .github/workflows/ci.yml    # unit tests on every push
 ├── searxng/
 │   ├── settings.template.yml   # SearXNG config template (JSON API, 70+ engines)
 │   ├── render_settings.py      # renders template -> settings.yml from .env
@@ -404,6 +410,7 @@ web-scraping/
 ├── bridge/
 │   ├── Dockerfile              # Python 3.12 + FastAPI + Playwright
 │   ├── pyproject.toml          # dependencies
+│   ├── tests/                  # unit tests (make test-unit / CI)
 │   └── bridge/
 │       ├── __init__.py
 │       ├── main.py             # FastAPI REST API
@@ -412,6 +419,7 @@ web-scraping/
 └── mcp/
     ├── Dockerfile              # Python 3.12 + mcp + httpx (lightweight)
     ├── requirements.txt        # mcp, httpx, starlette, uvicorn
+    ├── tests/                  # unit tests (make test-unit / CI)
     └── server.py               # Streamable HTTP MCP server (calls bridge REST API)
 ```
 
@@ -423,7 +431,10 @@ web-scraping/
 make init      # Create .env with UID/GID and secret key
 make up        # Start all services
 make build     # Build images
-make test      # Run integration tests
+make test      # Unit + integration tests
+make test-unit # Unit tests only (pytest inside bridge/mcp containers)
+make test-scrape # Scrape smoke test through the bridge (example.com)
+make doctor    # Diagnose common setup problems
 make logs      # Follow logs
 make rebuild   # Stop, rebuild, start
 make update    # Pull latest images, rebuild custom images, restart
@@ -473,6 +484,33 @@ podman compose pull fortress && podman compose up -d fortress
 ### SearXNG returns 403 on JSON API
 
 Ensure `json` is in the `search.formats` list in `searxng/settings.template.yml` (it is by default in this config). Recreate: `podman compose up -d --force-recreate searxng`.
+
+### MCP client gets 401
+
+The server logs each rejected request with the client address (`podman compose logs mcp`). Check that:
+1. Your client sends `Authorization: Bearer <MCP_API_KEY>` (see `.env`).
+2. The client isn't on a different subnet than the server — only localhost and the podman-forwarded subnet bypass auth.
+3. `make init` was run, so the key isn't the placeholder.
+
+### MCP client gets 429
+
+Per-IP rate limit exceeded (`MCP_RATE_LIMIT`, default 120/min). Raise it in `.env` and recreate the mcp container, or check whether something is hammering the endpoint.
+
+### MCP client gets "Session not found or expired"
+
+Sessions are dropped after `MCP_SESSION_TTL` seconds of inactivity (default 30 min) or a server restart. MCP clients reconnect automatically with a new session — if yours doesn't, restart it or reduce the TTL.
+
+### Correlating a failing call across logs
+
+Both the bridge and the MCP server tag every request with a short ID:
+- bridge logs `req=abc12345 GET /search -> 502` and echoes `X-Request-ID: abc12345` in the response.
+- mcp logs `req=...` on each incoming request and includes `request_id` in error bodies.
+
+Grep both services for the same ID to trace a failure: `podman compose logs bridge mcp | grep abc12345`.
+
+### Scrape results look stale
+
+The bridge caches scrape results for `BRIDGE_CACHE_TTL` (default 300 s, up to `BRIDGE_CACHE_MAX` pages) — a repeated scrape of the same URL within the TTL is served from memory and flagged with `"cached": true`. Set `BRIDGE_CACHE_TTL=0` and recreate the bridge to disable caching.
 
 ### Fortress container won't start
 

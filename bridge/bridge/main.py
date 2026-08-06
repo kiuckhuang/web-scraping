@@ -17,6 +17,7 @@ import logging
 import os
 import socket
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -58,6 +59,21 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def request_id_middleware(request, call_next):
+    """Tag every request with a short request ID and log it.
+
+    The ID is echoed back via the X-Request-ID header so a failing agent call
+    can be correlated across bridge/Fortress/SearXNG logs.
+    """
+    rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:8]
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = rid
+    if request.url.path != "/health":  # keep healthchecks out of the logs
+        logger.info("req=%s %s %s -> %s", rid, request.method, request.url.path, response.status_code)
+    return response
 
 
 # ---------------------------------------------------------------------------
