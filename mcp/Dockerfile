@@ -9,9 +9,11 @@ RUN groupadd -g ${APP_GID} appuser && \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir pytest
 
 COPY server.py .
+COPY tests/ ./tests/
 
 RUN chown -R appuser:appuser /app
 USER appuser

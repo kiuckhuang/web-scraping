@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# make doctor — diagnose common setup problems in the web-scrape stack.
+# Exits non-zero if any check fails.
+set -u
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
+
+PASS=0
+FAIL=0
+
+ok() { printf '  OK    %s\n' "$1"; PASS=$((PASS + 1)); }
+bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
+
+echo "=== Environment ==="
+
+if command -v podman >/dev/null 2>&1; then
+    ok "podman installed ($(podman --version))"
+else
+    bad "podman not found in PATH"
+fi
+
+if [ -f .env ]; then
+    ok ".env exists"
+else
+    bad ".env missing — run 'make init' first"
+fi
+
+if [ -f .env ] && grep -q '^MCP_API_KEY=change-me' .env 2>/dev/null; then
+    bad ".env MCP_API_KEY is still the placeholder — run 'make init' to generate one"
+else
+    ok "MCP_API_KEY looks set"
+fi
+
+echo ""
+echo "=== Containers ==="
+
+for svc in valkey searxng fortress bridge mcp; do
+    if podman ps --format '{{.Names}}' | grep -q "ws-$svc"; then
+        ok "ws-$svc running"
+    else
+        bad "ws-$svc not running (start with 'make up')"
+    fi
+done
+
+echo ""
+echo "=== Health ==="
+
+BRIDGE_PORT=$(sed -n 's/^PORT_BRIDGE=//p' .env 2>/dev/null); BRIDGE_PORT=${BRIDGE_PORT:-8000}
+MCP_PORT=$(sed -n 's/^PORT_MCP=//p' .env 2>/dev/null); MCP_PORT=${MCP_PORT:-9100}
+SEARXNG_PORT=$(sed -n 's/^PORT_SEARXNG=//p' .env 2>/dev/null); SEARXNG_PORT=${SEARXNG_PORT:-8888}
+FORTRESS_PORT=$(sed -n 's/^PORT_FORTRESS=//p' .env 2>/dev/null); FORTRESS_PORT=${FORTRESS_PORT:-9222}
+
+if curl -sf "http://localhost:${BRIDGE_PORT}/health" >/dev/null 2>&1; then
+    ok "bridge /health"
+else
+    bad "bridge /health unreachable (check 'podman compose logs bridge')"
+fi
+
+if curl -sf "http://localhost:${MCP_PORT}/health" >/dev/null 2>&1; then
+    ok "mcp /health"
+else
+    bad "mcp /health unreachable (check 'podman compose logs mcp')"
+fi
+
+if curl -sf "http://localhost:${SEARXNG_PORT}/healthz" >/dev/null 2>&1; then
+    ok "searxng /healthz"
+else
+    bad "searxng /healthz unreachable (check 'podman compose logs searxng')"
+fi
+
+if curl -sf "http://localhost:${FORTRESS_PORT}/json/version" >/dev/null 2>&1; then
+    ok "fortress CDP endpoint"
+else
+    bad "fortress CDP endpoint unreachable (check 'podman compose logs fortress')"
+fi
+
+echo ""
+echo "=== Result: $PASS passed, $FAIL failed ==="
+[ "$FAIL" -eq 0 ]

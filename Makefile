@@ -9,7 +9,7 @@
 
 CONTAINER := podman
 
-.PHONY: all init build up down logs test rebuild clean update help
+.PHONY: all init build up down logs test test-unit test-scrape doctor rebuild clean update help
 
 all: help
 
@@ -22,7 +22,10 @@ help:
 	@echo "  up        — Start all services (podman compose up -d)"
 	@echo "  down      — Stop all services"
 	@echo "  logs      — Follow logs from all services"
-	@echo "  test      — Integration tests: health checks + API smoke tests"
+	@echo "  test      — Unit tests + integration tests (health checks + API smoke tests)"
+	@echo "  test-unit — Unit tests only (runs pytest in bridge + mcp containers)"
+	@echo "  test-scrape — Scrape smoke test through the bridge (example.com)"
+	@echo "  doctor    — Diagnose common setup problems"
 	@echo "  rebuild   — Stop, clean caches, rebuild and start"
 	@echo "  update    — Pull latest images, rebuild custom images, restart"
 	@echo "  clean     — Stop, remove volumes, prune unused images"
@@ -56,7 +59,7 @@ down:
 logs:
 	$(CONTAINER) compose logs -f
 
-test:
+test: test-unit
 	@BRIDGE_PORT=$$(sed -n 's/^PORT_BRIDGE=//p' .env); \
 	MCP_PORT=$$(sed -n 's/^PORT_MCP=//p' .env); \
 	BRIDGE_PORT=$${BRIDGE_PORT:-8000}; \
@@ -103,6 +106,25 @@ test:
 	echo ""; \
 	echo "=== Results: $$PASS passed, $$FAIL failed ==="; \
 	[ $$FAIL -eq 0 ]
+
+
+test-unit:
+	@echo "=== Unit Tests (bridge + mcp) ==="
+	@podman compose exec -T bridge python -m pytest -q bridge/tests || { echo "  FAILED: bridge unit tests"; exit 1; }
+	@podman compose exec -T mcp python -m pytest -q tests || { echo "  FAILED: mcp unit tests"; exit 1; }
+	@echo "  All unit tests passed"
+
+test-scrape:
+	@BRIDGE_PORT=$$(sed -n 's/^PORT_BRIDGE=//p' .env); \
+	BRIDGE_PORT=$${BRIDGE_PORT:-8000}; \
+	echo "=== Scrape smoke test (example.com via Fortress) ==="; \
+	curl -sf -X POST "http://localhost:$$BRIDGE_PORT/scrape" \
+		-H 'Content-Type: application/json' \
+		-d '{"url": "https://example.com", "mode": "extract"}' \
+		| python3 -m json.tool || { echo "  FAILED (check 'podman compose logs bridge fortress')"; exit 1; }
+
+doctor:
+	@./scripts/doctor.sh
 
 
 rebuild: down

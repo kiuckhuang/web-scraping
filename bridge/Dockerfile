@@ -15,9 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies (dev extras include pytest for `make test-unit`)
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -e ".[dev]"
 
 # NOTE: We do NOT run `playwright install` — the bridge connects to the
 # Fortress container over CDP (http://fortress:9222), so it only needs
@@ -25,6 +25,7 @@ RUN pip install --no-cache-dir -e .
 
 # Copy the bridge application
 COPY bridge/ ./bridge/
+COPY tests/ ./bridge/tests/
 
 RUN chown -R appuser:appuser /app
 USER appuser
