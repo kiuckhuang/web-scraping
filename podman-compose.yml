@@ -122,7 +122,7 @@ services:
     networks:
       - internal
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/9222' 2>/dev/null || exit 1"]
+      test: ["CMD", "curl", "-sf", "-H", "Host: 127.0.0.1", "http://127.0.0.1:9222/json/version"]
       interval: 15s
       timeout: 5s
       retries: 5

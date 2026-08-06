@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import os
 import secrets
+import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -41,9 +43,16 @@ def main() -> None:
         print(f"Created .env (UID={values['APP_UID']}, GID={values['APP_GID']}, secrets generated)")
 
     PROFILE_DIR.mkdir(exist_ok=True)
-    PROFILE_DIR.chmod(0o700)
+    uid = int(values.get("APP_UID", str(os.getuid() or 1000)))
+    gid = int(values.get("APP_GID", str(os.getgid() or 1000)))
     if os.getuid() == 0:
-        os.chown(PROFILE_DIR, int(values.get("APP_UID", "1000")), int(values.get("APP_GID", "1000")))
+        subprocess.run(["chown", "-R", f"{uid}:{gid}", str(PROFILE_DIR)], check=True)
+        PROFILE_DIR.chmod(0o700)
+    elif shutil.which("podman"):
+        subprocess.run(["podman", "unshare", "chown", "-R", f"{uid}:{gid}", str(PROFILE_DIR)], check=True)
+        subprocess.run(["podman", "unshare", "chmod", "700", str(PROFILE_DIR)], check=True)
+    else:
+        PROFILE_DIR.chmod(0o700)
 
 
 if __name__ == "__main__":
