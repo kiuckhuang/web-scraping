@@ -144,6 +144,10 @@ services:
       - FORTRESS_CDP_URL=${FORTRESS_CDP_URL:-http://fortress:9222}
       - BRIDGE_HOST=${BRIDGE_HOST:-0.0.0.0}
       - BRIDGE_PORT=${BRIDGE_PORT:-8000}
+      # Scrape cache: repeated scrapes of the same URL within the TTL are
+      # served from memory instead of re-navigating the browser.
+      - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:-300}
+      - BRIDGE_CACHE_MAX=${BRIDGE_CACHE_MAX:-100}
       # Optional: residential proxy for Fortress egress
       # - TILION_PROXY=http://user:pass@proxy-host:port
       # - TILION_REGION=us
@@ -186,6 +190,10 @@ services:
       - MCP_RATE_LIMIT=${MCP_RATE_LIMIT:-120}
       - MCP_MAX_BODY=${MCP_MAX_BODY:-1048576}
       - MCP_ALLOWED_ORIGIN=${MCP_ALLOWED_ORIGIN:-*}
+      # Result token budgets (chars per item)
+      - MCP_SNIPPET_CHARS=${MCP_SNIPPET_CHARS:-300}
+      - MCP_CONTENT_CHARS=${MCP_CONTENT_CHARS:-5000}
+      - MCP_COMBINED_CHARS=${MCP_COMBINED_CHARS:-1200}
     depends_on:
       - bridge
     networks:

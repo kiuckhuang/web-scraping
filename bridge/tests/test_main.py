@@ -118,3 +118,51 @@ def test_search_and_scrape_skips_private_urls(monkeypatch):
     assert internal["content"] is None
     assert "blocked" in internal["scrape_error"]
     assert out["results"][1]["content"]["markdown"] == "scraped!"
+
+
+def test_scrape_cache_hits(monkeypatch):
+    """Repeated scrapes of the same URL within the TTL skip the browser."""
+    import bridge.main as main_mod
+
+    calls = {"n": 0}
+
+    async def fake_scrape(url, *, mode):
+        calls["n"] += 1
+        return {"url": url, "markdown": "cached body"}
+
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+    main_mod._cache.clear()
+
+    try:
+        req = ScrapeRequest(url="https://example.com/", mode="extract")
+        first = asyncio.run(main_mod.scrape(req))
+        second = asyncio.run(main_mod.scrape(req))
+        assert calls["n"] == 1
+        assert "cached" not in first
+        assert second["cached"] is True
+        assert second["markdown"] == "cached body"
+    finally:
+        main_mod._cache.clear()
+
+
+def test_cache_respects_max_entries(monkeypatch):
+    """The cache is size-bounded: old entries are evicted."""
+    import bridge.main as main_mod
+
+    async def fake_scrape(url, *, mode):
+        return {"url": url, "markdown": "x"}
+
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+    old_max = main_mod.BRIDGE_CACHE_MAX
+    main_mod.BRIDGE_CACHE_MAX = 2
+    main_mod._cache.clear()
+    try:
+        for i in range(3):
+            req = ScrapeRequest(url=f"https://example.com/{i}", mode="extract")
+            asyncio.run(main_mod.scrape(req))
+        assert len(main_mod._cache) <= 2
+    finally:
+        main_mod.BRIDGE_CACHE_MAX = old_max
+        main_mod._cache.clear()

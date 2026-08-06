@@ -16,6 +16,7 @@ import ipaddress
 import logging
 import os
 import socket
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -24,7 +25,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .searxng_client import search as searxng_search, health as searxng_health
+from .searxng_client import search as searxng_search, health as searxng_health, shutdown as searxng_shutdown
 from .fortress_client import (
     scrape as fortress_scrape,
     crawl_site as fortress_crawl,
@@ -36,12 +37,18 @@ from .fortress_client import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+# Scrape cache: repeated scrapes of the same URL within the TTL skip the
+# (slow) browser round-trip. Big win for AI agents that re-visit pages.
+BRIDGE_CACHE_TTL = float(os.environ.get("BRIDGE_CACHE_TTL", "300"))
+BRIDGE_CACHE_MAX = int(os.environ.get("BRIDGE_CACHE_MAX", "100"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Bridge starting up")
     yield
-    logger.info("Bridge shutting down — closing Fortress session")
+    logger.info("Bridge shutting down — closing SearXNG/Fortress sessions")
+    await searxng_shutdown()
     await fortress_shutdown()
 
 
@@ -116,6 +123,31 @@ def _is_public_url(url: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+#  Scrape cache — TTL + size-bounded, keyed by (url, mode)
+# ---------------------------------------------------------------------------
+
+_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+
+
+async def _cache_get(url: str, mode: str) -> dict[str, Any] | None:
+    item = _cache.get((url, mode))
+    if item is None:
+        return None
+    if time.monotonic() - item[0] > BRIDGE_CACHE_TTL:
+        _cache.pop((url, mode), None)
+        return None
+    logger.info("Cache hit: %s (mode=%s)", url, mode)
+    return item[1]
+
+
+def _cache_set(url: str, mode: str, value: dict[str, Any]) -> None:
+    if len(_cache) >= BRIDGE_CACHE_MAX:
+        oldest = min(_cache, key=lambda k: _cache[k][0])
+        _cache.pop(oldest, None)
+    _cache[(url, mode)] = (time.monotonic(), value)
+
+
+# ---------------------------------------------------------------------------
 #  Health
 # ---------------------------------------------------------------------------
 
@@ -176,10 +208,15 @@ async def scrape(req: ScrapeRequest) -> dict[str, Any]:
     Returns clean markdown (extract mode) or raw HTML + text (fetch mode).
     """
     _validate_public_url(req.url)
+    cached = await _cache_get(req.url, req.mode)
+    if cached is not None:
+        return {**cached, "cached": True}
     try:
-        return await fortress_scrape(req.url, mode=req.mode)
+        content = await fortress_scrape(req.url, mode=req.mode)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Fortress scrape error: {exc}")
+    _cache_set(req.url, req.mode, content)
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +250,12 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
         # search engine returned it.
         if not _is_public_url(url):
             return {**result, "content": None, "scrape_error": "blocked: internal or private address"}
+        cached = await _cache_get(url, req.scrape_mode)
+        if cached is not None:
+            return {**result, "content": cached, "cached": True}
         try:
             content = await fortress_scrape(url, mode=req.scrape_mode)
+            _cache_set(url, req.scrape_mode, content)
             return {**result, "content": content}
         except Exception as exc:
             return {**result, "content": None, "scrape_error": str(exc)}

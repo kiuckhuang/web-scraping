@@ -28,6 +28,21 @@ def test_format_search_results():
     assert "Bar" in out
 
 
+def test_format_search_results_compact():
+    """Compact format: one markdown-link line per result, no per-result headings."""
+    result = {
+        "number_of_results": 2,
+        "results": [
+            {"title": "Foo", "url": "https://foo.com", "content": "snippet text"},
+            {"title": "Bar", "url": "https://bar.com"},
+        ],
+    }
+    out = server_mod._format_search_results(result)
+    assert "[Foo](https://foo.com)" in out
+    assert "### " not in out
+    assert out.count("http") == 2
+
+
 def test_format_scrape_result_markdown():
     result = {"url": "https://a.com", "title": "T", "markdown": "# hello", "tables": [{"rows": []}]}
     out = server_mod._format_scrape_result(result)

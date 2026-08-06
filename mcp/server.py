@@ -45,6 +45,11 @@ HTTP_TIMEOUT = float(os.environ.get("BRIDGE_TIMEOUT", "120"))
 MCP_PORT = int(os.environ.get("MCP_PORT", "9100"))
 MCP_API_KEY = os.environ.get("MCP_API_KEY", "").strip()
 
+# Token budget for tool results (snippet / single-scrape / combined-scrape chars)
+MCP_SNIPPET_CHARS = int(os.environ.get("MCP_SNIPPET_CHARS", "300"))
+MCP_CONTENT_CHARS = int(os.environ.get("MCP_CONTENT_CHARS", "5000"))
+MCP_COMBINED_CHARS = int(os.environ.get("MCP_COMBINED_CHARS", "1200"))
+
 # Security knobs
 MCP_SESSION_TTL = float(os.environ.get("MCP_SESSION_TTL", "1800"))  # idle session lifetime (s)
 MCP_RATE_LIMIT = int(os.environ.get("MCP_RATE_LIMIT", "120"))  # requests/minute/IP, 0 = unlimited
@@ -64,23 +69,24 @@ server = Server("web-scrape-bridge")
 
 
 # ---------------------------------------------------------------------------
-#  Bridge REST API client
+#  Bridge REST API client — shared connection pool (no per-call clients)
 # ---------------------------------------------------------------------------
+
+_client = httpx.AsyncClient(timeout=HTTP_TIMEOUT)
+
 
 async def _api_get(path: str, **params) -> dict:
     # Drop empty-string/None params so FastAPI's pattern validators don't reject them
     clean = {k: v for k, v in params.items() if v not in (None, "")}
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        resp = await client.get(f"{BRIDGE_URL}{path}", params=clean)
-        resp.raise_for_status()
-        return resp.json()
+    resp = await _client.get(f"{BRIDGE_URL}{path}", params=clean)
+    resp.raise_for_status()
+    return resp.json()
 
 
 async def _api_post(path: str, body: dict) -> dict:
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        resp = await client.post(f"{BRIDGE_URL}{path}", json=body)
-        resp.raise_for_status()
-        return resp.json()
+    resp = await _client.post(f"{BRIDGE_URL}{path}", json=body)
+    resp.raise_for_status()
+    return resp.json()
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +96,7 @@ async def _api_post(path: str, body: dict) -> dict:
 TOOLS: list[Tool] = [
     Tool(
         name="search_web",
-        description="Search the web via SearXNG (aggregates 70+ search engines: Google, Bing, DuckDuckGo, Brave, etc.). Returns titles, URLs, snippets, and metadata.",
+        description="Search the web via SearXNG (70+ engines: Google, Bing, DuckDuckGo, Brave...). Returns titles, URLs, snippets.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -105,7 +111,7 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="scrape_url",
-        description="Scrape a URL through the Fortress stealth Chromium browser. Bypasses Cloudflare, DataDome, PerimeterX, Akamai, and other bot detection. Returns clean markdown (extract mode) or raw HTML + text (fetch mode).",
+        description="Scrape a URL via Fortress stealth browser (bypasses Cloudflare, DataDome, PerimeterX, Akamai). Clean markdown (extract) or raw HTML+text (fetch).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -117,14 +123,14 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="search_and_scrape",
-        description="Search the web via SearXNG, then scrape each result URL through Fortress for full page content. This is the Exa-style combined endpoint: get search results with full page markdown. Results are scraped concurrently.",
+        description="Search via SearXNG, then scrape the top results for full page markdown (Exa-style combined endpoint).",
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
                 "categories": {"type": "string", "description": "SearXNG categories"},
                 "language": {"type": "string", "default": "en"},
-                "max_results": {"type": "integer", "description": "How many results to scrape (1-50, default 5)", "default": 5},
+                "max_results": {"type": "integer", "description": "How many results to scrape (1-50, default 3)", "default": 3},
                 "scrape_mode": {"type": "string", "enum": ["extract", "fetch"], "default": "extract", "description": "'extract' = clean markdown+tables, 'fetch' = raw HTML+text"},
             },
             "required": ["query"],
@@ -132,25 +138,25 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="crawl_site",
-        description="Crawl a whole website via Fortress (auto-handles SPA/JavaScript and lazy-loading). Returns all discovered pages and a sitemap.",
+        description="Crawl a whole website via Fortress (SPA/JS-aware, lazy-loading handled). Returns discovered pages and a sitemap.",
         inputSchema={
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "Root URL to crawl"},
                 "depth": {"type": "integer", "description": "Crawl depth (1 = just the given page)", "default": 2},
-                "max_pages": {"type": "integer", "description": "Max pages to collect", "default": 50},
+                "max_pages": {"type": "integer", "description": "Max pages to collect (1-200)", "default": 50},
             },
             "required": ["url"],
         },
     ),
     Tool(
         name="fortress_search",
-        description="Web search through the Fortress stealth browser (real browser search, not SearXNG). Useful when SearXNG engines are rate-limited or you need SERP results that look fully human.",
+        description="Web search through the Fortress stealth browser (real-browser SERP, not SearXNG). Use when SearXNG engines are rate-limited.",
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
-                "count": {"type": "integer", "description": "Number of results", "default": 10},
+                "count": {"type": "integer", "description": "Number of results (1-30)", "default": 10},
             },
             "required": ["query"],
         },
@@ -205,7 +211,7 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
                 "query": arguments["query"],
                 "categories": arguments.get("categories"),
                 "language": arguments.get("language", "en"),
-                "max_results": arguments.get("max_results", 5),
+                "max_results": arguments.get("max_results", 3),
                 "scrape_mode": arguments.get("scrape_mode", "extract"),
             })
             return CallToolResult(content=[TextContent(type="text", text=_format_combined_results(result))])
@@ -333,44 +339,53 @@ def _rate_limit_ok(scope) -> bool:
 # ---------------------------------------------------------------------------
 
 def _format_search_results(result: dict) -> str:
-    lines = [f"## Search Results ({result.get('number_of_results', '?')} total)\n"]
-    for i, r in enumerate(result.get("results", []), 1):
-        lines.append(f"### {i}. {r.get('title', 'Untitled')}")
-        lines.append(f"   URL: {r.get('url', '')}")
-        if r.get("content"):
-            lines.append(f"   {r['content'][:300]}")
+    """Compact format: one markdown link line per result (fewer tokens than
+    heading-per-result, and the URL stays clickable)."""
+    results = result.get("results", [])
+    total = result.get("number_of_results", len(results))
+    lines = [f"## Search Results ({total} total)", ""]
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "Untitled")
+        url = r.get("url", "")
+        snippet = (r.get("content") or "").strip()
+        if snippet:
+            snippet = snippet[:MCP_SNIPPET_CHARS]
+        line = f"{i}. [{title}]({url})"
+        if snippet:
+            line += f" — {snippet}"
         if r.get("engine"):
-            lines.append(f"   Engine: {r['engine']}")
-        lines.append("")
+            line += f" (engine: {r['engine']})"
+        lines.append(line)
     return "\n".join(lines)
 
 
 def _format_scrape_result(result: dict) -> str:
-    lines = [f"## Scraped: {result.get('url', '')}\n"]
+    lines = [f"## Scraped: {result.get('url', '')}", ""]
     if result.get("title"):
-        lines.append(f"**Title:** {result['title']}\n")
-    if result.get("markdown"):
-        lines.append(result["markdown"][:5000])
-    elif result.get("text"):
-        lines.append(result["text"][:5000])
+        lines.append(f"**Title:** {result['title']}")
+        lines.append("")
+    body = result.get("markdown") or result.get("text") or ""
+    if body:
+        lines.append(body[:MCP_CONTENT_CHARS])
     if result.get("tables"):
-        lines.append(f"\n\n**Tables:** {len(result['tables'])} table(s) extracted")
+        lines.append(f"\n**Tables:** {len(result['tables'])} table(s) extracted")
     return "\n".join(lines)
 
 
 def _format_combined_results(result: dict) -> str:
     query = result.get("query", "")
     results = result.get("results", [])
-    lines = [f'## Search + Scrape Results for: "{query}"\n']
+    lines = [f'## Search + Scrape Results for: "{query}"', ""]
     for i, r in enumerate(results, 1):
-        lines.append(f"### {i}. {r.get('title', 'Untitled')}")
-        lines.append(f"   URL: {r.get('url', '')}")
+        title = r.get("title", "Untitled")
+        url = r.get("url", "")
+        lines.append(f"{i}. [{title}]({url})")
         content = r.get("content")
         if isinstance(content, dict):
             # extract mode -> markdown, fetch mode -> text/html
             body = content.get("markdown") or content.get("text") or ""
             if body:
-                lines.append(f"   {body[:500]}")
+                lines.append(f"   {body[:MCP_COMBINED_CHARS]}")
         elif r.get("scrape_error"):
             lines.append(f"   [scrape failed: {r['scrape_error']}]")
         lines.append("")
@@ -379,9 +394,9 @@ def _format_combined_results(result: dict) -> str:
 
 def _format_crawl_result(result: dict) -> str:
     pages = result.get("pages", [])
-    lines = [f"## Crawl Results: {len(pages)} pages\n"]
+    lines = [f"## Crawl Results: {len(pages)} pages", ""]
     for p in pages[:20]:
-        lines.append(f"- {p.get('url', '')}: {p.get('title', '')}")
+        lines.append(f"- [{p.get('title', '')}]({p.get('url', '')})")
     if len(pages) > 20:
         lines.append(f"\n... and {len(pages) - 20} more pages")
     return "\n".join(lines)

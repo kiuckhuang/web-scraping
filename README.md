@@ -277,6 +277,8 @@ await page.screenshot({ path: "stealth-check.png" });
 | `FORTRESS_NAV_DELAY`    | `400`                    | Post-navigation pause (ms) for JS/SERP pages before extraction |
 | `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen address (internal container) |
 | `BRIDGE_PORT`           | `8000`                   | Bridge listen port (internal container) |
+| `BRIDGE_CACHE_TTL`      | `300`                    | Scrape cache TTL (s) — repeat scrapes of the same URL skip the browser |
+| `BRIDGE_CACHE_MAX`      | `100`                    | Max pages held in the scrape cache |
 | `BRIDGE_URL`            | `http://bridge:8000`     | Bridge URL used by MCP (container-internal) |
 | `PORT_SEARXNG`          | `8888`                   | Host port for SearXNG                |
 | `PORT_FORTRESS`         | `9222`                   | Host port for Fortress CDP           |
@@ -287,6 +289,9 @@ await page.screenshot({ path: "stealth-check.png" });
 | `MCP_RATE_LIMIT`        | `120`                    | Max MCP requests/min per client IP (`0` = unlimited) |
 | `MCP_MAX_BODY`          | `1048576`                | Max MCP request body size (bytes)    |
 | `MCP_ALLOWED_ORIGIN`    | `*`                      | CORS origin allowed for browser clients |
+| `MCP_SNIPPET_CHARS`     | `300`                    | Search-result snippet length (chars) in MCP tool output |
+| `MCP_CONTENT_CHARS`     | `5000`                   | Single-page scrape length (chars) in MCP tool output |
+| `MCP_COMBINED_CHARS`    | `1200`                   | Per-result length (chars) in `search_and_scrape` MCP output |
 | `APP_UID`               | `1000`                   | Host user UID for bridge/mcp containers |
 | `APP_GID`               | `1000`                   | Host user GID for bridge/mcp containers |
 | `TILION_PROXY`          | —                        | Residential proxy for Fortress       |
