@@ -78,26 +78,41 @@ def _validate_public_url(url: str) -> str:
     """Reject URLs pointing to private/internal networks.
 
     Raises HTTPException(403) for SSRF attempts.
+
+    Note on DNS rebinding: the host is resolved here and again by the browser
+    when navigating. We reject unresolvable hosts outright so a host that
+    fails validation-time resolution cannot slip through a later re-resolution.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(status_code=400, detail=f"Unsupported scheme: {parsed.scheme}")
     host = parsed.hostname or ""
+    if not host:
+        raise HTTPException(status_code=400, detail="Missing host")
     # Block obvious local names
     if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
         raise HTTPException(status_code=403, detail="Access to internal addresses is blocked")
     # Resolve and block private ranges
     try:
-        for info in socket.getaddrinfo(host, None):
-            addr = info[4][0]
-            ip = ipaddress.ip_address(addr)
-            if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
-                raise HTTPException(status_code=403, detail="Access to internal addresses is blocked")
-    except HTTPException:
-        raise
-    except Exception:
-        pass  # If resolution fails, let Fortress handle it (likely a public domain)
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        # Unresolvable host — reject rather than let a later re-resolution
+        # by the browser silently bypass the check (DNS-rebinding defense).
+        raise HTTPException(status_code=403, detail="Could not resolve host; access blocked")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+            raise HTTPException(status_code=403, detail="Access to internal addresses is blocked")
     return url
+
+
+def _is_public_url(url: str) -> bool:
+    """True if the URL is allowed to be scraped (public http/https only)."""
+    try:
+        _validate_public_url(url)
+        return True
+    except HTTPException:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +209,10 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
 
     async def scrape_one(result: dict) -> dict:
         url = result.get("url", "")
+        # SSRF guard: never hand a private/internal URL to Fortress, even if a
+        # search engine returned it.
+        if not _is_public_url(url):
+            return {**result, "content": None, "scrape_error": "blocked: internal or private address"}
         try:
             content = await fortress_scrape(url, mode=req.scrape_mode)
             return {**result, "content": content}

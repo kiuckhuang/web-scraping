@@ -4,16 +4,29 @@ Run inside the bridge container:  python -m pytest tests -q
 or via CI / `make test-unit`.
 """
 
+import asyncio
 import socket
 
 import pytest
 from fastapi import HTTPException
 
-from bridge.main import ScrapeRequest, SearchAndScrapeRequest, _validate_public_url
+from bridge.main import (
+    ScrapeRequest,
+    SearchAndScrapeRequest,
+    _is_public_url,
+    _validate_public_url,
+)
 
 
 def _public_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
     """Fake resolver: everything resolves to a public IP."""
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+
+def _mixed_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
+    """Fake resolver: 192.x hosts resolve privately, everything else publicly."""
+    if host.startswith("192.") or host == "localhost":
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.1", 0))]
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
 
 
@@ -40,6 +53,20 @@ def test_rejects_non_http_schemes():
     assert exc.value.status_code == 400
 
 
+def test_rejects_unresolvable_host():
+    # .invalid is a reserved TLD that must never resolve — the validator
+    # rejects it rather than letting the browser re-resolve later.
+    with pytest.raises(HTTPException) as exc:
+        _validate_public_url("http://definitely-not-a-real-host.invalid/")
+    assert exc.value.status_code == 403
+
+
+def test_rejects_missing_host():
+    with pytest.raises(HTTPException) as exc:
+        _validate_public_url("http:///path-only")
+    assert exc.value.status_code == 400
+
+
 def test_accepts_public_domain(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
     assert _validate_public_url("https://example.com/page?q=1") == "https://example.com/page?q=1"
@@ -54,3 +81,40 @@ def test_request_models_validate_modes():
     assert ok.mode == "fetch"
     ok2 = SearchAndScrapeRequest(query="q", scrape_mode="extract")
     assert ok2.scrape_mode == "extract"
+
+
+def test_is_public_url(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _mixed_getaddrinfo)
+    assert _is_public_url("https://example.com/") is True
+    assert _is_public_url("http://localhost:8000/") is False
+    assert _is_public_url("ftp://example.com/") is False
+    assert _is_public_url("http://192.168.1.1/") is False
+
+
+def test_search_and_scrape_skips_private_urls(monkeypatch):
+    """A search result pointing at a private address must not reach Fortress."""
+    import bridge.main as main_mod
+
+    async def fake_search(*args, **kwargs):
+        return {
+            "number_of_results": 2,
+            "results": [
+                {"url": "http://192.168.1.1/admin", "title": "internal"},
+                {"url": "https://example.com/page", "title": "public"},
+            ],
+        }
+
+    async def fake_scrape(url, *, mode):
+        return {"url": url, "markdown": "scraped!"}
+
+    monkeypatch.setattr(socket, "getaddrinfo", _mixed_getaddrinfo)
+    monkeypatch.setattr(main_mod, "searxng_search", fake_search)
+    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+
+    req = SearchAndScrapeRequest(query="q", max_results=5)
+    out = asyncio.run(main_mod.search_and_scrape(req))
+
+    internal = out["results"][0]
+    assert internal["content"] is None
+    assert "blocked" in internal["scrape_error"]
+    assert out["results"][1]["content"]["markdown"] == "scraped!"
