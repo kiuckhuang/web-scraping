@@ -296,7 +296,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | `MCP_SESSION_TTL`       | `1800`                   | Idle MCP session lifetime (s) before expiry |
 | `MCP_RATE_LIMIT`        | `120`                    | Max MCP requests/min per client IP (`0` = unlimited) |
 | `MCP_MAX_BODY`          | `1048576`                | Max MCP request body size (bytes)    |
-| `MCP_ALLOWED_ORIGIN`    | empty                    | Optional CORS origin; empty disables browser CORS |
+| `MCP_ALLOWED_ORIGIN`    | `localhost`              | `localhost` allows loopback hosts on any port; exact origin or empty also supported |
 | `MCP_SNIPPET_CHARS`     | `300`                    | Search-result snippet length (chars) in MCP tool output |
 | `MCP_CONTENT_CHARS`     | `5000`                   | Single-page scrape length (chars) in MCP tool output |
 | `MCP_COMBINED_CHARS`    | `1200`                   | Per-result length (chars) in `search_and_scrape` MCP output |
@@ -374,7 +374,7 @@ The stack is split into two bridge networks:
 - **Local-first authentication** — localhost clients may use the trusted local path. A non-loopback `MCP_BIND_HOST` requires a non-empty `MCP_API_KEY`; `make init` generates one.
 - **Auth failures are logged** — every rejected request logs the client address, so "why can't my client connect" is answerable from `podman compose logs mcp`.
 - **Log redaction** — tool arguments with embedded credentials (`user:pass@`, `?token=`, `?key=`...) are masked in logs.
-- **Configurable CORS** — CORS is disabled by default. Set `MCP_ALLOWED_ORIGIN` to one browser origin when needed.
+- **Configurable CORS** — `MCP_ALLOWED_ORIGIN=localhost` allows browser clients from `localhost`, `127.0.0.1`, and `::1` on any port. Set an exact origin or empty to disable CORS.
 - **Request IDs** — every MCP request gets a short `req=...` log tag (also echoed in error bodies), and the bridge logs one per REST call with an `X-Request-ID` response header, so a failing agent call can be traced across the stack.
 - **Known limitation: no TLS.** The MCP endpoint serves plain HTTP (a valid trusted certificate requires operational setup, which this project deliberately avoids). For exposure beyond a trusted LAN, terminate TLS in front of `:9100` with a reverse proxy (e.g. Caddy or Traefik with automatic HTTPS) and send the bearer token over that connection.
 

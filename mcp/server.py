@@ -24,6 +24,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from mcp.server import Server
@@ -56,7 +57,7 @@ MCP_COMBINED_CHARS = int(os.environ.get("MCP_COMBINED_CHARS", "1200"))
 MCP_SESSION_TTL = float(os.environ.get("MCP_SESSION_TTL", "1800"))  # idle session lifetime (s)
 MCP_RATE_LIMIT = int(os.environ.get("MCP_RATE_LIMIT", "120"))  # requests/minute/IP, 0 = unlimited
 MCP_MAX_BODY = int(os.environ.get("MCP_MAX_BODY", "1048576"))  # max request body bytes
-MCP_ALLOWED_ORIGIN = os.environ.get("MCP_ALLOWED_ORIGIN", "").strip()
+MCP_ALLOWED_ORIGIN = os.environ.get("MCP_ALLOWED_ORIGIN", "localhost").strip()
 
 
 def _is_local_bind_host(host: str) -> bool:
@@ -574,13 +575,35 @@ async def handle_health(scope, receive, send):
 #  Restrict the allowed origin via MCP_ALLOWED_ORIGIN if needed.
 # ---------------------------------------------------------------------------
 
-CORS_HEADERS = [
-    *(([(b"access-control-allow-origin", MCP_ALLOWED_ORIGIN.encode())] if MCP_ALLOWED_ORIGIN else [])),
+_CORS_BASE_HEADERS = [
     (b"access-control-allow-methods", b"GET, POST, DELETE, OPTIONS"),
     (b"access-control-allow-headers", b"Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version"),
     (b"access-control-expose-headers", b"Mcp-Session-Id"),
     (b"access-control-max-age", b"86400"),
 ]
+
+
+def _cors_origin(scope) -> str | None:
+    """Return the request origin when it matches the configured CORS policy."""
+    origin = next((value.decode() for key, value in scope.get("headers", []) if key.lower() == b"origin"), "")
+    if not origin or not MCP_ALLOWED_ORIGIN:
+        return None
+    if MCP_ALLOWED_ORIGIN.lower() == "localhost":
+        parsed = urlparse(origin)
+        if parsed.scheme in {"http", "https"} and parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+            return origin
+        return None
+    allowed = {item.strip() for item in MCP_ALLOWED_ORIGIN.split(",")}
+    return origin if origin in allowed else None
+
+
+def _cors_headers(scope) -> list[tuple[bytes, bytes]]:
+    headers = list(_CORS_BASE_HEADERS)
+    origin = _cors_origin(scope)
+    if origin:
+        headers.insert(0, (b"access-control-allow-origin", origin.encode()))
+        headers.append((b"vary", b"Origin"))
+    return headers
 
 
 def _is_cors_preflight(scope) -> bool:
@@ -591,12 +614,12 @@ async def _send_cors_preflight(scope, send):
     await send({
         "type": "http.response.start",
         "status": 204,
-        "headers": CORS_HEADERS,
+        "headers": _cors_headers(scope),
     })
     await send({"type": "http.response.body", "body": b""})
 
 
-def _wrap_send_with_cors(send):
+def _wrap_send_with_cors(scope, send):
     """Wrap the ASGI send callable to inject CORS headers into response start."""
     original_send = send
     cors_added = False
@@ -607,7 +630,7 @@ def _wrap_send_with_cors(send):
             headers = list(message.get("headers", []))
             # Add CORS headers if not already present
             existing = {k.decode().lower() for k, _ in headers}
-            for k, v in CORS_HEADERS:
+            for k, v in _cors_headers(scope):
                 if k.decode().lower() not in existing:
                     headers.append((k, v))
             message["headers"] = headers
@@ -634,7 +657,7 @@ async def app(scope, receive, send):
         return
 
     # Wrap send to inject CORS headers into all responses
-    send_with_cors = _wrap_send_with_cors(send)
+    send_with_cors = _wrap_send_with_cors(scope, send)
 
     if path == "/mcp" and method in ("POST", "GET", "DELETE"):
         _ensure_cleanup()

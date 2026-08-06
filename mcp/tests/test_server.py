@@ -91,6 +91,18 @@ def test_bind_host_locality():
     assert server_mod._is_local_bind_host("192.168.1.10") is False
 
 
+def test_cors_allows_loopback_origins_on_any_port():
+    old_policy = server_mod.MCP_ALLOWED_ORIGIN
+    server_mod.MCP_ALLOWED_ORIGIN = "localhost"
+    try:
+        for origin in ("http://localhost:8185", "http://127.0.0.1:3000", "https://[::1]:8443"):
+            scope = {"headers": [(b"origin", origin.encode())]}
+            assert server_mod._cors_origin(scope) == origin
+        assert server_mod._cors_origin({"headers": [(b"origin", b"http://192.168.1.10:3000")]}) is None
+    finally:
+        server_mod.MCP_ALLOWED_ORIGIN = old_policy
+
+
 def test_read_body_limited_handles_chunked_body():
     async def go():
         old_limit = server_mod.MCP_MAX_BODY
