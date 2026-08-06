@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://bridge:8000")
 HTTP_TIMEOUT = float(os.environ.get("BRIDGE_TIMEOUT", "120"))
 MCP_PORT = int(os.environ.get("MCP_PORT", "9100"))
+MCP_LISTEN_HOST = os.environ.get("MCP_LISTEN_HOST", "0.0.0.0").strip()
+MCP_PUBLIC_BIND_HOST = os.environ.get("MCP_PUBLIC_BIND_HOST", "127.0.0.1").strip()
 MCP_API_KEY = os.environ.get("MCP_API_KEY", "").strip()
 
 # Token budget for tool results (snippet / single-scrape / combined-scrape chars)
@@ -56,6 +58,16 @@ MCP_RATE_LIMIT = int(os.environ.get("MCP_RATE_LIMIT", "120"))  # requests/minute
 MCP_MAX_BODY = int(os.environ.get("MCP_MAX_BODY", "1048576"))  # max request body bytes
 MCP_ALLOWED_ORIGIN = os.environ.get("MCP_ALLOWED_ORIGIN", "*")
 
+
+def _is_local_bind_host(host: str) -> bool:
+    """Return whether a host-side bind is local-only."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
 # Masked key for logging (never leak the full key)
 _key_preview = f"{MCP_API_KEY[:4]}...{MCP_API_KEY[-4:]}" if len(MCP_API_KEY) > 8 else ("set" if MCP_API_KEY else "unset")
 
@@ -64,6 +76,10 @@ if not MCP_API_KEY:
         "MCP_API_KEY is NOT set — authentication is DISABLED. Anyone who can reach this "
         "server can use it. Set MCP_API_KEY in .env (make init generates one)."
     )
+    if not _is_local_bind_host(MCP_PUBLIC_BIND_HOST):
+        raise RuntimeError(
+            "MCP_API_KEY is required when MCP_PUBLIC_BIND_HOST is not localhost or a loopback address"
+        )
 
 server = Server("web-scrape-bridge")
 
@@ -466,6 +482,41 @@ async def _send_json(scope, send, status: int, body: dict):
     await send({"type": "http.response.body", "body": payload})
 
 
+async def _read_body_limited(receive) -> list[dict] | None:
+    """Buffer a request body while enforcing the limit for chunked requests."""
+    messages: list[dict] = []
+    size = 0
+    while True:
+        message = await receive()
+        if message["type"] == "http.disconnect":
+            messages.append(message)
+            return messages
+        if message["type"] != "http.request":
+            messages.append(message)
+            continue
+        size += len(message.get("body", b""))
+        if size > MCP_MAX_BODY:
+            return None
+        messages.append(message)
+        if not message.get("more_body", False):
+            return messages
+
+
+def _replay_body(messages: list[dict]):
+    """Return an ASGI receive callable that replays a buffered body."""
+    index = 0
+
+    async def receive():
+        nonlocal index
+        if index < len(messages):
+            message = messages[index]
+            index += 1
+            return message
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return receive
+
+
 async def handle_mcp(scope, receive, send):
     """ASGI handler for the single /mcp endpoint (POST, GET, DELETE).
 
@@ -508,10 +559,14 @@ async def handle_health(scope, receive, send):
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{BRIDGE_URL}/health")
-            bridge_status = "up" if resp.status_code == 200 else f"down ({resp.status_code})"
+            if resp.status_code == 200:
+                bridge_status = "up" if resp.json().get("status") == "ok" else "degraded"
+            else:
+                bridge_status = f"down ({resp.status_code})"
     except Exception:
         bridge_status = "unreachable"
-    await _send_json(scope, send, 200, {"status": "ok", "bridge": bridge_status, "tools": len(TOOLS)})
+    status = 200 if bridge_status == "up" else 503
+    await _send_json(scope, send, status, {"status": "ok" if status == 200 else "degraded", "bridge": bridge_status, "tools": len(TOOLS)})
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +650,12 @@ async def app(scope, receive, send):
             logger.warning("req=%s unauthorized: %s %s from %s", rid, method, path, client)
             await _send_json(scope, send_with_cors, 401, {"error": "unauthorized", "request_id": rid})
             return
+        if method == "POST":
+            body_messages = await _read_body_limited(receive)
+            if body_messages is None:
+                await _send_json(scope, send_with_cors, 413, {"error": "request body too large", "request_id": rid})
+                return
+            receive = _replay_body(body_messages)
         logger.info("req=%s %s %s from %s", rid, method, path, client)
         await handle_mcp(scope, receive, send_with_cors)
     elif path == "/health" and method == "GET":
@@ -606,5 +667,5 @@ async def app(scope, receive, send):
 if __name__ == "__main__":
     import uvicorn
     auth_mode = "open" if not MCP_API_KEY else f"bearer-token for untrusted sources (trusted: {', '.join(sorted(_TRUSTED_CIDRS))})"
-    logger.info("MCP server starting on port %d (auth: %s)", MCP_PORT, auth_mode)
-    uvicorn.run(app, host="0.0.0.0", port=MCP_PORT, log_level="info")
+    logger.info("MCP server starting on %s:%d (auth: %s)", MCP_LISTEN_HOST, MCP_PORT, auth_mode)
+    uvicorn.run(app, host=MCP_LISTEN_HOST, port=MCP_PORT, log_level="info")

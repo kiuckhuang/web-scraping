@@ -161,13 +161,19 @@ services:
         condition: service_healthy
       fortress:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import json,urllib.request; data=json.load(urllib.request.urlopen(\"http://127.0.0.1:8000/health\")); raise SystemExit(0 if data.get(\"status\") == \"ok\" else 1)'" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - internal
       - edge
 
   # ---------------------------------------------------------------------------
-  #  MCP Server — SSE transport for AI agents (opencode, Claude, Cursor, etc.)
-  #  Bind: 0.0.0.0 (all interfaces — reachable from other machines)
+  #  MCP Server — Streamable HTTP transport for AI agents (opencode, Claude, Cursor, etc.)
+  #  Bind: localhost by default; set MCP_BIND_HOST for intentional remote exposure.
   #  Network: edge only (can reach bridge, but NOT searxng/fortress/valkey)
   #  Exposes: http://<host>:9100/mcp  (MCP Streamable HTTP)
   #  Calls the bridge REST API — no local Python needed.
@@ -182,9 +188,13 @@ services:
     container_name: ws-mcp
     restart: unless-stopped
     ports:
-      - "${PORT_MCP:-9100}:9100"
+      - "${MCP_BIND_HOST:-127.0.0.1}:${PORT_MCP:-9100}:9100"
     environment:
       - BRIDGE_URL=${BRIDGE_URL:-http://bridge:8000}
+      # The container listens on all interfaces; MCP_BIND_HOST controls the
+      # host-side published address below. A non-local host requires a key.
+      - MCP_LISTEN_HOST=0.0.0.0
+      - MCP_PUBLIC_BIND_HOST=${MCP_BIND_HOST:-127.0.0.1}
       - MCP_PORT=9100
       - MCP_API_KEY=${MCP_API_KEY:-}
       # Security knobs
@@ -197,9 +207,16 @@ services:
       - MCP_CONTENT_CHARS=${MCP_CONTENT_CHARS:-5000}
       - MCP_COMBINED_CHARS=${MCP_COMBINED_CHARS:-1200}
     depends_on:
-      - bridge
+      bridge:
+        condition: service_healthy
     networks:
       - edge
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   valkey-data:

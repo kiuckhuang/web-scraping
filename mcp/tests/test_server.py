@@ -83,6 +83,34 @@ def test_auth_no_key_allows_everything():
         server_mod.MCP_API_KEY = old
 
 
+def test_bind_host_locality():
+    assert server_mod._is_local_bind_host("localhost") is True
+    assert server_mod._is_local_bind_host("127.0.0.1") is True
+    assert server_mod._is_local_bind_host("::1") is True
+    assert server_mod._is_local_bind_host("0.0.0.0") is False
+    assert server_mod._is_local_bind_host("192.168.1.10") is False
+
+
+def test_read_body_limited_handles_chunked_body():
+    async def go():
+        old_limit = server_mod.MCP_MAX_BODY
+        server_mod.MCP_MAX_BODY = 3
+        try:
+            messages = iter([
+                {"type": "http.request", "body": b"ab", "more_body": True},
+                {"type": "http.request", "body": b"cd", "more_body": False},
+            ])
+
+            async def receive():
+                return next(messages)
+
+            assert await server_mod._read_body_limited(receive) is None
+        finally:
+            server_mod.MCP_MAX_BODY = old_limit
+
+    asyncio.run(go())
+
+
 def test_auth_with_key():
     old_key, old_cidrs = server_mod.MCP_API_KEY, server_mod._TRUSTED_CIDRS
     server_mod.MCP_API_KEY = "sekrit"
