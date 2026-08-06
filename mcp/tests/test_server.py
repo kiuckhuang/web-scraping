@@ -103,6 +103,11 @@ def test_cors_allows_loopback_origins_on_any_port():
         server_mod.MCP_ALLOWED_ORIGIN = old_policy
 
 
+def test_public_dns_failure_is_reported_by_bridge_not_mcp():
+    """HTTP errors remain tool errors without requiring exception tracebacks."""
+    assert server_mod._format_scrape_result({"url": "https://example.com", "text": "ok"}).startswith("## Scraped:")
+
+
 def test_read_body_limited_handles_chunked_body():
     async def go():
         old_limit = server_mod.MCP_MAX_BODY

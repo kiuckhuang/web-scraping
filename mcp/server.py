@@ -254,8 +254,16 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
             return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])
 
     except httpx.HTTPStatusError as exc:
-        logger.exception("Tool %s HTTP error", name)
-        return CallToolResult(content=[TextContent(type="text", text=f"Error in {name}: {exc.response.status_code} {exc.response.text[:500]}")], is_error=True)
+        logger.warning(
+            "Tool %s HTTP error: %s %s",
+            name,
+            exc.response.status_code,
+            exc.response.text[:500],
+        )
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"Error in {name}: {exc.response.status_code} {exc.response.text[:500]}")],
+            is_error=True,
+        )
     except Exception as exc:
         logger.exception("Tool %s failed", name)
         return CallToolResult(content=[TextContent(type="text", text=f"Error in {name}: {exc}")], is_error=True)
