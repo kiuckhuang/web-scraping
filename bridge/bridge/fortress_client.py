@@ -157,7 +157,7 @@ async def _close_page(page) -> None:
     """Close a page and its isolated context."""
     context = page.context
     try:
-        await _close_page(page)
+        await page.close()
     finally:
         if ISOLATE_CONTEXTS and context is not None:
             await context.close()

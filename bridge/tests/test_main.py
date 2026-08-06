@@ -127,6 +127,35 @@ def test_search_and_scrape_skips_private_urls(monkeypatch):
     assert out["results"][1]["content"]["markdown"] == "scraped!"
 
 
+def test_close_page_closes_page_and_isolated_context():
+    import bridge.fortress_client as fortress_mod
+
+    class FakeContext:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    class FakePage:
+        def __init__(self):
+            self.context = FakeContext()
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    page = FakePage()
+    old_isolate = fortress_mod.ISOLATE_CONTEXTS
+    fortress_mod.ISOLATE_CONTEXTS = True
+    try:
+        asyncio.run(fortress_mod._close_page(page))
+        assert page.closed is True
+        assert page.context.closed is True
+    finally:
+        fortress_mod.ISOLATE_CONTEXTS = old_isolate
+
+
 def test_scrape_cache_hits(monkeypatch):
     """Repeated scrapes of the same URL within the TTL skip the browser."""
     import bridge.main as main_mod
