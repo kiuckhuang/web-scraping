@@ -2,7 +2,7 @@
 
 A self-hosted, Podman-based search-and-scrape stack that combines:
 
-- **[SearXNG](https://github.com/searxng/searxng)** — privacy metasearch engine aggregating 70+ search engines ([Google](https://www.google.com/), [Bing](https://www.bing.com/), [DuckDuckGo](https://duckduckgo.com/), [Brave Search](https://search.brave.com/), etc.) with a JSON API
+- **[SearXNG](https://github.com/searxng/searxng)** — privacy metasearch engine configured with a focused set of search engines, including Google, Bing, DuckDuckGo, Wikipedia, GitHub, Stack Overflow, Reddit, and news sources
 - **[Tilion Fortress](https://github.com/tiliondev/fortress)** — stealth [Chromium](https://www.chromium.org/) engine that bypasses Cloudflare, DataDome, PerimeterX, Akamai, and other bot detection
 - **Bridge** — a [FastAPI](https://fastapi.tiangolo.com/) + [Model Context Protocol](https://modelcontextprotocol.io/) service that orchestrates both into a unified API (like [Exa](https://exa.ai/), but self-hosted and free)
 
@@ -28,7 +28,7 @@ flowchart TB
         client["Your app or AI agent"]
     end
     subgraph edge["edge network (exposed)"]
-        mcp["MCP HTTP\n0.0.0.0:9100/mcp"]
+        mcp["MCP HTTP\n127.0.0.1:9100/mcp"]
         bridge["Bridge\nFastAPI orchestration\n127.0.0.1:8000"]
     end
     subgraph internal["internal network (localhost only)"]
@@ -44,7 +44,7 @@ flowchart TB
     searx --> valkey
 ```
 
-> **Security model:** Core services (SearXNG, Fortress, Valkey) bind to `127.0.0.1` only — reachable from localhost, not the LAN. MCP binds to `0.0.0.0` so AI agents on other machines can connect. MCP is on the `edge` network only; it can talk to Bridge but cannot reach SearXNG, Fortress, or Valkey directly.
+> **Security model:** Core services and MCP bind to `127.0.0.1` on the host by default. Set `MCP_BIND_HOST` to a non-loopback address only when remote access is intentional; a non-empty `MCP_API_KEY` is required in that mode. MCP is on the `edge` network only; it can talk to Bridge but cannot reach SearXNG, Fortress, or Valkey directly.
 
 ### Request Flow
 
@@ -78,7 +78,7 @@ sequenceDiagram
 | [Valkey](https://github.com/valkey-io/valkey) | —     | Redis-compatible cache for SearXNG           |
 | [Fortress](https://github.com/tiliondev/fortress) | 9222 (127.0.0.1) | Stealth Chromium (CDP endpoint)       |
 | Bridge     | 8000 (127.0.0.1) | Unified REST API ([FastAPI](https://fastapi.tiangolo.com/)) |
-| MCP        | 9100 (0.0.0.0)   | Streamable HTTP server for AI agents ([MCP](https://modelcontextprotocol.io/)) |
+| MCP        | 9100 (127.0.0.1 by default) | Streamable HTTP server for AI agents ([MCP](https://modelcontextprotocol.io/)) |
 
 Interactive API docs at `http://localhost:8000/docs`.
 
@@ -106,7 +106,7 @@ curl -X POST http://localhost:8000/search_and_scrape \
 
 ### `GET /search`
 
-Search the web via [SearXNG](https://github.com/searxng/searxng) (70+ engines aggregated).
+Search the web via the configured [SearXNG](https://github.com/searxng/searxng) engines.
 
 | Parameter     | Type   | Default | Description                          |
 |---------------|--------|---------|--------------------------------------|
@@ -225,7 +225,7 @@ For a **remote** connection, include the token:
 
 | Tool                 | Description                                              |
 |----------------------|----------------------------------------------------------|
-| `search_web`         | Search via [SearXNG](https://github.com/searxng/searxng) (70+ engines) |
+| `search_web`         | Search via the configured [SearXNG](https://github.com/searxng/searxng) engines |
 | `scrape_url`         | Scrape a URL via [Fortress](https://github.com/tiliondev/fortress) stealth browser |
 | `search_and_scrape`  | Search + scrape top results (Exa-style combined)         |
 | `crawl_site`         | Crawl a whole site via [Fortress](https://github.com/tiliondev/fortress) |
@@ -260,7 +260,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | Variable                | Default                  | Description                          |
 |-------------------------|--------------------------|--------------------------------------|
 | `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
-| `SEARXNG_CHANNEL`       | `latest`                 | SearXNG image tag (pin for reproducible deploys) |
+| `SEARXNG_CHANNEL`       | `2026.8.4-c63835bd2`    | SearXNG image tag (change deliberately when updating) |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
 | `SEARXNG_REQUEST_TIMEOUT` | `10`                   | Outgoing request timeout (s) per engine |
 | `SEARXNG_MAX_REQUEST_TIMEOUT` | `15`              | Max allowed request timeout (s)     |
@@ -274,31 +274,34 @@ await page.screenshot({ path: "stealth-check.png" });
 | `FORTRESS_TZ`           | host `TZ`                | Browser timezone override             |
 | `FORTRESS_LANG`         | host `LANG`              | Browser language override             |
 | `FORTRESS_PROFILE_DIR`  | `./fortress-profile`     | Persistent host directory for Chromium profile |
-| `FORTRESS_SHM_SIZE`     | `1gb`                    | Fortress shared memory size (increase for heavy workloads) |
+| `FORTRESS_SHM_SIZE`     | `2gb`                    | Fortress shared memory size |
 | `FORTRESS_NAV_DELAY`    | `400`                    | Post-navigation pause (ms) for JS/SERP pages before extraction |
 | `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen address (internal container) |
 | `BRIDGE_PORT`           | `8000`                   | Bridge listen port (internal container) |
 | `BRIDGE_CACHE_TTL`      | `300`                    | Scrape cache TTL (s) — repeat scrapes of the same URL skip the browser |
 | `BRIDGE_CACHE_MAX`      | `100`                    | Max pages held in the scrape cache |
+| `BRIDGE_CACHE_MAX_BYTES` | `26214400`              | Max serialized scrape-cache size (25 MiB) |
+| `FORTRESS_TIMEOUT`       | `60`                    | Browser navigation timeout (s) |
+| `FORTRESS_NAV_WAIT`      | `domcontentloaded`      | Browser navigation wait condition |
+| `FORTRESS_MAX_CONCURRENT_PAGES` | `3`              | Maximum concurrent browser pages |
+| `FORTRESS_WAF_WAIT`      | `15`                    | Maximum WAF challenge wait (s) |
+| `FORTRESS_ISOLATE_CONTEXTS` | `true`                | Isolate cookies/storage for each request |
 | `BRIDGE_URL`            | `http://bridge:8000`     | Bridge URL used by MCP (container-internal) |
 | `PORT_SEARXNG`          | `8888`                   | Host port for SearXNG                |
 | `PORT_FORTRESS`         | `9222`                   | Host port for Fortress CDP           |
 | `PORT_BRIDGE`           | `8000`                   | Host port for Bridge REST API        |
 | `PORT_MCP`              | `9100`                   | Host port for MCP server             |
 | `MCP_API_KEY`           | (auto-generated)         | Bearer token for remote MCP clients (localhost bypasses auth) |
+| `MCP_BIND_HOST`         | `127.0.0.1`              | Host address published for MCP; non-loopback requires `MCP_API_KEY` |
 | `MCP_SESSION_TTL`       | `1800`                   | Idle MCP session lifetime (s) before expiry |
 | `MCP_RATE_LIMIT`        | `120`                    | Max MCP requests/min per client IP (`0` = unlimited) |
 | `MCP_MAX_BODY`          | `1048576`                | Max MCP request body size (bytes)    |
-| `MCP_ALLOWED_ORIGIN`    | `*`                      | CORS origin allowed for browser clients |
+| `MCP_ALLOWED_ORIGIN`    | empty                    | Optional CORS origin; empty disables browser CORS |
 | `MCP_SNIPPET_CHARS`     | `300`                    | Search-result snippet length (chars) in MCP tool output |
 | `MCP_CONTENT_CHARS`     | `5000`                   | Single-page scrape length (chars) in MCP tool output |
 | `MCP_COMBINED_CHARS`    | `1200`                   | Per-result length (chars) in `search_and_scrape` MCP output |
 | `APP_UID`               | `1000`                   | Host user UID for bridge/mcp containers |
 | `APP_GID`               | `1000`                   | Host user GID for bridge/mcp containers |
-| `TILION_PROXY`          | —                        | Residential proxy for Fortress       |
-| `TILION_REGION`         | —                        | Egress region hint (`us`, `eu`, etc.)|
-| `CAPTCHA_API_KEY`       | —                        | 2captcha/capsolver key for CAPTCHAs  |
-| `CAPTCHA_PROVIDER`      | `2captcha`               | `2captcha` or `anticaptcha` or `capsolver` |
 
 ### [SearXNG](https://docs.searxng.org/) Configuration
 
@@ -318,18 +321,6 @@ SEARXNG_SUSPEND_TOO_MANY=60
 
 Apply changes: `podman compose up -d --force-recreate searxng` (or `make up`)
 
-### [Fortress](https://github.com/tiliondev/fortress) Proxy (for hard targets)
-
-If sites block your datacenter IP, route Fortress through a residential proxy:
-
-```bash
-# In .env
-TILION_PROXY=http://user:pass@residential-proxy:port
-TILION_REGION=us
-```
-
-Then verify egress: `curl http://localhost:8000/health` and check the Fortress status.
-
 ### Fortress Locale and Profile
 
 Fortress inherits the compose process' `TZ` and `LANG` values by default. Set
@@ -346,13 +337,13 @@ podman compose up -d
 ```
 
 Stop the stack before copying or reusing the profile directory elsewhere. The bridge
-uses Fortress's persistent default browser context. The profile is mounted at both
+uses isolated browser contexts by default. The profile is mounted at both
 `/tmp/tilion-profile` (the upstream documented path) and
 `/tmp/tillion-profile` (used by current image builds) for compatibility.
 
-If the profile directory is not writable under rootless Podman, run
-`chmod 777 fortress-profile` once, or set `FORTRESS_PROFILE_DIR` to a directory that
-is writable by the container user.
+If the profile directory is not writable under rootless Podman, set
+`FORTRESS_PROFILE_DIR` to a directory writable by the container user. Avoid making
+the profile world-writable.
 
 ## Security
 
@@ -363,10 +354,10 @@ The stack is split into two bridge networks:
 | Network   | Services                | Exposure                        |
 |-----------|-------------------------|---------------------------------|
 | `internal`| Valkey, SearXNG, Fortress | `127.0.0.1` only (localhost)  |
-| `edge`    | Bridge, MCP             | Bridge `127.0.0.1`, MCP `0.0.0.0` |
+| `edge`    | Bridge, MCP             | Bridge `127.0.0.1`, MCP `127.0.0.1` by default |
 
 - **Core services** (SearXNG, Fortress, Valkey) bind to `127.0.0.1` — accessible only from the host, not the LAN.
-- **MCP** binds to `0.0.0.0` — reachable from other machines for AI agents.
+- **MCP** is published on localhost by default. Set `MCP_BIND_HOST` to a non-loopback address for remote clients; a non-empty `MCP_API_KEY` is mandatory then.
 - MCP sits on `edge` only. It can talk to Bridge but **cannot** reach SearXNG, Fortress, or Valkey directly — compromise of MCP does not expose the core services.
 
 ### Least privilege
@@ -380,16 +371,16 @@ The stack is split into two bridge networks:
 - **Idle session expiry** — MCP sessions are garbage-collected after `MCP_SESSION_TTL` seconds of inactivity (default 30 min), so abandoned client connections cannot leak memory or background tasks forever.
 - **Per-IP rate limiting** — `MCP_RATE_LIMIT` (default 120/min per IP) throttles abusive clients; excess requests get `429`. Set `0` to disable.
 - **Request body limit** — requests larger than `MCP_MAX_BODY` (default 1 MB) are rejected with `413`.
-- **Fail-closed warning** — if `MCP_API_KEY` is empty, auth is disabled; the server logs a loud warning at startup. `make init` always generates a key.
+- **Local-first authentication** — localhost clients may use the trusted local path. A non-loopback `MCP_BIND_HOST` requires a non-empty `MCP_API_KEY`; `make init` generates one.
 - **Auth failures are logged** — every rejected request logs the client address, so "why can't my client connect" is answerable from `podman compose logs mcp`.
 - **Log redaction** — tool arguments with embedded credentials (`user:pass@`, `?token=`, `?key=`...) are masked in logs.
-- **Configurable CORS** — `MCP_ALLOWED_ORIGIN` (default `*`) restricts which browser origins may call the MCP endpoint.
+- **Configurable CORS** — CORS is disabled by default. Set `MCP_ALLOWED_ORIGIN` to one browser origin when needed.
 - **Request IDs** — every MCP request gets a short `req=...` log tag (also echoed in error bodies), and the bridge logs one per REST call with an `X-Request-ID` response header, so a failing agent call can be traced across the stack.
 - **Known limitation: no TLS.** The MCP endpoint serves plain HTTP (a valid trusted certificate requires operational setup, which this project deliberately avoids). For exposure beyond a trusted LAN, terminate TLS in front of `:9100` with a reverse proxy (e.g. Caddy or Traefik with automatic HTTPS) and send the bearer token over that connection.
 
 ### SSRF protection
 
-The bridge validates all URLs passed to `/scrape`, `/crawl`, and `/search_and_scrape` — requests to private/internal networks (localhost, `10.x`, `192.168.x`, container names like `searxng:8080`) are rejected with `403`, and hosts that cannot be resolved at validation time are rejected outright (defense against DNS-rebinding attacks). In `/search_and_scrape`, results pointing at internal addresses are skipped instead of scraped.
+The bridge validates all URLs passed to `/scrape`, `/crawl`, and `/search_and_scrape` — requests to private/internal networks are rejected with `403`, and hosts that cannot be resolved at validation time are rejected outright. Browser redirects and subresource requests are checked again, while crawls remain same-origin and public-only.
 
 ### Project Structure
 
@@ -400,10 +391,11 @@ web-scraping/
 ├── .env.example                # environment variable template
 ├── opencode.jsonc.example      # MCP config template (copy to opencode.jsonc)
 ├── scripts/
-│   └── doctor.sh               # make doctor — setup diagnostics
+│   ├── doctor.sh               # make doctor — setup diagnostics
+│   └── init.py                 # portable .env initialization
 ├── .github/workflows/ci.yml    # unit tests on every push
 ├── searxng/
-│   ├── settings.template.yml   # SearXNG config template (JSON API, 70+ engines)
+│   ├── settings.template.yml   # SearXNG config template (focused engine set)
 │   ├── render_settings.py      # renders template -> settings.yml from .env
 │   └── limiter.toml            # rate limiter config
 ├── searxng-entrypoint.sh       # renders settings, then runs upstream entrypoint
@@ -473,7 +465,7 @@ podman compose pull fortress && podman compose up -d fortress
 
 ## How It Works
 
-1. **Search**: The bridge sends a query to [SearXNG](https://github.com/searxng/searxng)'s `/search?format=json` endpoint. SearXNG aggregates results from 70+ engines ([Google](https://www.google.com/), [Bing](https://www.bing.com/), [DuckDuckGo](https://duckduckgo.com/), [Brave Search](https://search.brave.com/), etc.) and returns JSON with titles, URLs, and snippets.
+1. **Search**: The bridge sends a query to [SearXNG](https://github.com/searxng/searxng)'s `/search?format=json` endpoint. The configured engines return JSON with titles, URLs, and snippets.
 
 2. **Scrape**: The bridge connects to [Fortress](https://github.com/tiliondev/fortress) over CDP (`http://fortress:9222`). Fortress is a recompiled [Chromium](https://www.chromium.org/) that corrects the browser fingerprint in C++ (canvas, WebGL, audio, fonts, navigator — 34 patches), so bot detectors ([Cloudflare](https://www.cloudflare.com/), [DataDome](https://datadome.co/), [PerimeterX](https://www.perimeterx.com/), [Akamai](https://www.akamai.com/)) read it as a normal Chrome install. The [Playwright](https://playwright.dev/) client drives the browser to fetch/extract pages.
 
@@ -518,7 +510,7 @@ The [Fortress](https://github.com/tiliondev/fortress) image is ~300 MB. On first
 
 ### Scraping still blocked
 
-~90% of remaining blocks are IP reputation, not fingerprint. Use a residential proxy (`TILION_PROXY` env var). For CAPTCHA-protected sites, set `CAPTCHA_API_KEY`.
+Remaining blocks are commonly caused by target-site policy or IP reputation. The stack does not provide a proxy or CAPTCHA-solver integration; configure those outside this project if required.
 
 ### Bridge can't connect to Fortress
 
