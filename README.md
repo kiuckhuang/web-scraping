@@ -273,7 +273,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | `FORTRESS_CHANNEL`      | `latest`                 | Fortress image channel (`stable` or `latest`) |
 | `FORTRESS_TZ`           | host `TZ`                | Browser timezone override             |
 | `FORTRESS_LANG`         | host `LANG`              | Browser language override             |
-| `FORTRESS_PROFILE_DIR`  | `./fortress-profile`     | Persistent host directory for Chromium profile |
+| `fortress-profile`      | Podman volume            | Persistent Chromium profile volume           |
 | `FORTRESS_SHM_SIZE`     | `2gb`                    | Fortress shared memory size |
 | `FORTRESS_NAV_DELAY`    | `400`                    | Post-navigation pause (ms) for JS/SERP pages before extraction |
 | `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen address (internal container) |
@@ -327,13 +327,13 @@ Apply changes: `podman compose up -d --force-recreate searxng` (or `make up`)
 Fortress inherits the compose process' `TZ` and `LANG` values by default. Set
 `FORTRESS_TZ` or `FORTRESS_LANG` in `.env` to override them. If the host timezone is
 not exported as `TZ`, set `FORTRESS_TZ` explicitly. The browser profile is persisted in
-`FORTRESS_PROFILE_DIR`, allowing cookies and other profile state to survive restarts:
+the Podman-managed `fortress-profile` volume, allowing cookies and other profile state
+to survive container recreation:
 
 ```bash
 FORTRESS_CHANNEL=latest
 FORTRESS_TZ=Asia/Hong_Kong
 FORTRESS_LANG=zh-HK
-FORTRESS_PROFILE_DIR=./fortress-profile
 podman compose up -d
 ```
 
@@ -342,14 +342,38 @@ Chromium extension into the persistent profile by default. Set
 `UBLOCK_ORIGIN_LITE_ENABLED=false` in `.env` and recreate Fortress to disable loading it.
 The extension is pinned to a release and verified by SHA-256 before installation.
 
-Stop the stack before copying or reusing the profile directory elsewhere. The bridge
+The profile is not a host bind mount. Inspect or back it up through the container:
+
+```bash
+podman exec ws-fortress ls -la /tmp/tillion-profile
+podman exec ws-fortress du -sh /tmp/tillion-profile
+podman cp ws-fortress:/tmp/tillion-profile ./fortress-profile-backup
+```
+
+Remove the profile volume only when you intentionally want a fresh browser profile:
+
+```bash
+podman compose down -v
+podman volume rm web-scraping_fortress-profile
+```
+
+`make clean` removes the named volume as part of `podman compose down -v`. The bridge
 uses isolated browser contexts by default. The profile is mounted at both
 `/tmp/tilion-profile` (the upstream documented path) and
 `/tmp/tillion-profile` (used by current image builds) for compatibility.
 
-If the profile directory is not writable under rootless Podman, set
-`FORTRESS_PROFILE_DIR` to a directory writable by the container user. Avoid making
-the profile world-writable.
+The profile volume uses Podman's `:U` ownership remapping, so the uBlock
+initializer and Fortress's `tillion` user can write it without host-side
+`chmod 777` or ownership changes.
+
+`make up`, `make rebuild`, and `make update` run `make init` automatically. A
+complete fresh setup is therefore:
+
+```bash
+rm -f .env
+make clean
+make update
+```
 
 ## Security
 

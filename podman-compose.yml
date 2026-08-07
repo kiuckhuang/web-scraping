@@ -112,10 +112,11 @@ services:
       ublock-init:
         condition: service_healthy
     volumes:
-      # Upstream documents /tmp/tilion-profile; current image builds use the
-      # historical /tmp/tillion-profile path. Mount both for compatibility.
-      - ${FORTRESS_PROFILE_DIR:-./fortress-profile}:/tmp/tilion-profile:Z
-      - ${FORTRESS_PROFILE_DIR:-./fortress-profile}:/tmp/tillion-profile:Z
+      # Podman manages this persistent volume; :U remaps ownership for the
+      # container user without exposing browser state through the host FS.
+      # Mount both paths for compatibility with Fortress image variants.
+      - fortress-profile:/tmp/tilion-profile:Z,U
+      - fortress-profile:/tmp/tillion-profile:Z,U
       - ./scripts/init-ublock.sh:/usr/local/bin/ws-init-ublock.sh:ro,Z
       - ./fortress-entrypoint.sh:/usr/local/bin/ws-fortress-entrypoint.sh:ro,Z
     entrypoint: ["/bin/sh", "/usr/local/bin/ws-fortress-entrypoint.sh"]
@@ -140,7 +141,9 @@ services:
     environment:
       - UBLOCK_ORIGIN_LITE_ENABLED=${UBLOCK_ORIGIN_LITE_ENABLED:-true}
     volumes:
-      - ${FORTRESS_PROFILE_DIR:-./fortress-profile}:/profile:Z
+      # Use the same managed volume and ownership remap as Fortress; this init
+      # container writes the extension before Fortress starts.
+      - fortress-profile:/profile:Z,U
       - ./scripts/init-ublock.sh:/usr/local/bin/ws-init-ublock.sh:ro,Z
     entrypoint: ["/bin/sh", "/usr/local/bin/ws-init-ublock.sh"]
     networks:
@@ -259,6 +262,7 @@ services:
 volumes:
   valkey-data:
   searxng-data:
+  fortress-profile:
 
 networks:
   # Core services only — no direct access from MCP or the outside world

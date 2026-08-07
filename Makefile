@@ -35,12 +35,12 @@ help:
 
 init:
 	@python3 scripts/init.py
-	@echo "fortress-profile ready (owner-only permissions)"
+	@echo "environment ready (Fortress profile uses the managed fortress-profile volume)"
 
 build:
 	$(CONTAINER) compose build
 
-up:
+up: init
 	$(CONTAINER) compose up -d
 
 down:
@@ -123,11 +123,11 @@ doctor:
 	@./scripts/doctor.sh
 
 
-rebuild: down
+rebuild: init down
 	rm -rf bridge/__pycache__ mcp/__pycache__
 	$(MAKE) build up
 
-update: down
+update: init down
 	$(CONTAINER) compose pull
 	$(MAKE) build up
 
