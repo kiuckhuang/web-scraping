@@ -58,7 +58,7 @@ services:
       - searxng-data:/var/cache/searxng
     environment:
       - SEARXNG_BASE_URL=http://localhost:${PORT_SEARXNG:-8888}/
-       - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-}
+      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-}
       - FORCE_OWNERSHIP=${SEARXNG_FORCE_OWNERSHIP:-true}
       - UWSGI_THREADS=${SEARXNG_UWSGI_THREADS:-4}
       # Engine tuning — customizable via .env, with defaults if unset
