@@ -247,3 +247,63 @@ def test_cache_respects_max_bytes(monkeypatch):
         main_mod.BRIDGE_CACHE_MAX_BYTES = old_bytes
         main_mod._cache.clear()
         main_mod._cache_bytes = 0
+
+
+def test_health_endpoint_routes(monkeypatch):
+    import bridge.main as main_mod
+    import httpx
+
+    async def fake_searxng_health():
+        return True
+
+    async def fake_fortress_health():
+        return True
+
+    monkeypatch.setattr(main_mod, "searxng_health", fake_searxng_health)
+    monkeypatch.setattr(main_mod, "fortress_health", fake_fortress_health)
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/health")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "ok"
+            assert data["services"]["searxng"] == "up"
+            assert data["services"]["fortress"] == "up"
+            assert "x-request-id" in resp.headers
+
+    asyncio.run(run())
+
+
+def test_scrape_endpoint_blocks_private_url():
+    import bridge.main as main_mod
+    import httpx
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/scrape", json={"url": "http://127.0.0.1:8000/admin", "mode": "extract"})
+            assert resp.status_code == 403
+            assert "internal" in resp.json()["detail"]
+
+    asyncio.run(run())
+
+
+def test_search_endpoint_routes(monkeypatch):
+    import bridge.main as main_mod
+    import httpx
+
+    async def fake_search(q, **kwargs):
+        return {"query": q, "number_of_results": 1, "results": [{"title": "Test", "url": "https://example.com"}]}
+
+    monkeypatch.setattr(main_mod, "searxng_search", fake_search)
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/search?q=test")
+            assert resp.status_code == 200
+            assert resp.json()["query"] == "test"
+
+    asyncio.run(run())
