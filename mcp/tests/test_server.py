@@ -171,6 +171,26 @@ def test_rate_limit():
         server_mod._RATE_WINDOW.clear()
 
 
+def test_rate_limit_evicts_expired_entries_when_large():
+    old_limit = server_mod.MCP_RATE_LIMIT
+    server_mod.MCP_RATE_LIMIT = 5
+    now = time.monotonic()
+    server_mod._RATE_WINDOW.clear()
+    try:
+        # Pre-populate with stale entries
+        for i in range(10001):
+            server_mod._RATE_WINDOW[f"10.0.{i // 256}.{i % 256}"] = [now - 120.0]
+        # Adding a fresh IP should trigger prune of stale entries
+        scope = {"client": ("1.2.3.4", 1)}
+        assert server_mod._rate_limit_ok(scope) is True
+        # Stale entries should have been pruned
+        assert len(server_mod._RATE_WINDOW) == 1
+        assert "1.2.3.4" in server_mod._RATE_WINDOW
+    finally:
+        server_mod.MCP_RATE_LIMIT = old_limit
+        server_mod._RATE_WINDOW.clear()
+
+
 def test_rate_limit_disabled():
     old_limit = server_mod.MCP_RATE_LIMIT
     server_mod.MCP_RATE_LIMIT = 0

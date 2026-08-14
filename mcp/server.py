@@ -338,6 +338,7 @@ _RATE_WINDOW: dict[str, list[float]] = {}
 
 def _rate_limit_ok(scope) -> bool:
     """True if the request is within the per-IP rate limit (MCP_RATE_LIMIT/min)."""
+    global _RATE_WINDOW
     if MCP_RATE_LIMIT <= 0:
         return True
     client = scope.get("client")
@@ -349,8 +350,12 @@ def _rate_limit_ok(scope) -> bool:
         return False
     hits.append(now)
     _RATE_WINDOW[ip] = hits
-    if len(_RATE_WINDOW) > 10000:  # bound memory: drop stale IPs
-        _RATE_WINDOW.clear()
+    if len(_RATE_WINDOW) > 10000:  # bound memory: prune expired entries
+        _RATE_WINDOW = {
+            k: fresh
+            for k, v in _RATE_WINDOW.items()
+            if (fresh := [t for t in v if now - t < 60.0])
+        }
     return True
 
 
