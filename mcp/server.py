@@ -571,12 +571,11 @@ async def handle_mcp(scope, receive, send):
 async def handle_health(scope, receive, send):
     """Health check — returns bridge status and tool count."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{BRIDGE_URL}/health")
-            if resp.status_code == 200:
-                bridge_status = "up" if resp.json().get("status") == "ok" else "degraded"
-            else:
-                bridge_status = f"down ({resp.status_code})"
+        resp = await _client.get(f"{BRIDGE_URL}/health", timeout=5.0)
+        if resp.status_code == 200:
+            bridge_status = "up" if resp.json().get("status") == "ok" else "degraded"
+        else:
+            bridge_status = f"down ({resp.status_code})"
     except Exception:
         bridge_status = "unreachable"
     status = 200 if bridge_status == "up" else 503

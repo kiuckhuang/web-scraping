@@ -484,19 +484,35 @@ async def search_web(query: str, count: int = 10) -> dict[str, Any]:
             await _close_page(page)
 
 
+_health_client: httpx.AsyncClient | None = None
+
+
+def _get_health_client() -> httpx.AsyncClient:
+    global _health_client
+    if _health_client is None or _health_client.is_closed:
+        _health_client = httpx.AsyncClient(timeout=5.0, headers={"Host": "127.0.0.1"})
+    return _health_client
+
+
 async def health() -> bool:
     """Check if the Fortress CDP endpoint is alive."""
     try:
-        async with httpx.AsyncClient(timeout=5.0, headers={"Host": "127.0.0.1"}) as client:
-            resp = await client.get(f"{CDP_URL}/json/version")
-            return resp.status_code == 200
+        client = _get_health_client()
+        resp = await client.get(f"{CDP_URL}/json/version")
+        return resp.status_code == 200
     except Exception:
         return False
 
 
 async def shutdown() -> None:
-    """Close the Playwright connection."""
-    global _browser, _playwright_ctx
+    """Close the Playwright connection and health client."""
+    global _browser, _playwright_ctx, _health_client
+    if _health_client is not None:
+        try:
+            await _health_client.aclose()
+        except Exception:
+            pass
+        _health_client = None
     if _browser is not None:
         try:
             await _browser.close()

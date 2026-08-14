@@ -99,8 +99,8 @@ async def search(
 async def health() -> bool:
     """Check if SearXNG is up and responding."""
     try:
-        async with httpx.AsyncClient(timeout=5.0, headers=SEARXNG_HEADERS) as client:
-            resp = await client.get(f"{SEARXNG_URL}/healthz")
-            return resp.status_code == 200
+        client = _get_client()
+        resp = await client.get(f"{SEARXNG_URL}/healthz")
+        return resp.status_code == 200
     except Exception:
         return False
