@@ -170,19 +170,6 @@ async def _cache_get(url: str, mode: str) -> dict[str, Any] | None:
     return item[1]
 
 
-def _same_origin(left: str, right: str) -> bool:
-    """Compare scheme, hostname, and effective port for crawl boundaries."""
-    a, b = urlparse(left), urlparse(right)
-    try:
-        a_port = a.port or (443 if a.scheme == "https" else 80)
-        b_port = b.port or (443 if b.scheme == "https" else 80)
-    except ValueError:
-        return False
-    return (a.scheme.lower(), a.hostname.lower() if a.hostname else "", a_port) == (
-        b.scheme.lower(), b.hostname.lower() if b.hostname else "", b_port
-    )
-
-
 def _cache_set(url: str, mode: str, value: dict[str, Any]) -> None:
     global _cache_bytes
     size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
