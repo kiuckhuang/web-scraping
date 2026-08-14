@@ -13,10 +13,15 @@ bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
 echo "=== Environment ==="
 
+CONTAINER_CMD=""
 if command -v podman >/dev/null 2>&1; then
+    CONTAINER_CMD="podman"
     ok "podman installed ($(podman --version))"
+elif command -v docker >/dev/null 2>&1; then
+    CONTAINER_CMD="docker"
+    ok "docker installed ($(docker --version))"
 else
-    bad "podman not found in PATH"
+    bad "container runtime (podman or docker) not found in PATH"
 fi
 
 if [ -f .env ]; then
@@ -34,13 +39,17 @@ fi
 echo ""
 echo "=== Containers ==="
 
-for svc in valkey searxng fortress bridge mcp; do
-    if podman ps --format '{{.Names}}' | grep -q "ws-$svc"; then
-        ok "ws-$svc running"
-    else
-        bad "ws-$svc not running (start with 'make up')"
-    fi
-done
+if [ -n "$CONTAINER_CMD" ]; then
+    for svc in valkey searxng fortress bridge mcp; do
+        if $CONTAINER_CMD ps --format '{{.Names}}' | grep -q "ws-$svc"; then
+            ok "ws-$svc running"
+        else
+            bad "ws-$svc not running (start with 'make up')"
+        fi
+    done
+else
+    bad "cannot inspect containers without podman or docker"
+fi
 
 echo ""
 echo "=== Health ==="
