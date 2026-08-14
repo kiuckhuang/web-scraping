@@ -390,6 +390,7 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
         dict with keys: pages[], sitemap[]
     """
     visited: set[str] = set()
+    queued: set[str] = {url}
     pages: list[dict] = []
     sitemap: list[str] = []
     queue: deque[tuple[str, int]] = deque([(url, 0)])
@@ -428,7 +429,8 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
                                 .filter(href => href.startsWith('http'))
                         """)
                         for link in links:
-                            if link not in visited and _same_origin(url, link) and _is_public_http_url(link):
+                            if link not in queued and _same_origin(url, link) and _is_public_http_url(link):
+                                queued.add(link)
                                 queue.append((link, current_depth + 1))
                 finally:
                     await _close_page(page)
