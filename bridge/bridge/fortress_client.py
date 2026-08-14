@@ -123,24 +123,29 @@ async def _new_page():
 def _is_public_http_url(url: str) -> bool:
     """Reject browser requests to local, private, or otherwise special hosts."""
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        return parsed.scheme in ("data", "blob", "about")
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        return parsed.scheme.lower() in ("data", "blob", "about")
     host = parsed.hostname
-    if host.lower() in {"localhost", "0.0.0.0"}:
+    if host.lower() in {"localhost", "0.0.0.0", "127.0.0.1", "::1"}:
         return False
     try:
         addresses = socket.getaddrinfo(host, None)
     except OSError:
         return False
-    return all(
-        not (
-            (ip := ipaddress.ip_address(info[4][0])).is_private
+    for info in addresses:
+        ip = ipaddress.ip_address(info[4][0])
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        if (
+            ip.is_private
             or ip.is_loopback
             or ip.is_reserved
             or ip.is_link_local
-        )
-        for info in addresses
-    )
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return False
+    return True
 
 
 async def _guard_request(route, request) -> None:

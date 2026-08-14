@@ -109,13 +109,13 @@ def _validate_public_url(url: str) -> str:
     fails validation-time resolution cannot slip through a later re-resolution.
     """
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
+    if parsed.scheme.lower() not in ("http", "https"):
         raise HTTPException(status_code=400, detail=f"Unsupported scheme: {parsed.scheme}")
     host = parsed.hostname or ""
     if not host:
         raise HTTPException(status_code=400, detail="Missing host")
     # Block obvious local names
-    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+    if host.lower() in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
         raise HTTPException(status_code=403, detail="Access to internal addresses is blocked")
     # Resolve and block private ranges
     try:
@@ -126,7 +126,16 @@ def _validate_public_url(url: str) -> str:
         raise HTTPException(status_code=403, detail="Could not resolve host; access blocked")
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
-        if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_reserved
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
             raise HTTPException(status_code=403, detail="Access to internal addresses is blocked")
     return url
 

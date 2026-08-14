@@ -38,10 +38,27 @@ def test_rejects_localhost_names():
 
 
 def test_rejects_private_and_link_local_ips():
-    for ip in ("10.0.0.1", "192.168.1.10", "172.16.0.5", "127.0.0.1", "169.254.169.254"):
+    for ip in (
+        "10.0.0.1",
+        "192.168.1.10",
+        "172.16.0.5",
+        "127.0.0.1",
+        "169.254.169.254",
+        "224.0.0.1",
+        "0.0.0.0",
+        "::1",
+        "::ffff:127.0.0.1",
+        "::ffff:192.168.1.1",
+    ):
         with pytest.raises(HTTPException) as exc:
-            _validate_public_url(f"http://{ip}/")
+            _validate_public_url(f"http://[{ip}]/" if ":" in ip else f"http://{ip}/")
         assert exc.value.status_code == 403
+
+
+def test_accepts_scheme_case_insensitive(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    assert _validate_public_url("HTTP://example.com/") == "HTTP://example.com/"
+    assert _validate_public_url("Https://example.com/") == "Https://example.com/"
 
 
 def test_rejects_non_http_schemes():
