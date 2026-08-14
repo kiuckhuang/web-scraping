@@ -8,14 +8,13 @@ import asyncio
 import socket
 
 import pytest
-from fastapi import HTTPException
-
 from bridge.main import (
     ScrapeRequest,
     SearchAndScrapeRequest,
     _is_public_url,
     _validate_public_url,
 )
+from fastapi import HTTPException
 
 
 def _public_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):

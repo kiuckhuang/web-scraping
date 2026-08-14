@@ -23,7 +23,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 from markdownify import markdownify
-from playwright.async_api import async_playwright, Browser, Error as PlaywrightError
+from playwright.async_api import Browser, Error as PlaywrightError, async_playwright
 
 logger = logging.getLogger(__name__)
 

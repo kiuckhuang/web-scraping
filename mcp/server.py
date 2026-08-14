@@ -26,7 +26,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from mcp.server import Server
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.types import (
     CallToolRequestParams,
@@ -36,6 +35,8 @@ from mcp.types import (
     TextContent,
     Tool,
 )
+
+from mcp.server import Server
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -460,7 +461,7 @@ async def _sweep_sessions() -> None:
         session.task.cancel()
         try:
             await asyncio.wait_for(asyncio.shield(session.task), timeout=5)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             pass
         try:
             await session.cm.__aexit__(None, None, None)

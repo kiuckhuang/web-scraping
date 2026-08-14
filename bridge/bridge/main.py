@@ -27,13 +27,17 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .searxng_client import search as searxng_search, health as searxng_health, shutdown as searxng_shutdown
 from .fortress_client import (
-    scrape as fortress_scrape,
     crawl_site as fortress_crawl,
-    search_web as fortress_web_search,
     health as fortress_health,
+    scrape as fortress_scrape,
+    search_web as fortress_web_search,
     shutdown as fortress_shutdown,
+)
+from .searxng_client import (
+    health as searxng_health,
+    search as searxng_search,
+    shutdown as searxng_shutdown,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
