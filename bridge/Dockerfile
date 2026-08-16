@@ -16,6 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Upgrade the base image's pip: python:3.12-slim ships an old pip missing the
+# 2026 security fixes (PYSEC-2026-196/1795/1796/2875/2876). PIP is build-time
+# only, so this is hardening, not a runtime dependency change.
+RUN pip install --no-cache-dir -U pip
+
 # Install Python dependencies (dev extras include pytest for `make test-unit`)
 COPY pyproject.toml .
 RUN pip install --no-cache-dir -e ".[dev]"
