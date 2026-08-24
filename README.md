@@ -260,7 +260,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | Variable                | Default                  | Description                          |
 |-------------------------|--------------------------|--------------------------------------|
 | `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
-| `SEARXNG_CHANNEL`       | `2026.8.4-c63835bd2`    | SearXNG image tag (change deliberately when updating) |
+| `SEARXNG_CHANNEL`       | `2026.8.22-9fea41204`   | SearXNG image tag (change deliberately when updating) |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
 | `SEARXNG_REQUEST_TIMEOUT` | `10`                   | Outgoing request timeout (s) per engine |
 | `SEARXNG_MAX_REQUEST_TIMEOUT` | `15`              | Max allowed request timeout (s)     |
@@ -270,7 +270,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | `SEARXNG_FORCE_OWNERSHIP` | `true`                | Force SearXNG file ownership on start |
 | `SEARXNG_UWSGI_THREADS` | `4`                    | SearXNG worker thread count          |
 | `FORTRESS_CDP_URL`      | `http://fortress:9222`   | Fortress CDP endpoint                |
-| `FORTRESS_CHANNEL`      | `latest`                 | Fortress image channel (`stable` or `latest`) |
+| `FORTRESS_CHANNEL`      | `150`                    | Fortress image tag — pinned release (`150` = Chromium 150.0.7871.114, latest available; upstream unmaintained since 2026-07) |
 | `FORTRESS_TZ`           | host `TZ`                | Browser timezone override             |
 | `FORTRESS_LANG`         | host `LANG`              | Browser language override             |
 | `fortress-profile`      | Podman volume            | Persistent Chromium profile volume           |
@@ -331,7 +331,7 @@ the Podman-managed `fortress-profile` volume, allowing cookies and other profile
 to survive container recreation:
 
 ```bash
-FORTRESS_CHANNEL=latest
+FORTRESS_CHANNEL=150
 FORTRESS_TZ=Asia/Hong_Kong
 FORTRESS_LANG=zh-HK
 podman compose up -d
@@ -374,6 +374,19 @@ rm -f .env
 make clean
 make update
 ```
+
+### Fortress maintenance status (as of 2026-08)
+
+⚠️ **Upstream [tiliondev/fortress](https://github.com/tiliondev/fortress) has not shipped a build since 2026-07-15** (tag `150` = Chromium 150.0.7871.114), despite advertising a monthly rebase. Current Chrome stable is **151.x**, so version-database detectors will increasingly read Fortress 150 as an outdated — and therefore suspicious — browser. The stack still works, but treat Fortress as a decaying asset and evaluate alternatives:
+
+| Alternative | Approach | Drop-in? | Notes |
+|-------------|----------|----------|-------|
+| **[Camoufox](https://github.com/daijro/camoufox)** | Firefox fork, C++ stealth patches (same engine-level idea as Fortress) | Close — Playwright-compatible API, runs in Docker | Actively maintained (2026-07+), 0% headless detection in benchmarks; MPL-2.0. Strongest like-for-like replacement. |
+| **[nodriver](https://github.com/ultrafunkamsterdam/nodriver)** | Drives real Chrome over raw CDP — no Playwright shim | No — different (async-only) API; would replace `fortress_client.py` | Top of the 2026-06 independent Cloudflare benchmark (0 blocked targets); AGPL-3.0. |
+| **[Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)** | Patched Playwright driving real Chrome | Yes — drop-in Playwright API | Actively maintained, Apache-2.0, Python/Node/.NET. Easy migration path from the current Playwright client. |
+| **[curl_cffi](https://github.com/lexiforest/curl_cffi)** | TLS-impersonating HTTP client, no browser | No — HTTP only, no JS rendering | Surprisingly effective (26/31 in the same benchmark); good complement for pages that don't need JS. |
+
+Migration notes if Fortress goes fully stale: the bridge only talks to Fortress over CDP (`fortress_client.py`), so swapping engines is confined to one module plus the compose service. Patchright is the smallest code change (same Playwright calls, different browser binary); Camoufox is the closest in spirit (C++-patched engine, Docker-friendly).
 
 ## Security
 
@@ -561,4 +574,4 @@ ports:
 This stack combines:
 - **SearXNG** — AGPL-3.0
 - **Tilion Fortress** — BSD-3-Clause
-- **Bridge** — MIT
+- **Bridge + MCP** (this repo's own code) — MIT, see [LICENSE](LICENSE)

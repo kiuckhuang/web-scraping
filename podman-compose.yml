@@ -39,7 +39,7 @@ services:
   #  Network: internal only
   # ---------------------------------------------------------------------------
   searxng:
-    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.8.14-094c33d40}
+    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.8.22-9fea41204}
     container_name: ws-searxng
     restart: unless-stopped
     mem_limit: 1g
@@ -97,9 +97,11 @@ services:
   fortress:
     # Pinned to a released engine tag instead of the floating :latest tag so
     # upstream republishes cannot change the running Chromium silently.
-    # :149 = Chromium 149.0.7827.232 (current stable recommended tag), which
-    # already includes the CVE-2026-2441 CSS use-after-free fix.
-    image: docker.io/tilion/fortress:${FORTRESS_CHANNEL:-149}
+    # :150 = Chromium 150.0.7871.114 — the newest Fortress build (2026-07-15).
+    # Upstream tiliondev/fortress has been unmaintained since 2026-07; current
+    # Chrome stable is 151.x, so version-database detectors will increasingly
+    # read this engine as outdated. See README "Fortress maintenance status".
+    image: docker.io/tilion/fortress:${FORTRESS_CHANNEL:-150}
     container_name: ws-fortress
     restart: unless-stopped
     mem_limit: 4g
@@ -141,7 +143,7 @@ services:
       start_period: 15s
 
   ublock-init:
-    image: docker.io/library/alpine:3.22
+    image: docker.io/library/alpine:3.23
     container_name: ws-ublock-init
     restart: unless-stopped
     environment:

@@ -9,7 +9,7 @@
 
 CONTAINER := podman
 
-.PHONY: all init build up down logs test test-unit test-scrape doctor rebuild clean update help
+.PHONY: all init build up down logs test test-unit test-unit-host test-scrape doctor rebuild clean update help
 
 all: help
 
@@ -23,7 +23,7 @@ help:
 	@echo "  down      — Stop all services"
 	@echo "  logs      — Follow logs from all services"
 	@echo "  test      — Unit tests + integration tests (health checks + API smoke tests)"
-	@echo "  test-unit — Unit tests only (runs pytest in bridge + mcp containers)"
+	@echo "  test-unit — Unit tests only (in containers if the stack is up, else a host venv like CI)"
 	@echo "  test-scrape — Scrape smoke test through the bridge (example.com)"
 	@echo "  doctor    — Diagnose common setup problems"
 	@echo "  rebuild   — Stop, clean caches, rebuild and start"
@@ -104,11 +104,26 @@ test: test-unit
 	[ $$FAIL -eq 0 ]
 
 
+# Unit tests run inside the containers when the stack is up, otherwise in a
+# host venv (matching CI). Note: container runs test the *deployed image*, so
+# after local edits either `make rebuild` first or let the host-venv fallback
+# test the working tree directly.
 test-unit:
 	@echo "=== Unit Tests (bridge + mcp) ==="
-	@podman compose exec -T bridge python -m pytest -q bridge/tests || { echo "  FAILED: bridge unit tests"; exit 1; }
-	@podman compose exec -T mcp python -m pytest -q tests || { echo "  FAILED: mcp unit tests"; exit 1; }
+	@if $(CONTAINER) ps --format '{{.Names}}' 2>/dev/null | grep -q '^ws-bridge$$'; then \
+		echo "  (running inside containers — tests the deployed images)"; \
+		$(CONTAINER) compose exec -T bridge python -m pytest -q bridge/tests || { echo "  FAILED: bridge unit tests"; exit 1; }; \
+		$(CONTAINER) compose exec -T mcp python -m pytest -q tests || { echo "  FAILED: mcp unit tests"; exit 1; }; \
+	else \
+		echo "  (stack not running — using host venv, tests the working tree like CI)"; \
+		$(MAKE) --no-print-directory test-unit-host; \
+	fi
 	@echo "  All unit tests passed"
+
+test-unit-host:
+	@test -d .venv || python3 -m venv .venv
+	@.venv/bin/pip install --quiet -e "bridge/.[dev]" -r mcp/requirements.txt pytest
+	@.venv/bin/python -m pytest bridge/tests mcp/tests -q
 
 test-scrape:
 	@BRIDGE_PORT=$$(sed -n 's/^PORT_BRIDGE=//p' .env); \
@@ -124,7 +139,7 @@ doctor:
 
 
 rebuild: init down
-	rm -rf bridge/__pycache__ mcp/__pycache__
+	rm -rf bridge/__pycache__ mcp/__pycache__ scripts/__pycache__
 	$(MAKE) build up
 
 update: init down
@@ -134,3 +149,4 @@ update: init down
 clean: down
 	$(CONTAINER) compose down -v
 	$(CONTAINER) system prune -f
+	rm -rf .venv

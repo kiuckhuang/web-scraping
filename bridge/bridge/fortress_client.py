@@ -65,6 +65,10 @@ def _resolve_cdp_url(url: str) -> str:
         return url
 
 
+# Resolve at connect time, not import time: if the Fortress container is
+# recreated it may get a new IP, and a cached address would silently break
+# scraping until the bridge restarts. This holds the most recent resolution
+# for logging/health checks only.
 CDP_URL = _resolve_cdp_url(FORTRESS_CDP_URL)
 
 _browser: Browser | None = None
@@ -92,11 +96,16 @@ async def _reset_browser() -> None:
 
 
 async def _get_browser() -> Browser:
-    """Lazily connect to the Fortress CDP endpoint and reuse the connection."""
-    global _browser, _playwright_ctx
+    """Lazily connect to the Fortress CDP endpoint and reuse the connection.
+
+    The CDP hostname is re-resolved on every (re)connect so that a recreated
+    Fortress container with a fresh IP is picked up without a bridge restart.
+    """
+    global _browser, _playwright_ctx, CDP_URL
     if _browser is None or not _browser.is_connected():
         async with _lock:
             if _browser is None or not _browser.is_connected():
+                CDP_URL = _resolve_cdp_url(FORTRESS_CDP_URL)
                 logger.info("Connecting to Fortress CDP at %s", CDP_URL)
                 try:
                     _playwright_ctx = await async_playwright().start()
@@ -475,6 +484,17 @@ async def search_web(query: str, count: int = 10) -> dict[str, Any]:
             }
             """, count)
 
+            if not results:
+                # Zero results usually means DuckDuckGo changed its markup and
+                # the selectors above no longer match (or a challenge page was
+                # served). Log it so operators can distinguish selector rot
+                # from a genuine no-results query.
+                logger.warning(
+                    "Fortress web search returned 0 results for %r — "
+                    "DuckDuckGo HTML selectors may be stale",
+                    query,
+                )
+
             return {
                 "engine": "duckduckgo",
                 "query": query,
@@ -495,8 +515,10 @@ def _get_health_client() -> httpx.AsyncClient:
 
 
 async def health() -> bool:
-    """Check if the Fortress CDP endpoint is alive."""
+    """Check if the Fortress CDP endpoint is alive (re-resolving the host)."""
+    global CDP_URL
     try:
+        CDP_URL = await asyncio.to_thread(_resolve_cdp_url, FORTRESS_CDP_URL)
         client = _get_health_client()
         resp = await client.get(f"{CDP_URL}/json/version")
         return resp.status_code == 200

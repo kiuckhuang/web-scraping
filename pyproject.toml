@@ -16,3 +16,9 @@ ignore = [
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
+
+[tool.pytest.ini_options]
+# Suites run against the working tree (host venv / CI); tests are
+# network-free and drive asyncio via explicit asyncio.run().
+testpaths = ["bridge/tests", "mcp/tests"]
+addopts = "-q"

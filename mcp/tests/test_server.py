@@ -74,13 +74,9 @@ def test_format_combined_results_fetch_mode():
     assert "boom" in out
 
 
-def test_auth_no_key_allows_everything():
-    old = server_mod.MCP_API_KEY
-    server_mod.MCP_API_KEY = ""
-    try:
-        assert server_mod._auth_ok({"client": ("10.0.0.5", 123), "headers": []}) is True
-    finally:
-        server_mod.MCP_API_KEY = old
+def test_auth_no_key_allows_everything(monkeypatch):
+    monkeypatch.setattr(server_mod, "MCP_API_KEY", "")
+    assert server_mod._auth_ok({"client": ("10.0.0.5", 123), "headers": []}) is True
 
 
 def test_bind_host_locality():
@@ -91,16 +87,12 @@ def test_bind_host_locality():
     assert server_mod._is_local_bind_host("192.168.1.10") is False
 
 
-def test_cors_allows_loopback_origins_on_any_port():
-    old_policy = server_mod.MCP_ALLOWED_ORIGIN
-    server_mod.MCP_ALLOWED_ORIGIN = "localhost"
-    try:
-        for origin in ("http://localhost:8185", "http://127.0.0.1:3000", "https://[::1]:8443"):
-            scope = {"headers": [(b"origin", origin.encode())]}
-            assert server_mod._cors_origin(scope) == origin
-        assert server_mod._cors_origin({"headers": [(b"origin", b"http://192.168.1.10:3000")]}) is None
-    finally:
-        server_mod.MCP_ALLOWED_ORIGIN = old_policy
+def test_cors_allows_loopback_origins_on_any_port(monkeypatch):
+    monkeypatch.setattr(server_mod, "MCP_ALLOWED_ORIGIN", "localhost")
+    for origin in ("http://localhost:8185", "http://127.0.0.1:3000", "https://[::1]:8443"):
+        scope = {"headers": [(b"origin", origin.encode())]}
+        assert server_mod._cors_origin(scope) == origin
+    assert server_mod._cors_origin({"headers": [(b"origin", b"http://192.168.1.10:3000")]}) is None
 
 
 def test_public_dns_failure_is_reported_by_bridge_not_mcp():
@@ -108,56 +100,42 @@ def test_public_dns_failure_is_reported_by_bridge_not_mcp():
     assert server_mod._format_scrape_result({"url": "https://example.com", "text": "ok"}).startswith("## Scraped:")
 
 
-def test_read_body_limited_handles_chunked_body():
+def test_read_body_limited_handles_chunked_body(monkeypatch):
     async def go():
-        old_limit = server_mod.MCP_MAX_BODY
-        server_mod.MCP_MAX_BODY = 3
-        try:
-            messages = iter([
-                {"type": "http.request", "body": b"ab", "more_body": True},
-                {"type": "http.request", "body": b"cd", "more_body": False},
-            ])
+        monkeypatch.setattr(server_mod, "MCP_MAX_BODY", 3)
+        messages = iter([
+            {"type": "http.request", "body": b"ab", "more_body": True},
+            {"type": "http.request", "body": b"cd", "more_body": False},
+        ])
 
-            async def receive():
-                return next(messages)
+        async def receive():
+            return next(messages)
 
-            assert await server_mod._read_body_limited(receive) is None
-        finally:
-            server_mod.MCP_MAX_BODY = old_limit
+        assert await server_mod._read_body_limited(receive) is None
 
     asyncio.run(go())
 
 
-def test_auth_with_key():
-    old_key, old_cidrs = server_mod.MCP_API_KEY, server_mod._TRUSTED_CIDRS
-    server_mod.MCP_API_KEY = "sekrit"
-    server_mod._TRUSTED_CIDRS = {"127.0.0.0/8", "::1/128"}
-    try:
-        assert server_mod._auth_ok({"client": ("127.0.0.1", 5), "headers": []}) is True
-        untrusted = {"client": ("10.0.0.5", 5), "headers": [(b"authorization", b"Bearer wrong")]}
-        assert server_mod._auth_ok(untrusted) is False
-        good = {"client": ("10.0.0.5", 5), "headers": [(b"authorization", b"Bearer sekrit")]}
-        assert server_mod._auth_ok(good) is True
-        assert server_mod._auth_ok({"client": ("10.0.0.5", 5), "headers": []}) is False
-    finally:
-        server_mod.MCP_API_KEY = old_key
-        server_mod._TRUSTED_CIDRS = old_cidrs
+def test_auth_with_key(monkeypatch):
+    monkeypatch.setattr(server_mod, "MCP_API_KEY", "sekrit")
+    monkeypatch.setattr(server_mod, "_TRUSTED_CIDRS", {"127.0.0.0/8", "::1/128"})
+    assert server_mod._auth_ok({"client": ("127.0.0.1", 5), "headers": []}) is True
+    untrusted = {"client": ("10.0.0.5", 5), "headers": [(b"authorization", b"Bearer wrong")]}
+    assert server_mod._auth_ok(untrusted) is False
+    good = {"client": ("10.0.0.5", 5), "headers": [(b"authorization", b"Bearer sekrit")]}
+    assert server_mod._auth_ok(good) is True
+    assert server_mod._auth_ok({"client": ("10.0.0.5", 5), "headers": []}) is False
 
 
-def test_trusted_cidrs():
-    old = server_mod._TRUSTED_CIDRS
-    server_mod._TRUSTED_CIDRS = {"127.0.0.0/8", "10.20.30.0/24"}
-    try:
-        assert server_mod._is_trusted({"client": ("10.20.30.55", 1)}) is True
-        assert server_mod._is_trusted({"client": ("10.20.31.55", 1)}) is False
-        assert server_mod._is_trusted({"client": ("127.0.0.1", 1)}) is True
-    finally:
-        server_mod._TRUSTED_CIDRS = old
+def test_trusted_cidrs(monkeypatch):
+    monkeypatch.setattr(server_mod, "_TRUSTED_CIDRS", {"127.0.0.0/8", "10.20.30.0/24"})
+    assert server_mod._is_trusted({"client": ("10.20.30.55", 1)}) is True
+    assert server_mod._is_trusted({"client": ("10.20.31.55", 1)}) is False
+    assert server_mod._is_trusted({"client": ("127.0.0.1", 1)}) is True
 
 
-def test_rate_limit():
-    old_limit = server_mod.MCP_RATE_LIMIT
-    server_mod.MCP_RATE_LIMIT = 2
+def test_rate_limit(monkeypatch):
+    monkeypatch.setattr(server_mod, "MCP_RATE_LIMIT", 2)
     server_mod._RATE_WINDOW.clear()
     try:
         scope = {"client": ("9.9.9.9", 1)}
@@ -167,13 +145,11 @@ def test_rate_limit():
         # other IPs are unaffected
         assert server_mod._rate_limit_ok({"client": ("8.8.8.8", 1)}) is True
     finally:
-        server_mod.MCP_RATE_LIMIT = old_limit
         server_mod._RATE_WINDOW.clear()
 
 
-def test_rate_limit_evicts_expired_entries_when_large():
-    old_limit = server_mod.MCP_RATE_LIMIT
-    server_mod.MCP_RATE_LIMIT = 5
+def test_rate_limit_evicts_expired_entries_when_large(monkeypatch):
+    monkeypatch.setattr(server_mod, "MCP_RATE_LIMIT", 5)
     now = time.monotonic()
     server_mod._RATE_WINDOW.clear()
     try:
@@ -187,24 +163,21 @@ def test_rate_limit_evicts_expired_entries_when_large():
         assert len(server_mod._RATE_WINDOW) == 1
         assert "1.2.3.4" in server_mod._RATE_WINDOW
     finally:
-        server_mod.MCP_RATE_LIMIT = old_limit
         server_mod._RATE_WINDOW.clear()
 
 
-def test_rate_limit_disabled():
-    old_limit = server_mod.MCP_RATE_LIMIT
-    server_mod.MCP_RATE_LIMIT = 0
+def test_rate_limit_disabled(monkeypatch):
+    monkeypatch.setattr(server_mod, "MCP_RATE_LIMIT", 0)
     server_mod._RATE_WINDOW.clear()
     try:
         scope = {"client": ("9.9.9.9", 1)}
         for _ in range(50):
             assert server_mod._rate_limit_ok(scope) is True
     finally:
-        server_mod.MCP_RATE_LIMIT = old_limit
         server_mod._RATE_WINDOW.clear()
 
 
-def test_session_sweep_expires_idle():
+def test_session_sweep_expires_idle(monkeypatch):
     async def go():
         class FakeCM:
             async def __aenter__(self):
@@ -218,12 +191,11 @@ def test_session_sweep_expires_idle():
 
         task = asyncio.create_task(noop())
         await task
-        old_ttl = server_mod.MCP_SESSION_TTL
-        server_mod.MCP_SESSION_TTL = 1800
+        monkeypatch.setattr(server_mod, "MCP_SESSION_TTL", 1800)
+        server_mod._sessions.clear()
         try:
-            server_mod._sessions.clear()
-            stale = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic() - 99999)
-            fresh = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic())
+            stale = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic() - 99999)  # type: ignore[arg-type]
+            fresh = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic())  # type: ignore[arg-type]
             server_mod._sessions["stale"] = stale
             server_mod._sessions["fresh"] = fresh
             await server_mod._sweep_sessions()
@@ -231,7 +203,6 @@ def test_session_sweep_expires_idle():
             assert "fresh" in server_mod._sessions
         finally:
             server_mod._sessions.clear()
-            server_mod.MCP_SESSION_TTL = old_ttl
 
     asyncio.run(go())
 
