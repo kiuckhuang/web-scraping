@@ -584,7 +584,14 @@ async def handle_health(scope, receive, send):
 
 # ---------------------------------------------------------------------------
 #  CORS — allow browser-based MCP clients (llama.cpp web UI, etc.)
-#  Restrict the allowed origin via MCP_ALLOWED_ORIGIN if needed.
+#  MCP_ALLOWED_ORIGIN is compared against the browser's Origin header, which
+#  is always scheme + host + port — a bare hostname never matches. Use
+#  "localhost" for loopback origins on any port, a comma-separated list of
+#  exact origins, or "*" to reflect any origin (refused without MCP_API_KEY,
+#  since loopback/podman clients bypass auth). Clients sending Authorization
+#  trigger a preflight (OPTIONS), so the origin must be allowed even when the
+#  API key is correct — CORS cannot be skipped for key-authenticated requests
+#  because the preflight itself never carries the key.
 # ---------------------------------------------------------------------------
 
 _CORS_BASE_HEADERS = [
@@ -605,6 +612,18 @@ def _cors_origin(scope) -> str | None:
         if parsed.scheme in {"http", "https"} and parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
             return origin
         return None
+    if MCP_ALLOWED_ORIGIN == "*":
+        # Wildcard: reflect the request origin. Any website open in a browser
+        # can then call this server, so only use it when MCP_API_KEY is set;
+        # without a key, loopback and podman-forwarded clients bypass auth
+        # entirely and a wildcard CORS policy would leave them unprotected.
+        if not MCP_API_KEY:
+            logger.warning(
+                "MCP_ALLOWED_ORIGIN=* ignored: MCP_API_KEY is empty and "
+                "loopback/podman clients bypass auth — set MCP_API_KEY first"
+            )
+            return None
+        return origin
     allowed = {item.strip() for item in MCP_ALLOWED_ORIGIN.split(",")}
     return origin if origin in allowed else None
 

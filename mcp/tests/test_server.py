@@ -95,6 +95,27 @@ def test_cors_allows_loopback_origins_on_any_port(monkeypatch):
     assert server_mod._cors_origin({"headers": [(b"origin", b"http://192.168.1.10:3000")]}) is None
 
 
+def test_cors_wildcard_requires_api_key(monkeypatch):
+    monkeypatch.setattr(server_mod, "MCP_ALLOWED_ORIGIN", "*")
+    scope = {"headers": [(b"origin", b"http://hhnode-ib-185:8184")]}
+    # Refused without an API key: loopback/podman clients bypass auth, so a
+    # wildcard CORS policy would expose them to any website in a browser.
+    monkeypatch.setattr(server_mod, "MCP_API_KEY", "")
+    assert server_mod._cors_origin(scope) is None
+    # With a key configured, any origin is reflected.
+    monkeypatch.setattr(server_mod, "MCP_API_KEY", "secret")
+    assert server_mod._cors_origin(scope) == "http://hhnode-ib-185:8184"
+
+
+def test_cors_exact_origin_list(monkeypatch):
+    monkeypatch.setattr(server_mod, "MCP_ALLOWED_ORIGIN", "http://a.example:8184, http://b.example")
+    assert server_mod._cors_origin({"headers": [(b"origin", b"http://a.example:8184")]}) == "http://a.example:8184"
+    assert server_mod._cors_origin({"headers": [(b"origin", b"http://b.example")]}) == "http://b.example"
+    # Bare hostnames and ports alone never match.
+    assert server_mod._cors_origin({"headers": [(b"origin", b"http://a.example")]}) is None
+    assert server_mod._cors_origin({"headers": [(b"origin", b"http://c.example:8184")]}) is None
+
+
 def test_public_dns_failure_is_reported_by_bridge_not_mcp():
     """HTTP errors remain tool errors without requiring exception tracebacks."""
     assert server_mod._format_scrape_result({"url": "https://example.com", "text": "ok"}).startswith("## Scraped:")
