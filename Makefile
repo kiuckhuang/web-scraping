@@ -143,11 +143,13 @@ test-unit-host:
 test-scrape:
 	@BRIDGE_PORT=$$(sed -n 's/^PORT_BRIDGE=//p' .env); \
 	BRIDGE_PORT=$${BRIDGE_PORT:-8000}; \
-	echo "=== Scrape smoke test (example.com via Fortress) ==="; \
+	ENGINE=$$(curl -sf "http://localhost:$$BRIDGE_PORT/health" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("engine", "unknown"))' 2>/dev/null || echo unknown); \
+	CB=$$(date +%s); \
+	echo "=== Scrape smoke test (example.com via $$ENGINE engine, cache-busted) ==="; \
 	curl -sf -X POST "http://localhost:$$BRIDGE_PORT/scrape" \
 		-H 'Content-Type: application/json' \
-		-d '{"url": "https://example.com", "mode": "extract"}' \
-		| python3 -m json.tool || { echo "  FAILED (check 'podman compose logs bridge fortress')"; exit 1; }
+		-d "{\"url\": \"https://example.com/?cb=$$CB\", \"mode\": \"extract\"}" \
+		| python3 -m json.tool || { echo "  FAILED (check 'podman compose logs bridge' and the engine container ws-$$ENGINE)"; exit 1; }
 
 doctor:
 	@./scripts/doctor.sh
