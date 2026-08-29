@@ -317,6 +317,11 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `CAMOUFOX_WAF_WAIT`      | `15`                    | Maximum WAF challenge wait (s) |
 | `CAMOUFOX_ISOLATE_CONTEXTS` | `true`                | Isolate cookies/storage for each request |
 | `CAMOUFOX_MAX_SESSIONS` | `16`                     | Max concurrent named sessions (login persistence) |
+| `CAMOUFOX_PROXY_SERVER` | (unset)                  | Outbound proxy for all browser traffic (`http://`, `https://`, `socks5://`); unset = direct egress |
+| `CAMOUFOX_PROXY_USERNAME` / `_PASSWORD` | (unset)  | Proxy credentials (keep in `.env`) |
+| `CAMOUFOX_PROXY_BYPASS` | (unset)                  | Comma-separated hosts that skip the proxy |
+| `CAMOUFOX_GEOIP`        | `auto`                   | GeoIP-consistent fingerprints (timezone/locale/lat-lon matched to the proxy's egress IP); `auto` = on whenever a proxy is set |
+| `CAMOUFOX_TIMEZONE`     | (auto-derived)           | Browser context timezone; unset = derived from the proxy's egress IP via ip-api.com (through the proxy, once) |
 | `CRAWL_MAX_SECONDS`     | `1800`                   | Wall-clock budget per `/crawl` call (s); `0` = unlimited. Returns partial results when exhausted |
 | `SSRF_DNS_CACHE_TTL`    | `60`                     | TTL (s) for cached SSRF DNS verdicts (`0` disables caching) |
 | `LOG_LEVEL`             | `INFO`                   | Log level for the bridge and MCP services (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
@@ -402,6 +407,41 @@ What to know:
 - The websocket endpoint has no built-in token auth; it stays on the `internal` network and is published to `127.0.0.1:9223` only (loopback).
 - uBlock Origin ships inside the Camoufox build (fetched with the browser at build time).
 - Camoufox's remote-server mode is officially **experimental** upstream — it is nonetheless actively maintained and tracks current Firefox, which is exactly what Fortress stopped doing. If Camoufox ever stalls the way Fortress did, [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) (patched Playwright driving real Chrome) is the smallest-change fallback, and [curl_cffi](https://github.com/lexiforest/curl_cffi) complements non-JS targets.
+
+### Outbound Proxy (browser traffic)
+
+Set `CAMOUFOX_PROXY_SERVER` in `.env` and every page the browser fetches —
+scrapes, crawls, SERP searches, subresources — egresses through your proxy
+(HTTP or SOCKS5, credentials optional):
+
+```bash
+# in .env
+CAMOUFOX_PROXY_SERVER=socks5://proxy-host:1080
+CAMOUFOX_PROXY_USERNAME=
+CAMOUFOX_PROXY_PASSWORD=
+CAMOUFOX_PROXY_BYPASS=localhost,127.0.0.1   # optional
+CAMOUFOX_GEOIP=auto                         # default
+```
+
+- `CAMOUFOX_GEOIP=auto` (the default) turns on **GeoIP-consistent
+  fingerprints** whenever a proxy is configured: the browser's timezone,
+  locale, and geolocation are matched to the *proxy's* egress IP — the
+  lookup itself runs through the proxy. Without it, a proxy in one country
+  with another country's timezone is a classic detection tell. Force with
+  `true`/`false` (without a proxy, `true` matches the host IP).
+- The GeoIP database is bundled in the image (warmed at build time); if a
+  launch-time IP lookup fails, the container logs a warning and starts
+  without geoip rather than crash-looping.
+- **Context timezones**: Camoufox's server mode cannot apply its geo data to
+  remotely created contexts, so the bridge derives the timezone itself —
+  `ip-api.com` queried *through the proxy* once, then applied as
+  `timezone_id` to every new context (override with `CAMOUFOX_TIMEZONE`,
+  e.g. `Asia/Hong_Kong`). Verified: with the HKUST proxy the browser runs
+  `Asia/Hong_Kong` instead of UTC.
+- The bridge↔browser connection, SearXNG engine traffic, and the SSRF guard
+  are unaffected — only the browser's page requests use the proxy.
+- Proxy quality is part of stealth: residential/mobile exits fare far better
+  against Cloudflare/DataDome than datacenter ranges.
 
 ## Security
 

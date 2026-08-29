@@ -26,11 +26,15 @@ ARG CAMOUFOX_BROWSER_VERSION=152.0.4-beta.29
 # camoufox installs the browser under XDG_CACHE_HOME (platformdirs) — a fixed
 # shared path so the build-time fetch as root is visible to appuser at runtime.
 ENV XDG_CACHE_HOME=/opt/camoufox-cache
+# [geoip] enables GeoIP-consistent fingerprints when a proxy is configured
+# (timezone/locale/lat-lon matched to the proxy's egress IP). The MaxMind DB
+# is warmed here at build time — never downloaded at container start.
 RUN pip install --no-cache-dir \
-        "camoufox==${CAMOUFOX_PKG_VERSION}" \
+        "camoufox[geoip]==${CAMOUFOX_PKG_VERSION}" \
         "playwright==1.60.0" \
     && python -m camoufox set "official/stable/${CAMOUFOX_BROWSER_VERSION}" \
     && python -m camoufox fetch \
+    && python -c "from camoufox.geolocation import download_mmdb; download_mmdb()" \
     && camoufox_path="$(python -c 'from camoufox.pkgman import INSTALL_DIR; print(INSTALL_DIR)')" \
     && chmod -R a+rX "$camoufox_path" \
     && chown -R appuser:appuser "$camoufox_path"
