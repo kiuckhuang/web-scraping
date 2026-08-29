@@ -62,7 +62,7 @@ sequenceDiagram
     S-->>B: ranked URLs and snippets
     opt search_and_scrape
         par each result URL
-            B->>F: CDP page navigation
+            B->>F: page navigation over Playwright WS
             F-->>B: HTML or extracted content
         end
     end

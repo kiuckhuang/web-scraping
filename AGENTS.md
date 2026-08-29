@@ -25,9 +25,10 @@ covers the conventions and non-obvious decisions you must not regress.
   is a single module, not a package).
 - Mutate module-level config in tests via `monkeypatch.setattr`, never by
   assigning module globals with try/finally.
-- Never assert deployment-dependent config values (e.g. `BROWSER_ENGINE`) —
-  container tests run against the deployed image, whose `.env` may differ from
-  CI. Assert the wiring (`value == module.ATTR`) or monkeypatch explicitly.
+- Never assert deployment-dependent config values (e.g. `CAMOUFOX_TIMEOUT`,
+  `MCP_RATE_LIMIT`) — container tests run against the deployed image, whose
+  `.env` may differ from CI. Assert the wiring (`value == module.ATTR`) or
+  monkeypatch explicitly.
 - Async code is driven with explicit `asyncio.run(...)` in tests (no
   pytest-asyncio dependency).
 
