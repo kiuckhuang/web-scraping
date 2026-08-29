@@ -409,6 +409,8 @@ make test-scrape          # hits the bridge, which now drives Camoufox
 # switch back: set BROWSER_ENGINE=fortress in .env, then: make up
 ```
 
+Tip: the compose *service* is named `camoufox` (container `ws-camoufox`), and profile-gated services are only visible to commands that enable the profile. View its logs with `podman logs ws-camoufox`, or `podman compose --profile camoufox logs camoufox`. Confirm the active engine via the bridge: `curl -s localhost:8000/health` → `"engine"`.
+
 How it works and what to know:
 
 - The `ws-camoufox` container pins the Camoufox package (0.5.5) **and** the browser build (`152.0.4-beta.29`) at image build time — nothing is downloaded at container start.
