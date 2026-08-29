@@ -144,7 +144,7 @@ def test_search_and_scrape_skips_private_urls(monkeypatch):
             ],
         }
 
-    async def fake_scrape(url, *, mode):
+    async def fake_scrape(url, *, mode, session=None):
         return {"url": url, "markdown": "scraped!"}
 
     monkeypatch.setattr(socket, "getaddrinfo", _mixed_getaddrinfo)
@@ -258,7 +258,7 @@ def test_scrape_cache_hits(monkeypatch):
 
     calls = {"n": 0}
 
-    async def fake_scrape(url, *, mode):
+    async def fake_scrape(url, *, mode, session=None):
         calls["n"] += 1
         return {"url": url, "markdown": "cached body"}
 
@@ -280,7 +280,7 @@ def test_cache_skips_waf_challenge_pages(monkeypatch):
 
     calls = {"n": 0}
 
-    async def fake_scrape(url, *, mode):
+    async def fake_scrape(url, *, mode, session=None):
         calls["n"] += 1
         return {"url": url, "markdown": "just a moment...", "waf_challenge": True}
 
@@ -299,7 +299,7 @@ def test_cache_skips_http_error_pages(monkeypatch):
 
     calls = {"n": 0}
 
-    async def fake_scrape(url, *, mode):
+    async def fake_scrape(url, *, mode, session=None):
         calls["n"] += 1
         return {"url": url, "text": "error", "status": 503}
 
@@ -317,7 +317,7 @@ def test_cache_keeps_ok_status(monkeypatch):
 
     calls = {"n": 0}
 
-    async def fake_scrape(url, *, mode):
+    async def fake_scrape(url, *, mode, session=None):
         calls["n"] += 1
         return {"url": url, "markdown": "fine", "status": 200}
 
@@ -334,7 +334,7 @@ def test_cache_respects_max_entries(monkeypatch):
     """The cache is size-bounded: old entries are evicted."""
     import bridge.main as main_mod
 
-    async def fake_scrape(url, *, mode):
+    async def fake_scrape(url, *, mode, session=None):
         return {"url": url, "markdown": "x"}
 
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
@@ -351,7 +351,7 @@ def test_cache_respects_max_bytes(monkeypatch):
     """The cache evicts entries when the serialized byte budget is exceeded."""
     import bridge.main as main_mod
 
-    async def fake_scrape(url, *, mode):
+    async def fake_scrape(url, *, mode, session=None):
         return {"url": url, "markdown": "x" * 100}
 
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
@@ -457,5 +457,86 @@ def test_search_endpoint_routes(monkeypatch):
             resp = await client.get("/search?q=test")
             assert resp.status_code == 200
             assert resp.json()["query"] == "test"
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+#  Named sessions API
+# ---------------------------------------------------------------------------
+
+def test_sessions_endpoints(monkeypatch):
+    import bridge.main as main_mod
+    import httpx
+
+    async def fake_create(name):
+        return True
+
+    deleted = set()
+
+    async def fake_close(name):
+        if name in deleted:
+            return False
+        deleted.add(name)
+        return True
+
+    monkeypatch.setattr(main_mod, "browser_create_session", fake_create)
+    monkeypatch.setattr(main_mod, "browser_list_sessions", lambda: ["work"])
+    monkeypatch.setattr(main_mod, "browser_close_session", fake_close)
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/sessions", json={"name": "work"})
+            assert resp.status_code == 200 and resp.json() == {"name": "work", "created": True}
+
+            resp = await client.get("/sessions")
+            assert resp.json() == {"sessions": ["work"]}
+
+            resp = await client.delete("/sessions/work")
+            assert resp.status_code == 200 and resp.json()["deleted"] is True
+
+            resp = await client.delete("/sessions/work")
+            assert resp.status_code == 404  # already deleted
+
+            resp = await client.post("/sessions", json={"name": "bad name!"})
+            assert resp.status_code == 422  # invalid name pattern
+
+            resp = await client.delete("/sessions/also_bad!")
+            assert resp.status_code == 422
+
+    asyncio.run(run())
+
+
+def test_scrape_with_session_passes_through_and_caches_separately(monkeypatch):
+    """Same URL via different sessions must not share cache entries."""
+    import bridge.main as main_mod
+    import httpx
+
+    calls = []
+
+    async def fake_scrape(url, *, mode, session=None):
+        calls.append((url, mode, session))
+        return {"url": url, "markdown": f"body for {session}"}
+
+    async def fake_public(url):
+        return True
+
+    monkeypatch.setattr(main_mod, "browser_scrape", fake_scrape)
+    monkeypatch.setattr(main_mod, "_validate_public_url", lambda url: url)
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            for session in ("a", "b", None):
+                payload = {"url": "https://example.com/page", "mode": "extract"}
+                if session:
+                    payload["session"] = session
+                resp = await client.post("/scrape", json=payload)
+                assert resp.status_code == 200
+                assert "cached" not in resp.json()
+            # Distinct cache keys: session a, session b, and sessionless.
+            assert len(calls) == 3
+            assert calls[0][2] == "a" and calls[1][2] == "b" and calls[2][2] is None
 
     asyncio.run(run())

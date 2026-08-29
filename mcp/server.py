@@ -109,6 +109,13 @@ async def _api_post(path: str, body: dict) -> dict:
     return resp.json()
 
 
+async def _api_delete(path: str) -> dict:
+    headers = _request_headers(path)
+    resp = await _client.delete(f"{BRIDGE_URL}{path}", headers=headers)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _request_headers(path: str) -> dict[str, str]:
     """Attach an X-Request-ID that the bridge echoes back and logs as req=...
 
@@ -144,12 +151,13 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="scrape_url",
-        description="Scrape a URL via the Camoufox stealth browser (bypasses Cloudflare, DataDome, PerimeterX, Akamai). Clean markdown (extract) or raw HTML+text (fetch).",
+        description="Scrape a URL via the Camoufox stealth browser (bypasses Cloudflare, DataDome, PerimeterX, Akamai). Clean markdown (extract) or raw HTML+text (fetch). Pass `session` (created via create_session) to reuse login cookies.",
         inputSchema={
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "URL to scrape"},
                 "mode": {"type": "string", "enum": ["extract", "fetch"], "description": "'extract' = clean markdown+tables, 'fetch' = raw HTML+text", "default": "extract"},
+                "session": {"type": "string", "description": "Named session (see create_session) for login persistence", "default": ""},
             },
             "required": ["url"],
         },
@@ -165,6 +173,7 @@ TOOLS: list[Tool] = [
                 "language": {"type": "string", "default": "en"},
                 "max_results": {"type": "integer", "description": "How many results to scrape (1-50, default 3)", "default": 3},
                 "scrape_mode": {"type": "string", "enum": ["extract", "fetch"], "default": "extract", "description": "'extract' = clean markdown+tables, 'fetch' = raw HTML+text"},
+                "session": {"type": "string", "description": "Named session (see create_session) for login persistence", "default": ""},
             },
             "required": ["query"],
         },
@@ -178,6 +187,7 @@ TOOLS: list[Tool] = [
                 "url": {"type": "string", "description": "Root URL to crawl"},
                 "depth": {"type": "integer", "description": "Crawl depth (1 = just the given page)", "default": 2},
                 "max_pages": {"type": "integer", "description": "Max pages to collect (1-200)", "default": 50},
+                "session": {"type": "string", "description": "Named session (see create_session) to crawl behind a logged-in profile", "default": ""},
             },
             "required": ["url"],
         },
@@ -193,6 +203,33 @@ TOOLS: list[Tool] = [
             },
             "required": ["query"],
         },
+    ),
+    Tool(
+        name="create_session",
+        description="Create a named long-lived browser session (login persistence): log in once inside scrapes that pass this session name, then reuse cookies/localStorage on later scrape_url/search_and_scrape/crawl_site calls.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Session name ([A-Za-z0-9._-], max 64 chars)"},
+            },
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="delete_session",
+        description="Close and forget a named browser session (drops its cookies).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Session name"},
+            },
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="list_sessions",
+        description="List the names of live browser sessions.",
+        inputSchema={"type": "object", "properties": {}},
     ),
 ]
 
@@ -236,6 +273,7 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
             result = await _api_post("/scrape", {
                 "url": arguments["url"],
                 "mode": arguments.get("mode", "extract"),
+                "session": arguments.get("session") or None,
             })
             return CallToolResult(content=[TextContent(type="text", text=_format_scrape_result(result))])
 
@@ -246,6 +284,7 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
                 "language": arguments.get("language", "en"),
                 "max_results": arguments.get("max_results", 3),
                 "scrape_mode": arguments.get("scrape_mode", "extract"),
+                "session": arguments.get("session") or None,
             })
             return CallToolResult(content=[TextContent(type="text", text=_format_combined_results(result))])
 
@@ -255,6 +294,7 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
                 url=arguments["url"],
                 depth=arguments.get("depth", 2),
                 max_pages=arguments.get("max_pages", 50),
+                session=arguments.get("session") or "",
             )
             return CallToolResult(content=[TextContent(type="text", text=_format_crawl_result(result))])
 
@@ -265,6 +305,22 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
                 count=arguments.get("count", 10),
             )
             return CallToolResult(content=[TextContent(type="text", text=_format_search_results(result))])
+
+        elif name == "create_session":
+            result = await _api_post("/sessions", {"name": arguments["name"]})
+            state = "created" if result.get("created") else "already exists"
+            return CallToolResult(content=[TextContent(type="text", text=f"Session '{result['name']}' {state}. Pass session='{result['name']}' to scrape_url / search_and_scrape / crawl_site to reuse its cookies.")])
+
+        elif name == "delete_session":
+            result = await _api_delete(f"/sessions/{arguments['name']}")
+            return CallToolResult(content=[TextContent(type="text", text=f"Session '{result['name']}' deleted.")])
+
+        elif name == "list_sessions":
+            result = await _api_get("/sessions")
+            sessions = result.get("sessions", [])
+            if not sessions:
+                return CallToolResult(content=[TextContent(type="text", text="No live sessions. Create one with create_session.")])
+            return CallToolResult(content=[TextContent(type="text", text="Live sessions: " + ", ".join(sessions))])
 
         else:
             return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])

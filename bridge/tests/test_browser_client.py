@@ -12,12 +12,14 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_browser_state():
-    """Keep module-level browser/playwright handles from leaking between tests."""
+    """Keep module-level browser/session state from leaking between tests."""
     bc._browser = None
     bc._playwright_ctx = None
+    bc._sessions.clear()
     yield
     bc._browser = None
     bc._playwright_ctx = None
+    bc._sessions.clear()
 
 
 class _FakeBrowser:
@@ -127,3 +129,121 @@ def test_close_page_keeps_shared_context(monkeypatch):
     asyncio.run(bc._close_page(page))
     assert page.closed is True
     assert page.context.closed is False
+
+
+# ---------------------------------------------------------------------------
+#  Named sessions (login persistence)
+# ---------------------------------------------------------------------------
+
+class _FakeSessionContext:
+    """Context double that records pages and participates in session bookkeeping."""
+
+    def __init__(self, recorder):
+        self._recorder = recorder
+        self.closed = False
+
+    async def new_page(self):
+        self._recorder["pages"] = self._recorder.get("pages", 0) + 1
+
+        class _FakePage:
+            def __init__(self, context):
+                self.context = context
+                self.routes = []
+                self.closed = False
+
+            async def route(self, pattern, handler):
+                self.routes.append(pattern)
+
+            async def close(self):
+                self.closed = True
+
+        return _FakePage(self)
+
+    async def close(self):
+        self.closed = True
+
+
+def _session_fake_browser(recorder):
+    class _FakeBrowserWithSessions:
+        def __init__(self):
+            self.connected = True
+            self.contexts = []
+
+        def is_connected(self):
+            return self.connected
+
+        async def new_context(self):
+            recorder["contexts"] = recorder.get("contexts", 0) + 1
+            return _FakeSessionContext(recorder)
+
+    return _FakeBrowserWithSessions()
+
+
+@pytest.fixture
+def session_playwright(fake_playwright):
+    """Replace the fake factory so connects return a session-capable browser."""
+    recorder = fake_playwright
+
+    browser = _session_fake_browser(recorder)
+
+    class _FakePlaywright:
+        firefox = type("F", (), {})()
+
+        async def start(self):
+            return self
+
+        async def stop(self):
+            pass
+
+    async def _connect(ws_url, **kwargs):
+        recorder["connect"] = ws_url
+        return browser
+
+    _FakePlaywright.firefox.connect = staticmethod(_connect)
+    import bridge.browser_client as bcl
+
+    bcl.async_playwright = lambda: _FakePlaywright()
+    return recorder
+
+
+def test_get_session_creates_once(session_playwright):
+    a1 = asyncio.run(bc.get_session("work"))
+    a2 = asyncio.run(bc.get_session("work"))
+    b = asyncio.run(bc.get_session("other"))
+    assert session_playwright["contexts"] == 2  # one per distinct name, not per call
+    assert a1 is a2 and a1 is not b
+    assert bc.list_sessions() == ["other", "work"]
+
+
+def test_session_limit_rejects_excess(session_playwright, monkeypatch):
+    monkeypatch.setattr(bc, "MAX_SESSIONS", 1)
+    asyncio.run(bc.get_session("a"))
+    with pytest.raises(bc.SessionLimitError, match="Session limit reached"):
+        asyncio.run(bc.get_session("b"))
+    assert asyncio.run(bc.close_session("a")) is True  # freeing makes room
+    asyncio.run(bc.get_session("b"))
+
+
+def test_close_session_closes_context(session_playwright):
+    ctx = asyncio.run(bc.get_session("work"))
+    assert asyncio.run(bc.close_session("work")) is True
+    assert ctx.closed is True
+    assert bc.list_sessions() == []
+    assert asyncio.run(bc.close_session("work")) is False  # already gone
+
+
+def test_close_page_keeps_session_context(session_playwright):
+    """Pages served from a named session must not close that context."""
+    ctx = asyncio.run(bc.get_session("work"))
+    page = asyncio.run(ctx.new_page())
+    asyncio.run(bc._close_page(page))
+    assert page.closed is True
+    assert ctx.closed is False  # the session survives the request
+    assert bc.list_sessions() == ["work"]
+
+
+def test_new_page_uses_session_context_and_guard(session_playwright):
+    asyncio.run(bc._new_page("work"))
+    assert session_playwright["contexts"] == 1
+    asyncio.run(bc._new_page("work"))
+    assert session_playwright["contexts"] == 1  # second request reuses the session

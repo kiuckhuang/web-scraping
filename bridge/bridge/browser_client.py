@@ -37,6 +37,10 @@ NAV_DELAY = float(os.environ.get("CAMOUFOX_NAV_DELAY", "400"))
 MAX_CONCURRENT_PAGES = int(os.environ.get("CAMOUFOX_MAX_CONCURRENT_PAGES", "3"))
 WAF_WAIT = float(os.environ.get("CAMOUFOX_WAF_WAIT", "15"))
 ISOLATE_CONTEXTS = os.environ.get("CAMOUFOX_ISOLATE_CONTEXTS", "true").lower() not in {"0", "false", "no"}
+# Max concurrent named sessions (login persistence). Each session is a live
+# BrowserContext on the remote browser — bounded so a broken client cannot
+# exhaust the container's memory.
+MAX_SESSIONS = int(os.environ.get("CAMOUFOX_MAX_SESSIONS", "16"))
 # Wall-clock budget for a single /crawl call (seconds, 0 = unlimited). Without
 # it a 200-page crawl against slow/challenging targets can run for hours while
 # the MCP client has long timed out.
@@ -58,6 +62,16 @@ _playwright_ctx: Any = None
 _lock = asyncio.Lock()
 _page_slots = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
 
+# Named sessions: name -> long-lived BrowserContext. Cookies/localStorage in a
+# session survive across scrape calls and die with the browser connection
+# (Playwright's launchServer cannot serve a persistent profile).
+_sessions: dict[str, Any] = {}
+_sessions_lock = asyncio.Lock()
+
+
+class SessionLimitError(RuntimeError):
+    """Raised when creating a session would exceed MAX_SESSIONS."""
+
 
 async def _reset_browser() -> None:
     """Drop a broken connection so the next request reconnects cleanly."""
@@ -65,6 +79,9 @@ async def _reset_browser() -> None:
     browser, playwright_ctx = _browser, _playwright_ctx
     _browser = None
     _playwright_ctx = None
+    # Contexts die with the browser connection — drop the session registry so
+    # callers don't hand out dead contexts after a reconnect.
+    _sessions.clear()
     if browser is not None:
         try:
             await browser.close()
@@ -94,16 +111,67 @@ async def _get_browser() -> Browser:
     return _browser
 
 
-async def _new_page():
-    """Get a page with isolated storage and browser-side SSRF filtering."""
+async def _new_page(session: str | None = None):
+    """Get a page with browser-side SSRF filtering.
+
+    With `session`, the page lives in the named long-lived context (cookies
+    and localStorage persist across calls); otherwise each page gets an
+    isolated context (or the shared default one when isolation is disabled).
+    """
     browser = await _get_browser()
-    if ISOLATE_CONTEXTS:
+    if session is not None:
+        context = await get_session(session)
+    elif ISOLATE_CONTEXTS:
         context = await browser.new_context()
     else:
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
     page = await context.new_page()
     await page.route("**/*", _guard_request)
     return page
+
+
+async def get_session(name: str):
+    """Return the named long-lived context, creating it on first use."""
+    if name in _sessions:
+        return _sessions[name]
+    async with _sessions_lock:
+        if name in _sessions:
+            return _sessions[name]
+        if len(_sessions) >= MAX_SESSIONS:
+            raise SessionLimitError(
+                f"Session limit reached ({MAX_SESSIONS}); delete a session first (DELETE /sessions/{{name}})"
+            )
+        browser = await _get_browser()
+        context = await browser.new_context()
+        _sessions[name] = context
+        logger.info("Created browser session %r (%d/%d in use)", name, len(_sessions), MAX_SESSIONS)
+        return context
+
+
+async def create_session(name: str) -> bool:
+    """Create the named long-lived context; returns False if it already existed."""
+    existed = name in _sessions
+    await get_session(name)
+    return not existed
+
+
+async def close_session(name: str) -> bool:
+    """Close and forget a named session; returns False if it didn't exist."""
+    async with _sessions_lock:
+        context = _sessions.pop(name, None)
+    if context is None:
+        return False
+    try:
+        await context.close()
+    except Exception:
+        pass
+    logger.info("Closed browser session %r (%d/%d in use)", name, len(_sessions), MAX_SESSIONS)
+    return True
+
+
+def list_sessions() -> list[str]:
+    """Names of the live sessions."""
+    return sorted(_sessions)
 
 
 def _is_public_http_url(url: str) -> bool:
@@ -127,12 +195,14 @@ async def _guard_request(route, request) -> None:
 
 
 async def _close_page(page) -> None:
-    """Close a page and its isolated context."""
+    """Close a page, keeping named-session and shared contexts alive."""
     context = page.context
     try:
         await page.close()
     finally:
-        if ISOLATE_CONTEXTS and context is not None:
+        if context is None or context in _sessions.values():
+            return  # named session context — it must survive the request
+        if ISOLATE_CONTEXTS:
             await context.close()
 
 
@@ -191,13 +261,17 @@ async def _wait_for_waf(page) -> None:
             return
 
 
-async def fetch_page(url: str) -> dict[str, Any]:
+async def fetch_page(url: str, session: str | None = None) -> dict[str, Any]:
     """Fetch a URL through the stealth browser.
+
+    Args:
+        url:      Target URL.
+        session:  Optional named session (login persistence across calls).
 
     Returns:
         dict with keys: url, title, text, html, status
     """
-    page = await _new_page()
+    page = await _new_page(session)
     try:
         response = await page.goto(url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
         await _wait_for_waf(page)
@@ -223,16 +297,20 @@ async def fetch_page(url: str) -> dict[str, Any]:
         await _close_page(page)
 
 
-async def extract_page(url: str) -> dict[str, Any]:
+async def extract_page(url: str, session: str | None = None) -> dict[str, Any]:
     """Extract clean markdown + tables from a URL.
 
     Uses a readability-style extraction: removes nav, footer, script, style,
     and converts the main content to markdown.
 
+    Args:
+        url:      Target URL.
+        session:  Optional named session (login persistence across calls).
+
     Returns:
         dict with keys: url, title, markdown, tables
     """
-    page = await _new_page()
+    page = await _new_page(session)
     try:
         await page.goto(url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
         await _wait_for_waf(page)
@@ -325,12 +403,13 @@ async def _extract_markdown(page) -> str:
         return await page.inner_text("body")
 
 
-async def scrape(url: str, *, mode: str = "extract") -> dict[str, Any]:
+async def scrape(url: str, *, mode: str = "extract", session: str | None = None) -> dict[str, Any]:
     """Scrape a URL: extract clean markdown by default, or fetch raw HTML+text.
 
     Args:
-        url:   Target URL.
-        mode:  "extract" for clean markdown (default), "fetch" for raw HTML+text.
+        url:      Target URL.
+        mode:     "extract" for clean markdown (default), "fetch" for raw HTML+text.
+        session:  Optional named session (login persistence across calls).
 
     Returns:
         Extraction result (markdown + tables) or fetch result (html + text).
@@ -338,27 +417,28 @@ async def scrape(url: str, *, mode: str = "extract") -> dict[str, Any]:
     async with _page_slots:
         try:
             if mode == "fetch":
-                return await fetch_page(url)
-            return await extract_page(url)
+                return await fetch_page(url, session)
+            return await extract_page(url, session)
         except PlaywrightError as exc:
             if _browser is None or not _browser.is_connected():
                 await _reset_browser()
-            logger.warning("Scrape failed for %s (mode=%s): %s — falling back to fetch", url, mode, exc)
+            logger.warning("Scrape failed for %s (mode=%s, session=%s): %s — falling back to fetch", url, mode, session or "-", exc)
             if mode != "fetch":
                 try:
-                    return await fetch_page(url)
+                    return await fetch_page(url, session)
                 except Exception:
                     pass
             raise
 
 
-async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str, Any]:
+async def crawl_site(url: str, depth: int = 2, max_pages: int = 50, session: str | None = None) -> dict[str, Any]:
     """Crawl a website BFS-style, returning pages and a sitemap.
 
     Args:
         url:       Root URL to crawl.
         depth:     Crawl depth (1 = just the given page).
         max_pages: Maximum pages to collect.
+        session:   Optional named session (crawl behind a logged-in profile).
 
     Returns:
         dict with keys: pages[], sitemap[]
@@ -391,7 +471,7 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
             # Each page holds a slot so concurrent crawls/scrapes stay within
             # MAX_CONCURRENT_PAGES and cannot overwhelm the browser.
             async with _page_slots:
-                page = await _new_page()
+                page = await _new_page(session)
                 try:
                     await page.goto(current_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
                     await page.wait_for_timeout(int(NAV_DELAY))
@@ -514,8 +594,9 @@ def _health_sync() -> bool:
 
 
 async def shutdown() -> None:
-    """Close the Playwright connection."""
+    """Close the Playwright connection and all named sessions."""
     global _browser, _playwright_ctx
+    _sessions.clear()
     if _browser is not None:
         try:
             await _browser.close()

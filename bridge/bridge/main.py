@@ -22,14 +22,18 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
 from . import ssrf
 from .browser_client import (
     ENGINE,
+    SessionLimitError,
+    close_session as browser_close_session,
     crawl_site as browser_crawl,
+    create_session as browser_create_session,
     health as browser_health,
+    list_sessions as browser_list_sessions,
     scrape as browser_scrape,
     search_web as browser_web_search,
     shutdown as browser_shutdown,
@@ -97,9 +101,13 @@ _REQUEST_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 #  Models
 # ---------------------------------------------------------------------------
 
+_SESSION_NAME_PATTERN = r"^[A-Za-z0-9._-]{1,64}$"
+
+
 class ScrapeRequest(BaseModel):
     url: str = Field(..., max_length=8192, description="URL to scrape")
     mode: Literal["extract", "fetch"] = Field("extract", description='"extract" for clean markdown, "fetch" for raw HTML')
+    session: str | None = Field(None, max_length=64, pattern=_SESSION_NAME_PATTERN, description="Named session for login persistence (create via POST /sessions)")
 
 
 class SearchAndScrapeRequest(BaseModel):
@@ -108,6 +116,11 @@ class SearchAndScrapeRequest(BaseModel):
     language: str = Field("en")
     max_results: int = Field(5, ge=1, le=50, description="How many results to scrape (default 5)")
     scrape_mode: Literal["extract", "fetch"] = Field("extract", description='"extract" or "fetch"')
+    session: str | None = Field(None, max_length=64, pattern=_SESSION_NAME_PATTERN, description="Named session for login persistence")
+
+
+class SessionRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64, pattern=_SESSION_NAME_PATTERN, description="Session name")
 
 
 # ---------------------------------------------------------------------------
@@ -146,20 +159,21 @@ _cache: dict[tuple[str, str], tuple[float, dict[str, Any], int]] = {}
 _cache_bytes = 0
 
 
-async def _cache_get(url: str, mode: str) -> dict[str, Any] | None:
+async def _cache_get(url: str, mode: str, session: str | None = None) -> dict[str, Any] | None:
     global _cache_bytes
-    item = _cache.get((url, mode))
+    key = (url, mode, session or "")
+    item = _cache.get(key)
     if item is None:
         return None
     if time.monotonic() - item[0] > BRIDGE_CACHE_TTL:
-        _cache.pop((url, mode), None)
+        _cache.pop(key, None)
         _cache_bytes -= item[2]
         return None
-    logger.info("Cache hit: %s (mode=%s)", url, mode)
+    logger.info("Cache hit: %s (mode=%s, session=%s)", url, mode, session or "-")
     return item[1]
 
 
-def _cache_set(url: str, mode: str, value: dict[str, Any]) -> None:
+def _cache_set(url: str, mode: str, value: dict[str, Any], session: str | None = None) -> None:
     global _cache_bytes
     size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
     if size > BRIDGE_CACHE_MAX_BYTES:
@@ -172,7 +186,7 @@ def _cache_set(url: str, mode: str, value: dict[str, Any]) -> None:
     ):
         oldest = min(_cache, key=lambda k: _cache[k][0])
         _cache_bytes -= _cache.pop(oldest)[2]
-    _cache[(url, mode)] = (time.monotonic(), value, size)
+    _cache[(url, mode, session or "")] = (time.monotonic(), value, size)
     _cache_bytes += size
 
 
@@ -247,15 +261,15 @@ async def scrape(req: ScrapeRequest) -> dict[str, Any]:
     Returns clean markdown (extract mode) or raw HTML + text (fetch mode).
     """
     await asyncio.to_thread(_validate_public_url, req.url)
-    cached = await _cache_get(req.url, req.mode)
+    cached = await _cache_get(req.url, req.mode, req.session)
     if cached is not None:
         return {**cached, "cached": True}
     try:
-        content = await browser_scrape(req.url, mode=req.mode)
+        content = await browser_scrape(req.url, mode=req.mode, session=req.session)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Browser scrape error: {exc}")
     if _cacheable(content):
-        _cache_set(req.url, req.mode, content)
+        _cache_set(req.url, req.mode, content, req.session)
     return content
 
 
@@ -292,13 +306,13 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
         # and stall the whole event loop.
         if not await asyncio.to_thread(_is_public_url, url):
             return {**result, "content": None, "scrape_error": "blocked: internal or private address"}
-        cached = await _cache_get(url, req.scrape_mode)
+        cached = await _cache_get(url, req.scrape_mode, req.session)
         if cached is not None:
             return {**result, "content": cached, "cached": True}
         try:
-            content = await browser_scrape(url, mode=req.scrape_mode)
+            content = await browser_scrape(url, mode=req.scrape_mode, session=req.session)
             if _cacheable(content):
-                _cache_set(url, req.scrape_mode, content)
+                _cache_set(url, req.scrape_mode, content, req.session)
             return {**result, "content": content}
         except Exception as exc:
             return {**result, "content": None, "scrape_error": str(exc)}
@@ -320,13 +334,51 @@ async def crawl(
     url: str = Query(..., max_length=8192, description="Root URL to crawl"),
     depth: int = Query(2, ge=1, le=5),
     max_pages: int = Query(50, ge=1, le=200),
+    session: str | None = Query(None, max_length=64, pattern=_SESSION_NAME_PATTERN, description="Named session for login persistence"),
 ) -> dict[str, Any]:
     """Crawl a whole site via the stealth browser (auto-handles SPA/JS + lazy-load)."""
     await asyncio.to_thread(_validate_public_url, url)
     try:
-        return await browser_crawl(url, depth=depth, max_pages=max_pages)
+        return await browser_crawl(url, depth=depth, max_pages=max_pages, session=session)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Browser crawl error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+#  Named sessions (login persistence)
+# ---------------------------------------------------------------------------
+
+@app.post("/sessions")
+async def create_session(req: SessionRequest) -> dict[str, Any]:
+    """Create (or return) a named long-lived browser context.
+
+    Scrapes that pass the same `session` name reuse this context, so cookies
+    and localStorage persist across calls (e.g. log in once, scrape many
+    authenticated pages). Sessions live until DELETE /sessions/{name} or a
+    bridge/browser restart. Bounded by CAMOUFOX_MAX_SESSIONS.
+    """
+    try:
+        created = await browser_create_session(req.name)
+    except SessionLimitError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Browser session error: {exc}")
+    return {"name": req.name, "created": created}
+
+
+@app.get("/sessions")
+async def list_sessions() -> dict[str, Any]:
+    """List the names of live browser sessions."""
+    return {"sessions": browser_list_sessions()}
+
+
+@app.delete("/sessions/{name}")
+async def delete_session(name: str = Path(..., pattern=_SESSION_NAME_PATTERN, description="Session name")) -> dict[str, Any]:
+    """Close and forget a named browser session."""
+    deleted = await browser_close_session(name)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Session not found: {name}")
+    return {"name": name, "deleted": True}
 
 
 # ---------------------------------------------------------------------------

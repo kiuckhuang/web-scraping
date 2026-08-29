@@ -230,6 +230,9 @@ For a **remote** connection, include the token:
 | `search_and_scrape`  | Search + scrape top results (Exa-style combined)         |
 | `crawl_site`         | Crawl a whole site via the stealth browser |
 | `browser_search`     | Web search via the stealth browser (not SearXNG) |
+| `create_session`     | Create a named long-lived session (login persistence) |
+| `delete_session`     | Close and forget a named session (drops its cookies) |
+| `list_sessions`      | List live session names |
 
 ## Using Camoufox Directly (Playwright WS)
 
@@ -252,6 +255,37 @@ const page = await browser.newPage();
 await page.goto("https://bot.sannysoft.com");
 await page.screenshot({ path: "stealth-check.png" });
 ```
+
+### Named Sessions (login persistence)
+
+By default every scrape runs in a throwaway isolated context — no cookies
+carry over. When a target needs a login, create a **named session** once and
+pass its name on subsequent calls; cookies and localStorage persist across
+calls within that session:
+
+```bash
+# 1. Create the session
+curl -s -X POST localhost:8000/sessions -H 'Content-Type: application/json' -d '{"name": "github"}'
+
+# 2. Log in inside it (e.g. drive the login form via your own Playwright
+#    client connected to ws://localhost:9223/browser, or scrape the login
+#    endpoint with the session name) — cookies now live in the session.
+
+# 3. Scrape authenticated pages with the same session
+curl -s -X POST localhost:8000/scrape -H 'Content-Type: application/json' \
+  -d '{"url": "https://github.com/settings/profile", "session": "github"}'
+
+# 4. List / drop it when done
+curl -s localhost:8000/sessions
+curl -s -X DELETE localhost:8000/sessions/github
+```
+
+The MCP tools work the same way: `create_session` → pass `session: "github"`
+to `scrape_url` / `search_and_scrape` / `crawl_site` → `list_sessions` /
+`delete_session`. Caches are session-scoped (the same URL is fetched once per
+session, not across sessions), sessions are bounded by
+`CAMOUFOX_MAX_SESSIONS` (default 16), and all sessions die with the browser
+connection — restart `ws-camoufox` and you start logged-out again.
 
 ## Configuration
 
