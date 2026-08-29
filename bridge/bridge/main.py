@@ -1,12 +1,12 @@
-"""FastAPI application — REST API for SearXNG search + Fortress scrape.
+"""FastAPI application — REST API for SearXNG search + stealth-browser scrape.
 
 Endpoints:
   GET  /health              — check SearXNG + browser engine status
   GET  /search              — search the web via SearXNG
-  POST /scrape              — scrape a URL via Fortress (stealth browser)
+  POST /scrape              — scrape a URL via the stealth browser (Camoufox)
   POST /search_and_scrape   — search via SearXNG, then scrape top results
-  GET  /crawl               — crawl a whole site via Fortress
-  GET  /web_search          — web search via Fortress stealth browser (not SearXNG)
+  GET  /crawl               — crawl a whole site via the stealth browser
+  GET  /web_search          — web search via the stealth browser (not SearXNG)
 """
 
 from __future__ import annotations
@@ -26,13 +26,13 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from . import ssrf
-from .fortress_client import (
-    BROWSER_ENGINE,
-    crawl_site as fortress_crawl,
-    health as fortress_health,
-    scrape as fortress_scrape,
-    search_web as fortress_web_search,
-    shutdown as fortress_shutdown,
+from .browser_client import (
+    ENGINE,
+    crawl_site as browser_crawl,
+    health as browser_health,
+    scrape as browser_scrape,
+    search_web as browser_web_search,
+    shutdown as browser_shutdown,
 )
 from .searxng_client import (
     health as searxng_health,
@@ -57,14 +57,14 @@ BRIDGE_CACHE_MAX_BYTES = int(os.environ.get("BRIDGE_CACHE_MAX_BYTES", str(25 * 1
 async def lifespan(app: FastAPI):
     logger.info("Bridge starting up")
     yield
-    logger.info("Bridge shutting down — closing SearXNG/Fortress sessions")
+    logger.info("Bridge shutting down — closing SearXNG/browser sessions")
     await searxng_shutdown()
-    await fortress_shutdown()
+    await browser_shutdown()
 
 
 app = FastAPI(
     title="Web Scrape Bridge",
-    description="SearXNG search + Tilion Fortress stealth scrape — a self-hosted alternative to Exa",
+    description="SearXNG search + Camoufox stealth scrape — a self-hosted alternative to Exa",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -75,7 +75,7 @@ async def request_id_middleware(request, call_next):
     """Tag every request with a short request ID and log it.
 
     The ID is echoed back via the X-Request-ID header so a failing agent call
-    can be correlated across bridge/Fortress/SearXNG logs. A client-supplied
+    can be correlated across bridge/browser/SearXNG logs. A client-supplied
     ID is honored only if it is short and printable — it goes back in a
     response header and into log lines, so it must not be attack surface.
     """
@@ -194,11 +194,11 @@ async def health_check() -> dict[str, Any]:
     """Check the status of SearXNG and the configured browser engine."""
     searxng_ok, browser_ok = await asyncio.gather(
         searxng_health(),
-        fortress_health(),
+        browser_health(),
     )
     return {
         "status": "ok" if searxng_ok and browser_ok else "degraded",
-        "engine": BROWSER_ENGINE,
+        "engine": ENGINE,
         "services": {
             "searxng": "up" if searxng_ok else "down",
             "browser": "up" if browser_ok else "down",
@@ -236,12 +236,12 @@ async def search(
 
 
 # ---------------------------------------------------------------------------
-#  Scrape (Fortress)
+#  Scrape (stealth browser)
 # ---------------------------------------------------------------------------
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest) -> dict[str, Any]:
-    """Scrape a single URL through the Fortress stealth browser.
+    """Scrape a single URL through the stealth browser.
 
     Bypasses Cloudflare, DataDome, PerimeterX, Akamai, and other bot detection.
     Returns clean markdown (extract mode) or raw HTML + text (fetch mode).
@@ -251,9 +251,9 @@ async def scrape(req: ScrapeRequest) -> dict[str, Any]:
     if cached is not None:
         return {**cached, "cached": True}
     try:
-        content = await fortress_scrape(req.url, mode=req.mode)
+        content = await browser_scrape(req.url, mode=req.mode)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Fortress scrape error: {exc}")
+        raise HTTPException(status_code=502, detail=f"Browser scrape error: {exc}")
     if _cacheable(content):
         _cache_set(req.url, req.mode, content)
     return content
@@ -265,7 +265,7 @@ async def scrape(req: ScrapeRequest) -> dict[str, Any]:
 
 @app.post("/search_and_scrape")
 async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
-    """Search via SearXNG, then scrape each result URL through Fortress.
+    """Search via SearXNG, then scrape each result URL through the stealth browser.
 
     This is the primary "Exa-like" endpoint: get search results with full page content.
     Results are scraped concurrently for speed.
@@ -286,7 +286,7 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
 
     async def scrape_one(result: dict) -> dict:
         url = result.get("url", "")
-        # SSRF guard: never hand a private/internal URL to Fortress, even if a
+        # SSRF guard: never hand a private/internal URL to the browser, even if a
         # search engine returned it. DNS runs in a worker thread — with up to
         # 50 results gathered concurrently, on-loop resolution would serialize
         # and stall the whole event loop.
@@ -296,7 +296,7 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
         if cached is not None:
             return {**result, "content": cached, "cached": True}
         try:
-            content = await fortress_scrape(url, mode=req.scrape_mode)
+            content = await browser_scrape(url, mode=req.scrape_mode)
             if _cacheable(content):
                 _cache_set(url, req.scrape_mode, content)
             return {**result, "content": content}
@@ -312,7 +312,7 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-#  Crawl (Fortress)
+#  Crawl (stealth browser)
 # ---------------------------------------------------------------------------
 
 @app.get("/crawl")
@@ -321,16 +321,16 @@ async def crawl(
     depth: int = Query(2, ge=1, le=5),
     max_pages: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
-    """Crawl a whole site via Fortress (auto-handles SPA/JS + lazy-load)."""
+    """Crawl a whole site via the stealth browser (auto-handles SPA/JS + lazy-load)."""
     await asyncio.to_thread(_validate_public_url, url)
     try:
-        return await fortress_crawl(url, depth=depth, max_pages=max_pages)
+        return await browser_crawl(url, depth=depth, max_pages=max_pages)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Fortress crawl error: {exc}")
+        raise HTTPException(status_code=502, detail=f"Browser crawl error: {exc}")
 
 
 # ---------------------------------------------------------------------------
-#  Web search via Fortress (stealth browser, not SearXNG)
+#  Web search via the stealth browser (not SearXNG)
 # ---------------------------------------------------------------------------
 
 @app.get("/web_search")
@@ -338,11 +338,11 @@ async def web_search(
     q: str = Query(..., min_length=1, max_length=1000, description="Search query"),
     count: int = Query(10, ge=1, le=30),
 ) -> dict[str, Any]:
-    """Web search through the Fortress stealth browser (real browser, no SERP API)."""
+    """Web search through the stealth browser (real browser, no SERP API)."""
     try:
-        return await fortress_web_search(q, count=count)
+        return await browser_web_search(q, count=count)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Fortress search error: {exc}")
+        raise HTTPException(status_code=502, detail=f"Browser search error: {exc}")
 
 
 # ---------------------------------------------------------------------------

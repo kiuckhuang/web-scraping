@@ -1,19 +1,15 @@
-"""Browser engine client — stealth scraping over Playwright.
+"""Browser client — stealth scraping via Camoufox over Playwright.
 
-Two engines are supported (select with BROWSER_ENGINE; see module constants):
-
-  - fortress (default): Tilion Fortress stealth Chromium over CDP
-    (http://fortress:9222, connect_over_cdp)
-  - camoufox: anti-detect Firefox fork over Playwright's websocket protocol
-    (ws://camoufox:9222/browser, firefox.connect)
-
-High-level operations (engine-agnostic Playwright API):
+Connects to the ws-camoufox container's Playwright websocket endpoint
+(ws://camoufox:9222/browser, firefox.connect) and provides high-level
+operations on the engine-agnostic Playwright API:
 
   - fetch_page:    get raw HTML + title + text of any URL
   - extract_page:  get clean markdown + tables from any URL
   - scrape:        convenience wrapper that tries extract first, falls back to fetch
   - crawl_site:    BFS crawl of a whole site
   - search_web:    web search through the stealth browser
+  - session helpers: named long-lived contexts for login persistence
 """
 
 from __future__ import annotations
@@ -26,7 +22,6 @@ from collections import deque
 from typing import Any
 from urllib.parse import quote, urlparse
 
-import httpx
 from markdownify import markdownify
 from playwright.async_api import Browser, Error as PlaywrightError, async_playwright
 
@@ -34,36 +29,22 @@ from . import ssrf
 
 logger = logging.getLogger(__name__)
 
-FORTRESS_CDP_URL = os.environ.get("FORTRESS_CDP_URL", "http://fortress:9222")
-SCRAPE_TIMEOUT = float(os.environ.get("FORTRESS_TIMEOUT", "60"))
-NAV_WAIT = os.environ.get("FORTRESS_NAV_WAIT", "domcontentloaded")
-NAV_DELAY = float(os.environ.get("FORTRESS_NAV_DELAY", "400"))
-MAX_CONCURRENT_PAGES = int(os.environ.get("FORTRESS_MAX_CONCURRENT_PAGES", "3"))
-WAF_WAIT = float(os.environ.get("FORTRESS_WAF_WAIT", "15"))
-ISOLATE_CONTEXTS = os.environ.get("FORTRESS_ISOLATE_CONTEXTS", "true").lower() not in {"0", "false", "no"}
+ENGINE = "camoufox"
+CAMOUFOX_WS_URL = os.environ.get("CAMOUFOX_WS_URL", "ws://camoufox:9222/browser")
+SCRAPE_TIMEOUT = float(os.environ.get("CAMOUFOX_TIMEOUT", "60"))
+NAV_WAIT = os.environ.get("CAMOUFOX_NAV_WAIT", "domcontentloaded")
+NAV_DELAY = float(os.environ.get("CAMOUFOX_NAV_DELAY", "400"))
+MAX_CONCURRENT_PAGES = int(os.environ.get("CAMOUFOX_MAX_CONCURRENT_PAGES", "3"))
+WAF_WAIT = float(os.environ.get("CAMOUFOX_WAF_WAIT", "15"))
+ISOLATE_CONTEXTS = os.environ.get("CAMOUFOX_ISOLATE_CONTEXTS", "true").lower() not in {"0", "false", "no"}
 # Wall-clock budget for a single /crawl call (seconds, 0 = unlimited). Without
 # it a 200-page crawl against slow/challenging targets can run for hours while
 # the MCP client has long timed out.
 CRAWL_MAX_SECONDS = float(os.environ.get("CRAWL_MAX_SECONDS", "1800"))
-# Browser engine selection (stage 1 of the Fortress migration path):
-#   fortress — Tilion Fortress stealth Chromium over CDP (default, pinned tag)
-#   camoufox — anti-detect Firefox fork over Playwright's websocket protocol
-# Everything below the factory (SSRF guard, WAF wait, crawl, SERP parsing) is
-# engine-agnostic Playwright API and works with either engine.
-# NOTE: Playwright's remote protocol enforces client/server minor-version
-# parity (the server answers 428 on mismatch), and the camoufox image pins
-# playwright 1.60.x (camoufox 0.5.5 requires <1.61) — so bridge/pyproject.toml
-# pins playwright to the same line. The Fortress CDP path is version-agnostic.
-def _normalize_engine(raw: str) -> str:
-    """Validate the BROWSER_ENGINE value; raises RuntimeError on unknown engines."""
-    engine = raw.strip().lower()
-    if engine not in ("fortress", "camoufox"):
-        raise RuntimeError(f"Unsupported BROWSER_ENGINE: {raw!r} (use 'fortress' or 'camoufox')")
-    return engine
-
-
-BROWSER_ENGINE = _normalize_engine(os.environ.get("BROWSER_ENGINE", "fortress"))
-CAMOUFOX_WS_URL = os.environ.get("CAMOUFOX_WS_URL", "ws://camoufox:9222/browser")
+# Playwright's remote protocol enforces client/server minor-version parity
+# (the server answers 428 on mismatch); the camoufox image pins playwright
+# 1.60.x (camoufox 0.5.5 requires <1.61) — keep bridge/pyproject.toml on the
+# same line and bump both pins together (see AGENTS.md).
 WAF_MARKERS = (
     "just a moment",
     "performing security verification",
@@ -72,35 +53,6 @@ WAF_MARKERS = (
     "challenge-platform",
 )
 
-
-def _resolve_cdp_url(url: str) -> str:
-    """Resolve the hostname in the CDP URL to an IP address.
-
-    Chromium's DevTools server rejects HTTP requests whose Host header is not
-    an IP address or "localhost". When containers communicate via DNS names
-    (e.g. http://fortress:9222), the Host header is the container name, which
-    gets a 500 error. Resolving to the IP fixes this for both httpx and
-    Playwright's connect_over_cdp.
-    """
-    parsed = urlparse(url)
-    host = parsed.hostname or ""
-    if host in ("127.0.0.1", "localhost", "0.0.0.0"):
-        return url
-    try:
-        ip = socket.gethostbyname(host)
-        logger.info("Resolved %s -> %s", host, ip)
-        return url.replace(host, ip, 1)
-    except socket.gaierror:
-        logger.warning("Could not resolve %s, using URL as-is", host)
-        return url
-
-
-# Resolve at connect time, not import time: if the Fortress container is
-# recreated it may get a new IP, and a cached address would silently break
-# scraping until the bridge restarts. This holds the most recent resolution
-# for logging/health checks only.
-CDP_URL = _resolve_cdp_url(FORTRESS_CDP_URL)
-
 _browser: Browser | None = None
 _playwright_ctx: Any = None
 _lock = asyncio.Lock()
@@ -108,7 +60,7 @@ _page_slots = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
 
 
 async def _reset_browser() -> None:
-    """Drop a broken CDP connection so the next request reconnects cleanly."""
+    """Drop a broken connection so the next request reconnects cleanly."""
     global _browser, _playwright_ctx
     browser, playwright_ctx = _browser, _playwright_ctx
     _browser = None
@@ -126,37 +78,19 @@ async def _reset_browser() -> None:
 
 
 async def _get_browser() -> Browser:
-    """Lazily connect to the configured browser engine and reuse the connection.
-
-    Fortress: the CDP hostname is re-resolved on every (re)connect so that a
-    recreated Fortress container with a fresh IP is picked up without a bridge
-    restart. Camoufox: plain websocket connect to the Playwright server (no CDP,
-    no Host-header workaround needed).
-    """
-    global _browser, _playwright_ctx, CDP_URL
+    """Lazily connect to the Camoufox websocket endpoint and reuse the connection."""
+    global _browser, _playwright_ctx
     if _browser is None or not _browser.is_connected():
         async with _lock:
             if _browser is None or not _browser.is_connected():
-                if BROWSER_ENGINE == "camoufox":
-                    logger.info("Connecting to Camoufox at %s", CAMOUFOX_WS_URL)
-                    try:
-                        _playwright_ctx = await async_playwright().start()
-                        _browser = await _playwright_ctx.firefox.connect(CAMOUFOX_WS_URL)
-                        logger.info("Connected to Camoufox")
-                    except Exception:
-                        await _reset_browser()
-                        raise
-                else:
-                    # DNS must not run on the event loop (see _resolve_cdp_url).
-                    CDP_URL = await asyncio.to_thread(_resolve_cdp_url, FORTRESS_CDP_URL)
-                    logger.info("Connecting to Fortress CDP at %s", CDP_URL)
-                    try:
-                        _playwright_ctx = await async_playwright().start()
-                        _browser = await _playwright_ctx.chromium.connect_over_cdp(CDP_URL)
-                        logger.info("Connected to Fortress CDP")
-                    except Exception:
-                        await _reset_browser()
-                        raise
+                logger.info("Connecting to Camoufox at %s", CAMOUFOX_WS_URL)
+                try:
+                    _playwright_ctx = await async_playwright().start()
+                    _browser = await _playwright_ctx.firefox.connect(CAMOUFOX_WS_URL)
+                    logger.info("Connected to Camoufox")
+                except Exception:
+                    await _reset_browser()
+                    raise
     return _browser
 
 
@@ -183,7 +117,7 @@ def _is_public_http_url(url: str) -> bool:
 
 
 async def _guard_request(route, request) -> None:
-    """Abort private redirects and subresource requests inside Chromium."""
+    """Abort private redirects and subresource requests inside the browser."""
     url = request.url
     if await asyncio.to_thread(_is_public_http_url, url):
         await route.continue_()
@@ -455,7 +389,7 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
 
         try:
             # Each page holds a slot so concurrent crawls/scrapes stay within
-            # MAX_CONCURRENT_PAGES and cannot overwhelm Fortress.
+            # MAX_CONCURRENT_PAGES and cannot overwhelm the browser.
             async with _page_slots:
                 page = await _new_page()
                 try:
@@ -501,7 +435,7 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
 
 
 async def search_web(query: str, count: int = 10) -> dict[str, Any]:
-    """Web search through the Fortress stealth browser.
+    """Web search through the stealth browser.
 
     Navigates to DuckDuckGo, extracts organic results.
     """
@@ -541,7 +475,7 @@ async def search_web(query: str, count: int = 10) -> dict[str, Any]:
                 # served). Log it so operators can distinguish selector rot
                 # from a genuine no-results query.
                 logger.warning(
-                    "Fortress web search returned 0 results for %r — "
+                    "Browser web search returned 0 results for %r — "
                     "DuckDuckGo HTML selectors may be stale",
                     query,
                 )
@@ -555,36 +489,19 @@ async def search_web(query: str, count: int = 10) -> dict[str, Any]:
             await _close_page(page)
 
 
-_health_client: httpx.AsyncClient | None = None
-
-
-def _get_health_client() -> httpx.AsyncClient:
-    global _health_client
-    if _health_client is None or _health_client.is_closed:
-        _health_client = httpx.AsyncClient(timeout=5.0, headers={"Host": "127.0.0.1"})
-    return _health_client
-
-
 async def health() -> bool:
-    """Check whether the configured browser engine is reachable.
+    """Check whether the Camoufox Playwright server is reachable.
 
-    Fortress answers /json/version over HTTP (re-resolving the host); the
-    Camoufox Playwright server has no HTTP endpoint, so its health is a plain
-    TCP connect to the websocket port.
+    The Playwright server has no HTTP endpoint, so health is a plain TCP
+    connect to the websocket port.
     """
-    global CDP_URL
     try:
-        if BROWSER_ENGINE == "camoufox":
-            return await asyncio.to_thread(_camoufox_health_sync)
-        CDP_URL = await asyncio.to_thread(_resolve_cdp_url, FORTRESS_CDP_URL)
-        client = _get_health_client()
-        resp = await client.get(f"{CDP_URL}/json/version")
-        return resp.status_code == 200
+        return await asyncio.to_thread(_health_sync)
     except Exception:
         return False
 
 
-def _camoufox_health_sync() -> bool:
+def _health_sync() -> bool:
     """TCP health probe for the Camoufox Playwright websocket server."""
     parsed = urlparse(CAMOUFOX_WS_URL)
     host = parsed.hostname or "camoufox"
@@ -597,14 +514,8 @@ def _camoufox_health_sync() -> bool:
 
 
 async def shutdown() -> None:
-    """Close the Playwright connection and health client."""
-    global _browser, _playwright_ctx, _health_client
-    if _health_client is not None:
-        try:
-            await _health_client.aclose()
-        except Exception:
-            pass
-        _health_client = None
+    """Close the Playwright connection."""
+    global _browser, _playwright_ctx
     if _browser is not None:
         try:
             await _browser.close()

@@ -7,7 +7,7 @@ wsPath, maxConnections are native launchServer options).
 
 Known limitation: headless='virtual' (managed Xvfb) is only wired through the
 Camoufox() wrapper classes, not launch_server — this server runs Firefox in
-plain headless mode, like the Fortress engine today.
+plain headless mode.
 """
 
 import os

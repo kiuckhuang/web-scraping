@@ -144,7 +144,7 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="scrape_url",
-        description="Scrape a URL via Fortress stealth browser (bypasses Cloudflare, DataDome, PerimeterX, Akamai). Clean markdown (extract) or raw HTML+text (fetch).",
+        description="Scrape a URL via the Camoufox stealth browser (bypasses Cloudflare, DataDome, PerimeterX, Akamai). Clean markdown (extract) or raw HTML+text (fetch).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -171,7 +171,7 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="crawl_site",
-        description="Crawl a whole website via Fortress (SPA/JS-aware, lazy-loading handled). Returns discovered pages and a sitemap.",
+        description="Crawl a whole website via the stealth browser (SPA/JS-aware, lazy-loading handled). Returns discovered pages and a sitemap.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -183,8 +183,8 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
-        name="fortress_search",
-        description="Web search through the Fortress stealth browser (real-browser SERP, not SearXNG). Use when SearXNG engines are rate-limited.",
+        name="browser_search",
+        description="Web search through the Camoufox stealth browser (real-browser SERP, not SearXNG). Use when SearXNG engines are rate-limited.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -258,7 +258,7 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
             )
             return CallToolResult(content=[TextContent(type="text", text=_format_crawl_result(result))])
 
-        elif name == "fortress_search":
+        elif name == "browser_search":
             result = await _api_get(
                 "/web_search",
                 q=arguments["query"],

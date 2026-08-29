@@ -1,9 +1,9 @@
-# Web Scrape Stack: [SearXNG](https://github.com/searxng/searxng) + [Tilion Fortress](https://github.com/tiliondev/fortress)
+# Web Scrape Stack: [SearXNG](https://github.com/searxng/searxng) + [Camoufox](https://github.com/daijro/camoufox)
 
 A self-hosted, Podman-based search-and-scrape stack that combines:
 
 - **[SearXNG](https://github.com/searxng/searxng)** — privacy metasearch engine configured with a focused set of search engines, including Google, Bing, DuckDuckGo, Wikipedia, GitHub, Stack Overflow, Reddit, and news sources
-- **[Tilion Fortress](https://github.com/tiliondev/fortress)** — stealth [Chromium](https://www.chromium.org/) engine that bypasses Cloudflare, DataDome, PerimeterX, Akamai, and other bot detection
+- **[Camoufox](https://github.com/daijro/camoufox)** — anti-detect [Firefox](https://www.mozilla.org/firefox/) fork whose fingerprint patches live at the C++ level (not JS injection), serving stealth scraping over Playwright's websocket protocol
 - **Bridge** — a [FastAPI](https://fastapi.tiangolo.com/) + [Model Context Protocol](https://modelcontextprotocol.io/) service that orchestrates both into a unified API (like [Exa](https://exa.ai/), but self-hosted and free)
 
 
@@ -12,7 +12,7 @@ A self-hosted, Podman-based search-and-scrape stack that combines:
 ### Prerequisites
 
 - [Podman](https://podman.io/) 4.x+ with `podman compose` (or [podman-compose](https://github.com/containers/podman-compose))
-- ~2 GB RAM (SearXNG ~512 MB, Fortress ~850 MB, Bridge ~128 MB)
+- ~2.5 GB RAM (SearXNG ~512 MB, Camoufox ~1 GB, Bridge ~128 MB)
 
 ```bash
 make init && make up && make test
@@ -33,18 +33,18 @@ flowchart TB
     end
     subgraph internal["internal network (localhost only)"]
         searx["SearXNG\nJSON search API\n127.0.0.1:8888"]
-        fortress["Tilion Fortress\nChromium over CDP\n127.0.0.1:9222"]
+        camoufox["Camoufox\nanti-detect Firefox over Playwright WS\n127.0.0.1:9223"]
         valkey["Valkey\ncache and limiter"]
     end
 
     client --> mcp
     mcp --> bridge
     bridge -->|search| searx
-    bridge -->|scrape, crawl, browser search| fortress
+    bridge -->|scrape, crawl, browser search| camoufox
     searx --> valkey
 ```
 
-> **Security model:** Core services and MCP bind to `127.0.0.1` on the host by default. Set `MCP_BIND_HOST` to a non-loopback address only when remote access is intentional; a non-empty `MCP_API_KEY` is required in that mode. MCP is on the `edge` network only; it can talk to Bridge but cannot reach SearXNG, Fortress, or Valkey directly.
+> **Security model:** Core services and MCP bind to `127.0.0.1` on the host by default. Set `MCP_BIND_HOST` to a non-loopback address only when remote access is intentional; a non-empty `MCP_API_KEY` is required in that mode. MCP is on the `edge` network only; it can talk to Bridge but cannot reach SearXNG, Camoufox, or Valkey directly.
 
 ### Request Flow
 
@@ -54,7 +54,7 @@ sequenceDiagram
     participant M as MCP server
     participant B as Bridge
     participant S as SearXNG
-    participant F as Fortress
+    participant F as Camoufox
 
     A->>M: search_web or search_and_scrape
     M->>B: HTTP request
@@ -76,8 +76,7 @@ sequenceDiagram
 |------------|--------------|----------------------------------------------|
 | [SearXNG](https://github.com/searxng/searxng) | 8888 (127.0.0.1) | Metasearch web UI + JSON API             |
 | [Valkey](https://github.com/valkey-io/valkey) | —     | Redis-compatible cache for SearXNG           |
-| [Fortress](https://github.com/tiliondev/fortress) | 9222 (127.0.0.1) | Stealth Chromium (CDP endpoint)       |
-| [Camoufox](https://github.com/daijro/camoufox) | 9223 (127.0.0.1, opt-in) | Anti-detect Firefox (Playwright WS) — alternative engine |
+| [Camoufox](https://github.com/daijro/camoufox) | 9223 (127.0.0.1) | Anti-detect Firefox (Playwright WS endpoint) |
 | Bridge     | 8000 (127.0.0.1) | Unified REST API ([FastAPI](https://fastapi.tiangolo.com/)) |
 | MCP        | 9100 (127.0.0.1 by default) | Streamable HTTP server for AI agents ([MCP](https://modelcontextprotocol.io/)) |
 
@@ -92,7 +91,7 @@ curl http://localhost:8000/health
 # Search the web (SearXNG)
 curl 'http://localhost:8000/search?q=podman+tutorial&max_results=3'
 
-# Scrape a bot-protected page (Fortress)
+# Scrape a bot-protected page (stealth browser)
 curl -X POST http://localhost:8000/scrape \
   -H 'Content-Type: application/json' \
   -d '{"url": "https://example.com", "mode": "extract"}'
@@ -121,7 +120,7 @@ Search the web via the configured [SearXNG](https://github.com/searxng/searxng) 
 
 ### `POST /scrape`
 
-Scrape a single URL through the [Fortress](https://github.com/tiliondev/fortress) stealth browser. Bypasses [Cloudflare](https://www.cloudflare.com/), [DataDome](https://datadome.co/), [PerimeterX](https://www.perimeterx.com/), and [Akamai](https://www.akamai.com/).
+Scrape a single URL through the [Camoufox](https://github.com/daijro/camoufox) stealth browser. Bypasses [Cloudflare](https://www.cloudflare.com/), [DataDome](https://datadome.co/), [PerimeterX](https://www.perimeterx.com/), and [Akamai](https://www.akamai.com/).
 
 ```json
 {"url": "https://protected-site.com", "mode": "extract"}
@@ -132,7 +131,7 @@ Scrape a single URL through the [Fortress](https://github.com/tiliondev/fortress
 
 ### `POST /search_and_scrape`
 
-Search via [SearXNG](https://github.com/searxng/searxng), then scrape each result URL through [Fortress](https://github.com/tiliondev/fortress) concurrently. This is the primary Exa-style endpoint.
+Search via [SearXNG](https://github.com/searxng/searxng), then scrape each result URL through the stealth browser concurrently. This is the primary Exa-style endpoint.
 
 ```json
 {"query": "best practices for kubernetes security", "max_results": 5, "scrape_mode": "extract"}
@@ -140,7 +139,7 @@ Search via [SearXNG](https://github.com/searxng/searxng), then scrape each resul
 
 ### `GET /crawl`
 
-Crawl a whole website via [Fortress](https://github.com/tiliondev/fortress) (auto-handles SPA/JS + lazy-load).
+Crawl a whole website via the stealth browser (auto-handles SPA/JS + lazy-load).
 
 | Parameter  | Type | Default | Description           |
 |------------|------|---------|-----------------------|
@@ -150,11 +149,11 @@ Crawl a whole website via [Fortress](https://github.com/tiliondev/fortress) (aut
 
 ### `GET /web_search`
 
-Web search through the [Fortress](https://github.com/tiliondev/fortress) stealth browser (real browser search, not SearXNG). Useful when SearXNG engines are rate-limited.
+Web search through the stealth browser (real browser search, not SearXNG). Useful when SearXNG engines are rate-limited.
 
 ### `GET /health`
 
-Check status of SearXNG and Fortress.
+Check status of SearXNG and the Camoufox browser.
 
 ## MCP Server (for AI Agents)
 
@@ -227,28 +226,28 @@ For a **remote** connection, include the token:
 | Tool                 | Description                                              |
 |----------------------|----------------------------------------------------------|
 | `search_web`         | Search via the configured [SearXNG](https://github.com/searxng/searxng) engines |
-| `scrape_url`         | Scrape a URL via [Fortress](https://github.com/tiliondev/fortress) stealth browser |
+| `scrape_url`         | Scrape a URL via the [Camoufox](https://github.com/daijro/camoufox) stealth browser |
 | `search_and_scrape`  | Search + scrape top results (Exa-style combined)         |
-| `crawl_site`         | Crawl a whole site via [Fortress](https://github.com/tiliondev/fortress) |
-| `fortress_search`    | Web search via [Fortress](https://github.com/tiliondev/fortress) stealth browser (not SearXNG) |
+| `crawl_site`         | Crawl a whole site via the stealth browser |
+| `browser_search`     | Web search via the stealth browser (not SearXNG) |
 
-## Using Fortress Directly (CDP)
+## Using Camoufox Directly (Playwright WS)
 
-The [Fortress](https://github.com/tiliondev/fortress) container exposes a CDP endpoint on port 9222. You can connect your own [Playwright](https://playwright.dev/), [Puppeteer](https://pptr.dev/), or [browser-use](https://github.com/browser-use/browser-use) automation directly:
+The `ws-camoufox` container exposes a Playwright websocket endpoint on host port 9223. You can connect your own [Playwright](https://playwright.dev/) automation directly — **your Playwright client must be the same minor version as the server (1.60.x)**, since Playwright's remote protocol rejects mismatched clients:
 
 ```python
 from playwright.sync_api import sync_playwright
 
 with sync_playwright() as p:
-    browser = p.chromium.connect_over_cdp("http://localhost:9222")
+    browser = p.firefox.connect("ws://localhost:9223/browser")
     page = browser.new_page()
     page.goto("https://bot.sannysoft.com")
     page.screenshot(path="stealth-check.png")
 ```
 
 ```javascript
-import { chromium } from "playwright";
-const browser = await chromium.connectOverCDP("http://localhost:9222");
+import { firefox } from "playwright";
+const browser = await firefox.connect("ws://localhost:9223/browser");
 const page = await browser.newPage();
 await page.goto("https://bot.sannysoft.com");
 await page.screenshot({ path: "stealth-check.png" });
@@ -270,33 +269,26 @@ await page.screenshot({ path: "stealth-check.png" });
 | `SEARXNG_SUSPEND_TOO_MANY` | `180`                | How long an engine is suspended (s) after a 429 / rate-limit |
 | `SEARXNG_FORCE_OWNERSHIP` | `true`                | Force SearXNG file ownership on start |
 | `SEARXNG_UWSGI_THREADS` | `4`                    | SearXNG worker thread count          |
-| `FORTRESS_CDP_URL`      | `http://fortress:9222`   | Fortress CDP endpoint                |
-| `FORTRESS_CHANNEL`      | `150`                    | Fortress image tag — pinned release (`150` = Chromium 150.0.7871.114, latest available; upstream unmaintained since 2026-07) |
-| `FORTRESS_TZ`           | host `TZ`                | Browser timezone override             |
-| `FORTRESS_LANG`         | host `LANG`              | Browser language override             |
-| `fortress-profile`      | Podman volume            | Persistent Chromium profile volume           |
-| `FORTRESS_SHM_SIZE`     | `2gb`                    | Fortress shared memory size |
-| `FORTRESS_NAV_DELAY`    | `400`                    | Post-navigation pause (ms) before extraction (crawl, SERP, and extract-mode pages; fetch mode skips it) |
+| `CAMOUFOX_WS_URL`       | `ws://camoufox:9222/browser` | Playwright websocket endpoint (container-internal) |
+| `CAMOUFOX_SHM_SIZE`     | `1gb`                    | Browser shared memory size |
+| `CAMOUFOX_NAV_DELAY`    | `400`                    | Post-navigation pause (ms) before extraction (crawl, SERP, and extract-mode pages; fetch mode skips it) |
 | `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen address (internal container) |
 | `BRIDGE_PORT`           | `8000`                   | Bridge listen port (internal container) |
 | `BRIDGE_CACHE_TTL`      | `300`                    | Scrape cache TTL (s) — repeat scrapes of the same URL skip the browser |
 | `BRIDGE_CACHE_MAX`      | `100`                    | Max pages held in the scrape cache |
 | `BRIDGE_CACHE_MAX_BYTES` | `26214400`              | Max serialized scrape-cache size (25 MiB) |
-| `FORTRESS_TIMEOUT`       | `60`                    | Browser navigation timeout (s) |
-| `FORTRESS_NAV_WAIT`      | `domcontentloaded`      | Browser navigation wait condition |
-| `FORTRESS_MAX_CONCURRENT_PAGES` | `3`              | Maximum concurrent browser pages |
-| `FORTRESS_WAF_WAIT`      | `15`                    | Maximum WAF challenge wait (s) |
-| `FORTRESS_ISOLATE_CONTEXTS` | `true`                | Isolate cookies/storage for each request |
-| `UBLOCK_ORIGIN_LITE_ENABLED` | `true`              | Enable the bundled uBlock Origin Lite extension |
+| `CAMOUFOX_TIMEOUT`       | `60`                    | Browser navigation timeout (s) |
+| `CAMOUFOX_NAV_WAIT`      | `domcontentloaded`      | Browser navigation wait condition |
+| `CAMOUFOX_MAX_CONCURRENT_PAGES` | `3`              | Maximum concurrent browser pages |
+| `CAMOUFOX_WAF_WAIT`      | `15`                    | Maximum WAF challenge wait (s) |
+| `CAMOUFOX_ISOLATE_CONTEXTS` | `true`                | Isolate cookies/storage for each request |
+| `CAMOUFOX_MAX_SESSIONS` | `16`                     | Max concurrent named sessions (login persistence) |
 | `CRAWL_MAX_SECONDS`     | `1800`                   | Wall-clock budget per `/crawl` call (s); `0` = unlimited. Returns partial results when exhausted |
 | `SSRF_DNS_CACHE_TTL`    | `60`                     | TTL (s) for cached SSRF DNS verdicts (`0` disables caching) |
 | `LOG_LEVEL`             | `INFO`                   | Log level for the bridge and MCP services (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
-| `BROWSER_ENGINE`        | `fortress`               | Browser engine the bridge drives: `fortress` or `camoufox` (opt-in; requires `make up-camoufox`) |
-| `CAMOUFOX_WS_URL`       | `ws://camoufox:9222/browser` | Playwright websocket endpoint of the ws-camoufox container |
 | `PORT_CAMOUFOX`         | `9223`                   | Host (loopback) port for direct access to the ws-camoufox container |
 | `BRIDGE_URL`            | `http://bridge:8000`     | Bridge URL used by MCP (container-internal) |
 | `PORT_SEARXNG`          | `8888`                   | Host port for SearXNG                |
-| `PORT_FORTRESS`         | `9222`                   | Host port for Fortress CDP           |
 | `PORT_BRIDGE`           | `8000`                   | Host port for Bridge REST API        |
 | `PORT_MCP`              | `9100`                   | Host port for MCP server             |
 | `MCP_API_KEY`           | (auto-generated)         | Bearer token for remote MCP clients (localhost bypasses auth) |
@@ -330,49 +322,20 @@ SEARXNG_SUSPEND_TOO_MANY=60
 
 Apply changes: `podman compose up -d --force-recreate searxng` (or `make up`)
 
-### Fortress Locale and Profile
+### Camoufox Locale and Profile
 
-Fortress inherits the compose process' `TZ` and `LANG` values by default. Set
-`FORTRESS_TZ` or `FORTRESS_LANG` in `.env` to override them. If the host timezone is
-not exported as `TZ`, set `FORTRESS_TZ` explicitly. The browser profile is persisted in
-the Podman-managed `fortress-profile` volume, allowing cookies and other profile state
-to survive container recreation:
+The browser inherits the compose process' `TZ` value (set `TZ` in `.env` to
+override it) — consistent locale/timezone matters for fingerprint coherence.
 
-```bash
-FORTRESS_CHANNEL=150
-FORTRESS_TZ=Asia/Hong_Kong
-FORTRESS_LANG=zh-HK
-podman compose up -d
-```
+The profile is **ephemeral by design**: Playwright's `launchServer` cannot serve
+a persistent context over a websocket, so each container start gets a throwaway
+profile (cookies/storage do not survive a restart). The bridge's default
+per-request context isolation works the same way. For login persistence across
+scrape calls, use **named sessions** (see the bridge `POST /sessions` API and the
+`create_session`/`delete_session`/`list_sessions` MCP tools).
 
-On first startup, Fortress installs the official [uBlock Origin Lite](https://github.com/uBlockOrigin/uBOL-home)
-Chromium extension into the persistent profile by default. Set
-`UBLOCK_ORIGIN_LITE_ENABLED=false` in `.env` and recreate Fortress to disable loading it.
-The extension is pinned to a release and verified by SHA-256 before installation.
-
-The profile is not a host bind mount. Inspect or back it up through the container:
-
-```bash
-podman exec ws-fortress ls -la /tmp/tillion-profile
-podman exec ws-fortress du -sh /tmp/tillion-profile
-podman cp ws-fortress:/tmp/tillion-profile ./fortress-profile-backup
-```
-
-Remove the profile volume only when you intentionally want a fresh browser profile:
-
-```bash
-podman compose down -v
-podman volume rm web-scraping_fortress-profile
-```
-
-`make clean` removes the named volume as part of `podman compose down -v`. The bridge
-uses isolated browser contexts by default. The profile is mounted at both
-`/tmp/tilion-profile` (the upstream documented path) and
-`/tmp/tillion-profile` (used by current image builds) for compatibility.
-
-The profile volume uses Podman's `:U` ownership remapping, so the uBlock
-initializer and Fortress's `tillion` user can write it without host-side
-`chmod 777` or ownership changes.
+uBlock Origin ships inside the Camoufox browser build — no extension init
+machinery needed.
 
 `make up`, `make rebuild`, and `make update` run `make init` automatically. A
 complete fresh setup is therefore:
@@ -383,45 +346,19 @@ make clean
 make update
 ```
 
-### Fortress maintenance status (as of 2026-08)
+### Browser engine: Camoufox (and why Fortress was removed)
 
-⚠️ **Upstream [tiliondev/fortress](https://github.com/tiliondev/fortress) has not shipped a build since 2026-07-15** (tag `150` = Chromium 150.0.7871.114), despite advertising a monthly rebase. Current Chrome stable is **151.x**, so version-database detectors will increasingly read Fortress 150 as an outdated — and therefore suspicious — browser. (A `151` tag exists on Docker Hub, but it is Chromium 151.0.7908.0 pushed 2026-07-11 — an *older* dev-channel snapshot that predates the 150 stable build, so `150` remains the pin.) The stack still works, but treat Fortress as a decaying asset and evaluate alternatives:
+The stack previously shipped **[Tilion Fortress](https://github.com/tiliondev/fortress)** (recompiled stealth Chromium over CDP). Upstream stopped shipping builds on 2026-07-15 (Chromium 150 vs current stable 151.x), so the unpatched browser was both a growing CVE liability and increasingly readable as outdated by version-database detectors. The last Fortress-based commit is tagged **`fortress-last`** (`git checkout fortress-last` to revisit it).
 
-| Alternative | Approach | Drop-in? | Notes |
-|-------------|----------|----------|-------|
-| **[Camoufox](https://github.com/daijro/camoufox)** | Firefox fork, C++ stealth patches (same engine-level idea as Fortress) | Close — Playwright-compatible API, runs in Docker | Actively maintained (2026-07+), 0% headless detection in benchmarks; MPL-2.0. Strongest like-for-like replacement. |
-| **[nodriver](https://github.com/ultrafunkamsterdam/nodriver)** | Drives real Chrome over raw CDP — no Playwright shim | No — different (async-only) API; would replace `fortress_client.py` | Top of the 2026-06 independent Cloudflare benchmark (0 blocked targets); AGPL-3.0. |
-| **[Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)** | Patched Playwright driving real Chrome | Yes — drop-in Playwright API | Actively maintained, Apache-2.0, Python/Node/.NET. Easy migration path from the current Playwright client. |
-| **[curl_cffi](https://github.com/lexiforest/curl_cffi)** | TLS-impersonating HTTP client, no browser | No — HTTP only, no JS rendering | Surprisingly effective (26/31 in the same benchmark); good complement for pages that don't need JS. |
-
-Migration notes if Fortress goes fully stale: the bridge only talks to Fortress over CDP (`fortress_client.py`), so swapping engines is confined to one module plus the compose service. Patchright is the smallest code change (same Playwright calls, different browser binary); Camoufox is the closest in spirit (C++-patched engine, Docker-friendly).
-
-### Alternative browser engine: Camoufox (opt-in, stage 1)
-
-Stage 1 of the Fortress exit plan is implemented: **Camoufox** runs alongside Fortress as a profile-gated, opt-in service, and the bridge selects the engine via `BROWSER_ENGINE`. The scrape/crawl/search API, the SSRF guard (Playwright route interception works on Firefox too), WAF-wait logic, and the MCP tools are engine-agnostic and unchanged.
-
-To A/B test it:
-
-```bash
-# in .env:  BROWSER_ENGINE=camoufox
-make up-camoufox          # builds all images and starts everything
-make test-scrape          # hits the bridge, which now drives Camoufox
-# switch back: set BROWSER_ENGINE=fortress in .env, then: make up
-```
-
-Once `BROWSER_ENGINE=camoufox` is set in `.env`, plain `make up` (and `make rebuild` / `make update`) start the camoufox service automatically; `make down` always cleans it up. Note that `make up` reuses existing images — after code changes run `make rebuild` (or `make up-camoufox`, which builds first) so the bridge actually contains the engine-selection code.
-
-Tip: the compose *service* is named `camoufox` (container `ws-camoufox`), and profile-gated services are only visible to commands that enable the profile. View its logs with `podman logs ws-camoufox`, or `podman compose --profile camoufox logs camoufox`. Confirm the active engine via the bridge: `curl -s localhost:8000/health` → `"engine"`.
-
-How it works and what to know:
+**[Camoufox](https://github.com/daijro/camoufox)** replaces it — an anti-detect Firefox fork whose fingerprint patches live at the C++ implementation level (same idea as Fortress, actively maintained, tracks current Firefox releases). What to know:
 
 - The `ws-camoufox` container pins the Camoufox package (0.5.5) **and** the browser build (`152.0.4-beta.29`) at image build time — nothing is downloaded at container start.
-- **Playwright version parity is mandatory**: the bridge and the Camoufox image must run the same Playwright *minor* (the server rejects mismatched clients with HTTP 428). Both are pinned to 1.60.x because Camoufox 0.5.5 requires `playwright<1.61`. When Camoufox ships support for a newer Playwright, bump both pins together.
-- The browser is plain headless (`headless='virtual'`/Xvfb is not wired through Camoufox's server mode yet) and serves a **single browser instance with a fixed fingerprint** — same trust model as Fortress, with per-request context isolation.
-- **No persistent profile in server mode**: Playwright's `launchServer` cannot serve a persistent context over a websocket, so the browser always runs on a throwaway temp profile — cookies/storage do not survive a container restart (verified: `user_data_dir` passed to `launch_server` is ignored on camoufox 0.5.5; newer upstream rejects it loudly). This matches the bridge's default per-request isolation (no cross-request cookies on Fortress either); if you need to stay logged in across scrape calls, that calls for named long-lived sessions at the bridge layer, not a profile folder.
-- The websocket endpoint has no built-in token auth; it stays on the `internal` network and is published to `127.0.0.1:9223` only (loopback), mirroring Fortress's CDP exposure.
-- uBlock Origin ships inside the Camoufox build (fetched with the browser), replacing the Fortress uBlock-init machinery on this engine.
-- Camoufox's remote-server mode is officially **experimental** — validate against your real target set (`make test-scrape` + your own URLs) before relying on it.
+- **Playwright version parity is mandatory**: the bridge and the Camoufox image must run the same Playwright *minor* (the server rejects mismatched clients with HTTP 428). Both are pinned to 1.60.x because Camoufox 0.5.5 requires `playwright<1.61`. When Camoufox ships support for a newer Playwright, bump both pins together (see AGENTS.md).
+- The browser is plain headless (`headless='virtual'`/Xvfb is not wired through Camoufox's server mode yet) and serves a **single browser instance with a fixed fingerprint**, with per-request context isolation.
+- **No persistent profile in server mode**: Playwright's `launchServer` cannot serve a persistent context over a websocket, so cookies/storage do not survive a container restart. Use **named sessions** for login persistence across scrape calls.
+- The websocket endpoint has no built-in token auth; it stays on the `internal` network and is published to `127.0.0.1:9223` only (loopback).
+- uBlock Origin ships inside the Camoufox build (fetched with the browser at build time).
+- Camoufox's remote-server mode is officially **experimental** upstream — it is nonetheless actively maintained and tracks current Firefox, which is exactly what Fortress stopped doing. If Camoufox ever stalls the way Fortress did, [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) (patched Playwright driving real Chrome) is the smallest-change fallback, and [curl_cffi](https://github.com/lexiforest/curl_cffi) complements non-JS targets.
 
 ## Security
 
@@ -431,12 +368,12 @@ The stack is split into two bridge networks:
 
 | Network   | Services                | Exposure                        |
 |-----------|-------------------------|---------------------------------|
-| `internal`| Valkey, SearXNG, Fortress | `127.0.0.1` only (localhost)  |
+| `internal`| Valkey, SearXNG, Camoufox | `127.0.0.1` only (localhost)  |
 | `edge`    | Bridge, MCP             | Bridge `127.0.0.1`, MCP `127.0.0.1` by default |
 
-- **Core services** (SearXNG, Fortress, Valkey) bind to `127.0.0.1` — accessible only from the host, not the LAN.
+- **Core services** (SearXNG, Camoufox, Valkey) bind to `127.0.0.1` — accessible only from the host, not the LAN.
 - **MCP** is published on localhost by default. Set `MCP_BIND_HOST` to a non-loopback address for remote clients; a non-empty `MCP_API_KEY` is mandatory then.
-- MCP sits on `edge` only. It can talk to Bridge but **cannot** reach SearXNG, Fortress, or Valkey directly — compromise of MCP does not expose the core services.
+- MCP sits on `edge` only. It can talk to Bridge but **cannot** reach SearXNG, Camoufox, or Valkey directly — compromise of MCP does not expose the core services.
 
 ### Least privilege
 
@@ -465,7 +402,7 @@ The bridge validates all URLs passed to `/scrape`, `/crawl`, and `/search_and_sc
 ```
 web-scraping/
 ├── Makefile                    # build, run, test targets
-├── podman-compose.yml          # 5 services: valkey, searxng, fortress, bridge, mcp
+├── podman-compose.yml          # 5 services: valkey, searxng, camoufox, bridge, mcp
 ├── .env.example                # environment variable template
 ├── opencode.jsonc.example      # MCP config template (copy to opencode.jsonc)
 ├── scripts/
@@ -477,6 +414,9 @@ web-scraping/
 │   ├── render_settings.py      # renders template -> settings.yml from .env
 │   └── limiter.toml            # rate limiter config
 ├── searxng-entrypoint.sh       # renders settings, then runs upstream entrypoint
+├── camoufox/
+│   ├── Dockerfile              # Python 3.12 + camoufox 0.5.5 + browser build (pinned)
+│   └── launcher.py             # launches the Playwright websocket server
 ├── bridge/
 │   ├── Dockerfile              # Python 3.12 + FastAPI + Playwright
 │   ├── pyproject.toml          # dependencies
@@ -485,7 +425,8 @@ web-scraping/
 │       ├── __init__.py
 │       ├── main.py             # FastAPI REST API
 │       ├── searxng_client.py   # SearXNG JSON API client
-│       └── fortress_client.py  # Tilion Fortress CDP client (Playwright over CDP)
+│       ├── browser_client.py   # Camoufox client (Playwright websocket)
+│       └── ssrf.py             # shared SSRF guard (edge + browser-side)
 └── mcp/
     ├── Dockerfile              # Python 3.12 + mcp + httpx (lightweight)
     ├── requirements.txt        # mcp, httpx, starlette, uvicorn
@@ -523,7 +464,7 @@ podman compose up -d
 podman compose logs -f bridge
 podman compose logs -f mcp
 podman compose logs -f searxng
-podman compose logs -f fortress
+podman compose logs -f camoufox
 
 # Stop
 podman compose down
@@ -537,17 +478,17 @@ podman compose up -d --build mcp
 # Update SearXNG
 podman compose pull searxng && podman compose up -d searxng
 
-# Update Fortress
-podman compose pull fortress && podman compose up -d fortress
+# Rebuild the browser image after changing its pin
+podman compose build camoufox && podman compose up -d camoufox
 ```
 
 ## How It Works
 
 1. **Search**: The bridge sends a query to [SearXNG](https://github.com/searxng/searxng)'s `/search?format=json` endpoint. The configured engines return JSON with titles, URLs, and snippets.
 
-2. **Scrape**: The bridge connects to [Fortress](https://github.com/tiliondev/fortress) over CDP (`http://fortress:9222`). Fortress is a recompiled [Chromium](https://www.chromium.org/) that corrects the browser fingerprint in C++ (canvas, WebGL, audio, fonts, navigator — 34 patches), so bot detectors ([Cloudflare](https://www.cloudflare.com/), [DataDome](https://datadome.co/), [PerimeterX](https://www.perimeterx.com/), [Akamai](https://www.akamai.com/)) read it as a normal Chrome install. The [Playwright](https://playwright.dev/) client drives the browser to fetch/extract pages.
+2. **Scrape**: The bridge connects to [Camoufox](https://github.com/daijro/camoufox) over Playwright's websocket protocol (`ws://camoufox:9222/browser`). Camoufox is a patched [Firefox](https://www.mozilla.org/firefox/) fork that corrects the browser fingerprint at the C++ level (fonts, WebRTC, screen, navigator properties — not via detectable JS injection), so bot detectors ([Cloudflare](https://www.cloudflare.com/), [DataDome](https://datadome.co/), [PerimeterX](https://www.perimeterx.com/), [Akamai](https://www.akamai.com/)) read it as a normal Firefox install. The [Playwright](https://playwright.dev/) client drives the browser to fetch/extract pages.
 
-3. **Search + Scrape**: The Exa-style combined endpoint searches via [SearXNG](https://github.com/searxng/searxng), then scrapes each result URL through [Fortress](https://github.com/tiliondev/fortress) concurrently — giving you search results with full page content in one call.
+3. **Search + Scrape**: The Exa-style combined endpoint searches via [SearXNG](https://github.com/searxng/searxng), then scrapes each result URL through the stealth browser concurrently — giving you search results with full page content in one call.
 
 ## Troubleshooting
 
@@ -582,17 +523,17 @@ Grep both services for the bridge-side ID to trace a failure: `podman compose lo
 
 The bridge caches scrape results for `BRIDGE_CACHE_TTL` (default 300 s, up to `BRIDGE_CACHE_MAX` pages) — a repeated scrape of the same URL within the TTL is served from memory and flagged with `"cached": true`. Set `BRIDGE_CACHE_TTL=0` and recreate the bridge to disable caching.
 
-### Fortress container won't start
+### Camoufox container won't start
 
-The [Fortress](https://github.com/tiliondev/fortress) image is ~300 MB. On first pull it takes a while. Check: `podman compose logs fortress`. If you see sandbox errors, the `--no-sandbox` flag is already set in the compose file.
+The image build downloads the browser build (~1.2 GB) at build time — first `make build` takes a while. Check: `podman compose logs camoufox`. If the server log shows `Websocket endpoint: ws://0.0.0.0:9222/browser`, the browser is up.
 
 ### Scraping still blocked
 
 Remaining blocks are commonly caused by target-site policy or IP reputation. The stack does not provide a proxy or CAPTCHA-solver integration; configure those outside this project if required.
 
-### Bridge can't connect to Fortress
+### Bridge can't connect to Camoufox
 
-Verify the [Fortress](https://github.com/tiliondev/fortress) CDP endpoint: `curl http://localhost:9222/json/version`. It should return JSON with Chrome version info. If not, check `podman compose logs fortress`.
+Check the container is healthy: `podman ps` (ws-camoufox should be `healthy`) and `podman logs ws-camoufox` (expect `Websocket endpoint: ws://0.0.0.0:9222/browser`). The bridge health probe is a plain TCP connect to the websocket port; `curl http://localhost:8000/health` shows the browser status. Also confirm your Playwright client minor version matches the server's (1.60.x) — mismatched clients are rejected with HTTP 428.
 
 ### Port conflicts
 
@@ -600,7 +541,7 @@ Change the host port mappings in `podman-compose.yml`:
 ```yaml
 ports:
   - "9088:8080"   # SearXNG
-  - "9223:9222"   # Fortress
+  - "9224:9222"   # Camoufox
   - "9000:8000"   # Bridge
 ```
 
@@ -608,5 +549,7 @@ ports:
 
 This stack combines:
 - **SearXNG** — AGPL-3.0
-- **Tilion Fortress** — BSD-3-Clause
+- **Camoufox** — MPL-2.0
 - **Bridge + MCP** (this repo's own code) — MIT, see [LICENSE](LICENSE)
+
+Historical note: the original engine, [Tilion Fortress](https://github.com/tiliondev/fortress) (BSD-3-Clause), shipped through commit tag `fortress-last`.

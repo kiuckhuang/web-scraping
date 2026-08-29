@@ -1,7 +1,7 @@
 [project]
 name = "web-scrape-bridge"
 version = "0.1.0"
-description = "Bridge service: SearXNG search + Tilion Fortress stealth scrape"
+description = "Bridge service: SearXNG search + Camoufox stealth scrape"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
@@ -16,9 +16,8 @@ dependencies = [
     # Pinned to the 1.60 line: Playwright's remote protocol enforces
     # client/server minor-version parity (the server answers HTTP 428 on
     # mismatch), and the camoufox image's driver is playwright 1.60.x
-    # (camoufox 0.5.5 requires <1.61). The Fortress CDP path is
-    # version-agnostic, so the downgrade is safe for it. When camoufox ships
-    # a release supporting a newer playwright, bump BOTH pins together.
+    # (camoufox 0.5.5 requires <1.61). When camoufox ships a release
+    # supporting a newer playwright, bump both pins together.
     "playwright==1.60.0",
     "pydantic==2.13.5",
     "markdownify==1.2.3",

@@ -132,7 +132,7 @@ def test_is_public_url(monkeypatch):
 
 
 def test_search_and_scrape_skips_private_urls(monkeypatch):
-    """A search result pointing at a private address must not reach Fortress."""
+    """A search result pointing at a private address must not reach the browser."""
     import bridge.main as main_mod
 
     async def fake_search(*args, **kwargs):
@@ -149,7 +149,7 @@ def test_search_and_scrape_skips_private_urls(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", _mixed_getaddrinfo)
     monkeypatch.setattr(main_mod, "searxng_search", fake_search)
-    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+    monkeypatch.setattr(main_mod, "browser_scrape", fake_scrape)
 
     req = SearchAndScrapeRequest(query="q", max_results=5)
     out = asyncio.run(main_mod.search_and_scrape(req))
@@ -224,7 +224,7 @@ def test_dns_cache_prunes_oldest_when_full(monkeypatch):
 
 
 def test_close_page_closes_page_and_isolated_context(monkeypatch):
-    import bridge.fortress_client as fortress_mod
+    import bridge.browser_client as browser_mod
 
     class FakeContext:
         def __init__(self):
@@ -242,8 +242,8 @@ def test_close_page_closes_page_and_isolated_context(monkeypatch):
             self.closed = True
 
     page = FakePage()
-    monkeypatch.setattr(fortress_mod, "ISOLATE_CONTEXTS", True)
-    asyncio.run(fortress_mod._close_page(page))
+    monkeypatch.setattr(browser_mod, "ISOLATE_CONTEXTS", True)
+    asyncio.run(browser_mod._close_page(page))
     assert page.closed is True
     assert page.context.closed is True
 
@@ -263,7 +263,7 @@ def test_scrape_cache_hits(monkeypatch):
         return {"url": url, "markdown": "cached body"}
 
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
-    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+    monkeypatch.setattr(main_mod, "browser_scrape", fake_scrape)
 
     req = ScrapeRequest(url="https://example.com/", mode="extract")
     first = asyncio.run(main_mod.scrape(req))
@@ -285,7 +285,7 @@ def test_cache_skips_waf_challenge_pages(monkeypatch):
         return {"url": url, "markdown": "just a moment...", "waf_challenge": True}
 
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
-    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+    monkeypatch.setattr(main_mod, "browser_scrape", fake_scrape)
 
     req = ScrapeRequest(url="https://example.com/challenge", mode="extract")
     asyncio.run(main_mod.scrape(req))
@@ -304,7 +304,7 @@ def test_cache_skips_http_error_pages(monkeypatch):
         return {"url": url, "text": "error", "status": 503}
 
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
-    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+    monkeypatch.setattr(main_mod, "browser_scrape", fake_scrape)
 
     req = ScrapeRequest(url="https://example.com/flaky", mode="fetch")
     asyncio.run(main_mod.scrape(req))
@@ -322,7 +322,7 @@ def test_cache_keeps_ok_status(monkeypatch):
         return {"url": url, "markdown": "fine", "status": 200}
 
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
-    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+    monkeypatch.setattr(main_mod, "browser_scrape", fake_scrape)
 
     req = ScrapeRequest(url="https://example.com/ok", mode="extract")
     asyncio.run(main_mod.scrape(req))
@@ -338,7 +338,7 @@ def test_cache_respects_max_entries(monkeypatch):
         return {"url": url, "markdown": "x"}
 
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
-    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+    monkeypatch.setattr(main_mod, "browser_scrape", fake_scrape)
     monkeypatch.setattr(main_mod, "BRIDGE_CACHE_MAX", 2)
 
     for i in range(3):
@@ -355,7 +355,7 @@ def test_cache_respects_max_bytes(monkeypatch):
         return {"url": url, "markdown": "x" * 100}
 
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
-    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+    monkeypatch.setattr(main_mod, "browser_scrape", fake_scrape)
     monkeypatch.setattr(main_mod, "BRIDGE_CACHE_MAX_BYTES", 150)
 
     for i in range(3):
@@ -375,11 +375,11 @@ def test_health_endpoint_routes(monkeypatch):
     async def fake_searxng_health():
         return True
 
-    async def fake_fortress_health():
+    async def fake_browser_health():
         return True
 
     monkeypatch.setattr(main_mod, "searxng_health", fake_searxng_health)
-    monkeypatch.setattr(main_mod, "fortress_health", fake_fortress_health)
+    monkeypatch.setattr(main_mod, "browser_health", fake_browser_health)
 
     async def run():
         transport = httpx.ASGITransport(app=main_mod.app)
@@ -388,20 +388,11 @@ def test_health_endpoint_routes(monkeypatch):
             assert resp.status_code == 200
             data = resp.json()
             assert data["status"] == "ok"
-            # The engine label reflects deployment config (BROWSER_ENGINE env at
-            # import time) — CI defaults to fortress while a container deployed
-            # with the Camoufox engine reports camoufox. Assert the wiring, not
-            # the configured value, then prove the label is engine-driven.
-            assert data["engine"] == main_mod.BROWSER_ENGINE
+            # The engine label is static now that Camoufox is the only engine.
+            assert data["engine"] == "camoufox"
             assert data["services"]["searxng"] == "up"
             assert data["services"]["browser"] == "up"
             assert "x-request-id" in resp.headers
-            monkeypatch.setattr(main_mod, "BROWSER_ENGINE", "camoufox")
-            resp2 = await client.get("/health")
-            assert resp2.json()["engine"] == "camoufox"
-            monkeypatch.setattr(main_mod, "BROWSER_ENGINE", "fortress")
-            resp3 = await client.get("/health")
-            assert resp3.json()["engine"] == "fortress"
 
     asyncio.run(run())
 

@@ -1,7 +1,7 @@
 """Shared SSRF guard — single source of truth for public-URL checks.
 
 Used by the bridge edge validation (main.py) and by the in-browser request
-guard (fortress_client.py), so the two policies cannot drift apart. The edge
+guard (browser_client.py), so the two policies cannot drift apart. The edge
 validator is strict (public http/https only); the browser guard additionally
 allows inert schemes (data:, blob:, about:) that Chromium itself injects.
 

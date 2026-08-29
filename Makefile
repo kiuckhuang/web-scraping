@@ -9,15 +9,7 @@
 
 CONTAINER := podman
 
-# Enable the camoufox compose profile when .env selects the Camoufox engine,
-# so 'make up' / rebuild / update start the engine the bridge will drive.
-# podman-compose scopes profile-gated services per invocation — a plain
-# 'make down' would leave ws-camoufox running orphaned, so 'down' always
-# includes the profile.
-ENGINE_PROFILE := $(shell sed -n 's/^BROWSER_ENGINE=camoufox/camoufox/p' .env 2>/dev/null)
-UP_PROFILE := $(if $(ENGINE_PROFILE),--profile camoufox,)
-
-.PHONY: all init build up up-camoufox down logs test test-unit test-unit-host test-scrape doctor rebuild clean update help
+.PHONY: all init build up down logs test test-unit test-unit-host test-scrape doctor rebuild clean update help
 
 all: help
 
@@ -28,7 +20,6 @@ help:
 	@echo "  init      — Create .env from .env.example with your host UID/GID"
 	@echo "  build     — Build bridge and mcp images"
 	@echo "  up        — Start all services (podman compose up -d)"
-	@echo "  up-camoufox — Start all services including the opt-in Camoufox engine"
 	@echo "  down      — Stop all services"
 	@echo "  logs      — Follow logs from all services"
 	@echo "  test      — Unit tests + integration tests (health checks + API smoke tests)"
@@ -44,22 +35,16 @@ help:
 
 init:
 	@python3 scripts/init.py
-	@echo "environment ready (Fortress profile uses the managed fortress-profile volume)"
+	@echo "environment ready"
 
 build:
 	$(CONTAINER) compose build
 
 up: init
-	$(CONTAINER) compose $(UP_PROFILE) up -d
+	$(CONTAINER) compose up -d
 
 down:
-	$(CONTAINER) compose --profile camoufox down
-
-# Opt-in Camoufox engine. Builds all images first so the bridge actually
-# contains the engine-selection code (a plain 'up' reuses stale images).
-# Set BROWSER_ENGINE=camoufox in .env; `up -d` recreates the bridge.
-up-camoufox: init build
-	$(CONTAINER) compose --profile camoufox up -d
+	$(CONTAINER) compose down
 
 logs:
 	$(CONTAINER) compose logs -f

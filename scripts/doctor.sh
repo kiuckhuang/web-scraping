@@ -40,7 +40,7 @@ echo ""
 echo "=== Containers ==="
 
 if [ -n "$CONTAINER_CMD" ]; then
-    for svc in valkey searxng fortress bridge mcp; do
+    for svc in valkey searxng camoufox bridge mcp; do
         if $CONTAINER_CMD ps --format '{{.Names}}' | grep -q "ws-$svc"; then
             ok "ws-$svc running"
         else
@@ -57,7 +57,7 @@ echo "=== Health ==="
 BRIDGE_PORT=$(sed -n 's/^PORT_BRIDGE=//p' .env 2>/dev/null); BRIDGE_PORT=${BRIDGE_PORT:-8000}
 MCP_PORT=$(sed -n 's/^PORT_MCP=//p' .env 2>/dev/null); MCP_PORT=${MCP_PORT:-9100}
 SEARXNG_PORT=$(sed -n 's/^PORT_SEARXNG=//p' .env 2>/dev/null); SEARXNG_PORT=${SEARXNG_PORT:-8888}
-FORTRESS_PORT=$(sed -n 's/^PORT_FORTRESS=//p' .env 2>/dev/null); FORTRESS_PORT=${FORTRESS_PORT:-9222}
+CAMOUFOX_PORT=$(sed -n 's/^PORT_CAMOUFOX=//p' .env 2>/dev/null); CAMOUFOX_PORT=${CAMOUFOX_PORT:-9223}
 
 if curl -sf "http://localhost:${BRIDGE_PORT}/health" >/dev/null 2>&1; then
     ok "bridge /health"
@@ -77,10 +77,11 @@ else
     bad "searxng /healthz unreachable (check 'podman compose logs searxng')"
 fi
 
-if curl -sf "http://localhost:${FORTRESS_PORT}/json/version" >/dev/null 2>&1; then
-    ok "fortress CDP endpoint"
+# The Camoufox Playwright server has no HTTP endpoint — probe the TCP listener.
+if timeout 3 bash -c "cat < /dev/null > /dev/tcp/localhost/${CAMOUFOX_PORT}" 2>/dev/null; then
+    ok "camoufox WS endpoint (tcp/${CAMOUFOX_PORT})"
 else
-    bad "fortress CDP endpoint unreachable (check 'podman compose logs fortress')"
+    bad "camoufox WS endpoint unreachable (check 'podman compose logs camoufox')"
 fi
 
 echo ""
