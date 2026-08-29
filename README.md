@@ -384,7 +384,16 @@ make update
 
 The stack previously shipped **[Tilion Fortress](https://github.com/tiliondev/fortress)** (recompiled stealth Chromium over CDP). Upstream stopped shipping builds on 2026-07-15 (Chromium 150 vs current stable 151.x), so the unpatched browser was both a growing CVE liability and increasingly readable as outdated by version-database detectors. The last Fortress-based commit is tagged **`fortress-last`** (`git checkout fortress-last` to revisit it).
 
-**[Camoufox](https://github.com/daijro/camoufox)** replaces it — an anti-detect Firefox fork whose fingerprint patches live at the C++ implementation level (same idea as Fortress, actively maintained, tracks current Firefox releases). What to know:
+**[Camoufox](https://github.com/daijro/camoufox)** replaces it — an anti-detect Firefox fork whose fingerprint patches live at the C++ implementation level (same idea as Fortress, actively maintained, tracks current Firefox releases).
+
+Upgrading from a Fortress-era stack? The old containers are no longer in the compose file, so `make down` can't remove them — clean them up once:
+
+```bash
+podman rm -f ws-fortress ws-ublock-init
+podman volume rm web-scraping_fortress-profile
+```
+
+What to know:
 
 - The `ws-camoufox` container pins the Camoufox package (0.5.5) **and** the browser build (`152.0.4-beta.29`) at image build time — nothing is downloaded at container start.
 - **Playwright version parity is mandatory**: the bridge and the Camoufox image must run the same Playwright *minor* (the server rejects mismatched clients with HTTP 428). Both are pinned to 1.60.x because Camoufox 0.5.5 requires `playwright<1.61`. When Camoufox ships support for a newer Playwright, bump both pins together (see AGENTS.md).
