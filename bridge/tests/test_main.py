@@ -388,10 +388,20 @@ def test_health_endpoint_routes(monkeypatch):
             assert resp.status_code == 200
             data = resp.json()
             assert data["status"] == "ok"
-            assert data["engine"] == "fortress"
+            # The engine label reflects deployment config (BROWSER_ENGINE env at
+            # import time) — CI defaults to fortress while a container deployed
+            # with the Camoufox engine reports camoufox. Assert the wiring, not
+            # the configured value, then prove the label is engine-driven.
+            assert data["engine"] == main_mod.BROWSER_ENGINE
             assert data["services"]["searxng"] == "up"
             assert data["services"]["browser"] == "up"
             assert "x-request-id" in resp.headers
+            monkeypatch.setattr(main_mod, "BROWSER_ENGINE", "camoufox")
+            resp2 = await client.get("/health")
+            assert resp2.json()["engine"] == "camoufox"
+            monkeypatch.setattr(main_mod, "BROWSER_ENGINE", "fortress")
+            resp3 = await client.get("/health")
+            assert resp3.json()["engine"] == "fortress"
 
     asyncio.run(run())
 
