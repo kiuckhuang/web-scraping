@@ -388,8 +388,9 @@ def test_health_endpoint_routes(monkeypatch):
             assert resp.status_code == 200
             data = resp.json()
             assert data["status"] == "ok"
+            assert data["engine"] == "fortress"
             assert data["services"]["searxng"] == "up"
-            assert data["services"]["fortress"] == "up"
+            assert data["services"]["browser"] == "up"
             assert "x-request-id" in resp.headers
 
     asyncio.run(run())

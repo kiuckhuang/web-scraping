@@ -1,7 +1,7 @@
 """FastAPI application — REST API for SearXNG search + Fortress scrape.
 
 Endpoints:
-  GET  /health              — check SearXNG + Fortress status
+  GET  /health              — check SearXNG + browser engine status
   GET  /search              — search the web via SearXNG
   POST /scrape              — scrape a URL via Fortress (stealth browser)
   POST /search_and_scrape   — search via SearXNG, then scrape top results
@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from . import ssrf
 from .fortress_client import (
+    BROWSER_ENGINE,
     crawl_site as fortress_crawl,
     health as fortress_health,
     scrape as fortress_scrape,
@@ -190,16 +191,17 @@ def _cacheable(content: dict[str, Any]) -> bool:
 
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
-    """Check the status of SearXNG and Fortress."""
-    searxng_ok, fortress_ok = await asyncio.gather(
+    """Check the status of SearXNG and the configured browser engine."""
+    searxng_ok, browser_ok = await asyncio.gather(
         searxng_health(),
         fortress_health(),
     )
     return {
-        "status": "ok" if searxng_ok and fortress_ok else "degraded",
+        "status": "ok" if searxng_ok and browser_ok else "degraded",
+        "engine": BROWSER_ENGINE,
         "services": {
             "searxng": "up" if searxng_ok else "down",
-            "fortress": "up" if fortress_ok else "down",
+            "browser": "up" if browser_ok else "down",
         },
     }
 

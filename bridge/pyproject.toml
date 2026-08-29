@@ -13,7 +13,13 @@ dependencies = [
     "starlette==1.6.0",
     "uvicorn[standard]==0.52.4",
     "httpx==0.28.1",
-    "playwright==1.62.0",
+    # Pinned to the 1.60 line: Playwright's remote protocol enforces
+    # client/server minor-version parity (the server answers HTTP 428 on
+    # mismatch), and the camoufox image's driver is playwright 1.60.x
+    # (camoufox 0.5.5 requires <1.61). The Fortress CDP path is
+    # version-agnostic, so the downgrade is safe for it. When camoufox ships
+    # a release supporting a newer playwright, bump BOTH pins together.
+    "playwright==1.60.0",
     "pydantic==2.13.5",
     "markdownify==1.2.3",
 ]

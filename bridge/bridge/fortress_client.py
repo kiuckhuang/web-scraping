@@ -1,9 +1,15 @@
-"""Tilion Fortress scraping client — stealth Chromium over CDP.
+"""Browser engine client — stealth scraping over Playwright.
 
-Connects to the Fortress container's CDP endpoint (http://fortress:9222) and
-provides high-level operations using Playwright:
+Two engines are supported (select with BROWSER_ENGINE; see module constants):
 
-  - fetch_page:    get raw HTML + title + text of any URL (bypasses bot detection)
+  - fortress (default): Tilion Fortress stealth Chromium over CDP
+    (http://fortress:9222, connect_over_cdp)
+  - camoufox: anti-detect Firefox fork over Playwright's websocket protocol
+    (ws://camoufox:9222/browser, firefox.connect)
+
+High-level operations (engine-agnostic Playwright API):
+
+  - fetch_page:    get raw HTML + title + text of any URL
   - extract_page:  get clean markdown + tables from any URL
   - scrape:        convenience wrapper that tries extract first, falls back to fetch
   - crawl_site:    BFS crawl of a whole site
@@ -39,6 +45,25 @@ ISOLATE_CONTEXTS = os.environ.get("FORTRESS_ISOLATE_CONTEXTS", "true").lower() n
 # it a 200-page crawl against slow/challenging targets can run for hours while
 # the MCP client has long timed out.
 CRAWL_MAX_SECONDS = float(os.environ.get("CRAWL_MAX_SECONDS", "1800"))
+# Browser engine selection (stage 1 of the Fortress migration path):
+#   fortress — Tilion Fortress stealth Chromium over CDP (default, pinned tag)
+#   camoufox — anti-detect Firefox fork over Playwright's websocket protocol
+# Everything below the factory (SSRF guard, WAF wait, crawl, SERP parsing) is
+# engine-agnostic Playwright API and works with either engine.
+# NOTE: Playwright's remote protocol enforces client/server minor-version
+# parity (the server answers 428 on mismatch), and the camoufox image pins
+# playwright 1.60.x (camoufox 0.5.5 requires <1.61) — so bridge/pyproject.toml
+# pins playwright to the same line. The Fortress CDP path is version-agnostic.
+def _normalize_engine(raw: str) -> str:
+    """Validate the BROWSER_ENGINE value; raises RuntimeError on unknown engines."""
+    engine = raw.strip().lower()
+    if engine not in ("fortress", "camoufox"):
+        raise RuntimeError(f"Unsupported BROWSER_ENGINE: {raw!r} (use 'fortress' or 'camoufox')")
+    return engine
+
+
+BROWSER_ENGINE = _normalize_engine(os.environ.get("BROWSER_ENGINE", "fortress"))
+CAMOUFOX_WS_URL = os.environ.get("CAMOUFOX_WS_URL", "ws://camoufox:9222/browser")
 WAF_MARKERS = (
     "just a moment",
     "performing security verification",
@@ -101,25 +126,37 @@ async def _reset_browser() -> None:
 
 
 async def _get_browser() -> Browser:
-    """Lazily connect to the Fortress CDP endpoint and reuse the connection.
+    """Lazily connect to the configured browser engine and reuse the connection.
 
-    The CDP hostname is re-resolved on every (re)connect so that a recreated
-    Fortress container with a fresh IP is picked up without a bridge restart.
+    Fortress: the CDP hostname is re-resolved on every (re)connect so that a
+    recreated Fortress container with a fresh IP is picked up without a bridge
+    restart. Camoufox: plain websocket connect to the Playwright server (no CDP,
+    no Host-header workaround needed).
     """
     global _browser, _playwright_ctx, CDP_URL
     if _browser is None or not _browser.is_connected():
         async with _lock:
             if _browser is None or not _browser.is_connected():
-                # DNS must not run on the event loop (see _resolve_cdp_url).
-                CDP_URL = await asyncio.to_thread(_resolve_cdp_url, FORTRESS_CDP_URL)
-                logger.info("Connecting to Fortress CDP at %s", CDP_URL)
-                try:
-                    _playwright_ctx = await async_playwright().start()
-                    _browser = await _playwright_ctx.chromium.connect_over_cdp(CDP_URL)
-                    logger.info("Connected to Fortress CDP")
-                except Exception:
-                    await _reset_browser()
-                    raise
+                if BROWSER_ENGINE == "camoufox":
+                    logger.info("Connecting to Camoufox at %s", CAMOUFOX_WS_URL)
+                    try:
+                        _playwright_ctx = await async_playwright().start()
+                        _browser = await _playwright_ctx.firefox.connect(CAMOUFOX_WS_URL)
+                        logger.info("Connected to Camoufox")
+                    except Exception:
+                        await _reset_browser()
+                        raise
+                else:
+                    # DNS must not run on the event loop (see _resolve_cdp_url).
+                    CDP_URL = await asyncio.to_thread(_resolve_cdp_url, FORTRESS_CDP_URL)
+                    logger.info("Connecting to Fortress CDP at %s", CDP_URL)
+                    try:
+                        _playwright_ctx = await async_playwright().start()
+                        _browser = await _playwright_ctx.chromium.connect_over_cdp(CDP_URL)
+                        logger.info("Connected to Fortress CDP")
+                    except Exception:
+                        await _reset_browser()
+                        raise
     return _browser
 
 
@@ -529,14 +566,33 @@ def _get_health_client() -> httpx.AsyncClient:
 
 
 async def health() -> bool:
-    """Check if the Fortress CDP endpoint is alive (re-resolving the host)."""
+    """Check whether the configured browser engine is reachable.
+
+    Fortress answers /json/version over HTTP (re-resolving the host); the
+    Camoufox Playwright server has no HTTP endpoint, so its health is a plain
+    TCP connect to the websocket port.
+    """
     global CDP_URL
     try:
+        if BROWSER_ENGINE == "camoufox":
+            return await asyncio.to_thread(_camoufox_health_sync)
         CDP_URL = await asyncio.to_thread(_resolve_cdp_url, FORTRESS_CDP_URL)
         client = _get_health_client()
         resp = await client.get(f"{CDP_URL}/json/version")
         return resp.status_code == 200
     except Exception:
+        return False
+
+
+def _camoufox_health_sync() -> bool:
+    """TCP health probe for the Camoufox Playwright websocket server."""
+    parsed = urlparse(CAMOUFOX_WS_URL)
+    host = parsed.hostname or "camoufox"
+    port = parsed.port or 9222
+    try:
+        with socket.create_connection((host, port), timeout=5.0):
+            return True
+    except OSError:
         return False
 
 
