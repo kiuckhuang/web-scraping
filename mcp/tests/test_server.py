@@ -5,6 +5,7 @@ or via CI / `make test-unit`.
 """
 
 import asyncio
+import re
 import sys
 import time
 from pathlib import Path
@@ -240,3 +241,256 @@ def test_redact_args():
     assert "q=keep" in out["url"]
     assert out["query"] == "plain query"
     assert out["max_results"] == 5
+
+
+# ---------------------------------------------------------------------------
+#  Bridge request-ID correlation
+# ---------------------------------------------------------------------------
+
+def test_request_headers_attaches_x_request_id():
+    headers = server_mod._request_headers("/search")
+    assert re.fullmatch(r"[0-9a-f]{8}", headers["X-Request-ID"])
+
+
+# ---------------------------------------------------------------------------
+#  Session lifecycle — initialize gate + DELETE cleanup
+# ---------------------------------------------------------------------------
+
+def test_is_initialize_request():
+    assert server_mod._is_initialize_request(
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+    ) is True
+    assert server_mod._is_initialize_request(
+        b'{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+    ) is False
+    # JSON-RPC batch containing an initialize also counts.
+    assert server_mod._is_initialize_request(
+        b'[{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}]'
+    ) is True
+    assert server_mod._is_initialize_request(b"not json") is False
+    assert server_mod._is_initialize_request(b"") is False
+
+
+async def _post_mcp(body: bytes, monkeypatch, headers=None):
+    """Drive one POST through the raw ASGI app; return the response start message."""
+    monkeypatch.setattr(server_mod, "_ensure_cleanup", lambda: None)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": headers or [(b"content-type", b"application/json")],
+        "client": ("127.0.0.1", 5),
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    await server_mod.app(scope, receive, send)
+    return next(m for m in sent if m["type"] == "http.response.start")
+
+
+def test_headerless_non_initialize_post_rejected_without_session(monkeypatch):
+    """Headerless non-initialize POSTs get 400 and spawn no session state."""
+
+    async def go():
+        server_mod._sessions.clear()
+        try:
+            start = await _post_mcp(
+                b'{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}', monkeypatch
+            )
+            assert start["status"] == 400
+            assert server_mod._sessions == {}
+        finally:
+            server_mod._sessions.clear()
+
+    asyncio.run(go())
+
+
+def test_get_without_session_rejected(monkeypatch):
+    """GET/DELETE without a session ID cannot be routed to any session."""
+
+    async def go():
+        monkeypatch.setattr(server_mod, "_ensure_cleanup", lambda: None)
+        server_mod._sessions.clear()
+        try:
+            scope = {"type": "http", "method": "GET", "path": "/mcp", "headers": [], "client": ("127.0.0.1", 5)}
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            sent = []
+
+            async def send(message):
+                sent.append(message)
+
+            await server_mod.app(scope, receive, send)
+            start = next(m for m in sent if m["type"] == "http.response.start")
+            assert start["status"] == 400
+            assert server_mod._sessions == {}
+        finally:
+            server_mod._sessions.clear()
+
+    asyncio.run(go())
+
+
+class _FakeTransport:
+    def __init__(self):
+        self.handled = []
+
+    async def handle_request(self, scope, receive, send):
+        self.handled.append(scope.get("method"))
+
+
+class _FakeCM:
+    def __init__(self):
+        self.exited = False
+
+    async def __aexit__(self, *args):
+        self.exited = True
+
+
+def test_delete_session_frees_state(monkeypatch):
+    """DELETE must remove the session (task cancelled, context closed) immediately."""
+
+    async def go():
+        monkeypatch.setattr(server_mod, "_ensure_cleanup", lambda: None)
+        monkeypatch.setattr(server_mod, "MCP_API_KEY", "")
+        server_mod._sessions.clear()
+        try:
+            async def noop():
+                pass
+
+            task = asyncio.create_task(noop())
+            await task
+            transport, cm = _FakeTransport(), _FakeCM()
+            server_mod._sessions["sess-del"] = server_mod.Session(
+                transport=transport, task=task, cm=cm, last_seen=time.monotonic()
+            )
+            scope = {
+                "type": "http",
+                "method": "DELETE",
+                "path": "/mcp",
+                "headers": [(b"mcp-session-id", b"sess-del")],
+                "client": ("127.0.0.1", 5),
+            }
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            sent = []
+
+            async def send(message):
+                sent.append(message)
+
+            await server_mod.app(scope, receive, send)
+            assert "sess-del" not in server_mod._sessions
+            assert transport.handled == ["DELETE"]
+            assert cm.exited is True
+        finally:
+            server_mod._sessions.clear()
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+#  Hardening — rate limit headers, malformed headers, CORS Vary
+# ---------------------------------------------------------------------------
+
+def test_rate_limited_response_has_retry_after(monkeypatch):
+    async def go():
+        monkeypatch.setattr(server_mod, "_ensure_cleanup", lambda: None)
+        now = time.monotonic()
+        server_mod._RATE_WINDOW.clear()
+        try:
+            server_mod._RATE_WINDOW["9.9.9.9"] = [now] * 120
+            scope = {"type": "http", "method": "POST", "path": "/mcp", "headers": [], "client": ("9.9.9.9", 1)}
+
+            async def receive():
+                return {"type": "http.request", "body": b"{}", "more_body": False}
+
+            sent = []
+
+            async def send(message):
+                sent.append(message)
+
+            await server_mod.app(scope, receive, send)
+            start = next(m for m in sent if m["type"] == "http.response.start")
+            assert start["status"] == 429
+            assert dict(start["headers"])[b"retry-after"] == b"60"
+        finally:
+            server_mod._RATE_WINDOW.clear()
+
+    asyncio.run(go())
+
+
+def test_malformed_content_length_does_not_500(monkeypatch):
+    async def go():
+        start = await _post_mcp(
+            b'{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}',
+            monkeypatch,
+            headers=[(b"content-type", b"application/json"), (b"content-length", b"not-a-number")],
+        )
+        # Not a 500 — falls through to the initialize gate (400).
+        assert start["status"] == 400
+
+    asyncio.run(go())
+
+
+def test_cors_sends_vary_even_when_origin_rejected(monkeypatch):
+    monkeypatch.setattr(server_mod, "MCP_ALLOWED_ORIGIN", "localhost")
+    headers = dict(server_mod._cors_headers({"headers": [(b"origin", b"http://evil.example")]}))
+    assert b"access-control-allow-origin" not in headers
+    assert headers[b"vary"] == b"Origin"
+
+
+def test_trusted_cidrs_env_override(monkeypatch):
+    monkeypatch.setenv("MCP_TRUSTED_CIDRS", "10.50.0.0/16, not-a-cidr")
+    cidrs = server_mod._get_trusted_cidrs()
+    assert "10.50.0.0/16" in cidrs
+    assert "127.0.0.0/8" in cidrs and "::1/128" in cidrs
+    assert "not-a-cidr" not in cidrs
+
+
+# ---------------------------------------------------------------------------
+#  Tool-output formatting
+# ---------------------------------------------------------------------------
+
+def test_format_scrape_result_inlines_tables():
+    result = {
+        "url": "https://a.com",
+        "title": "T",
+        "markdown": "body",
+        "tables": [{"rows": [["Name", "Qty"], ["foo", "3"]]}],
+    }
+    out = server_mod._format_scrape_result(result)
+    assert "1 table(s)" in out
+    assert "| Name | Qty |" in out
+    assert "| foo | 3 |" in out
+
+
+def test_format_scrape_result_skips_empty_tables():
+    result = {"url": "https://a.com", "markdown": "body", "tables": [{"rows": []}]}
+    out = server_mod._format_scrape_result(result)
+    assert "1 table(s)" in out
+    assert "|" not in out.replace("1 table(s)", "")
+
+
+def test_format_search_results_notes_unresponsive_engines():
+    result = {
+        "number_of_results": 1,
+        "results": [{"title": "A", "url": "https://a.com"}],
+        "unresponsive_engines": [["bing", "timeout"], "google"],
+    }
+    out = server_mod._format_search_results(result)
+    assert "unresponsive" in out
+    assert "bing" in out and "google" in out
+
+
+def test_format_search_results_no_engine_note_when_all_healthy():
+    result = {"number_of_results": 1, "results": [{"title": "A", "url": "https://a.com"}]}
+    assert "unresponsive" not in server_mod._format_search_results(result)

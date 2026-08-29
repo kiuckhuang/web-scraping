@@ -38,7 +38,10 @@ from mcp.types import (
 
 from mcp.server import Server
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.basicConfig(
+    level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://bridge:8000")
@@ -95,15 +98,28 @@ _client = httpx.AsyncClient(timeout=HTTP_TIMEOUT)
 async def _api_get(path: str, **params) -> dict:
     # Drop empty-string/None params so FastAPI's pattern validators don't reject them
     clean = {k: v for k, v in params.items() if v not in (None, "")}
-    resp = await _client.get(f"{BRIDGE_URL}{path}", params=clean)
+    resp = await _client.get(f"{BRIDGE_URL}{path}", params=clean, headers=_request_headers(path))
     resp.raise_for_status()
     return resp.json()
 
 
 async def _api_post(path: str, body: dict) -> dict:
-    resp = await _client.post(f"{BRIDGE_URL}{path}", json=body)
+    resp = await _client.post(f"{BRIDGE_URL}{path}", json=body, headers=_request_headers(path))
     resp.raise_for_status()
     return resp.json()
+
+
+def _request_headers(path: str) -> dict[str, str]:
+    """Attach an X-Request-ID that the bridge echoes back and logs as req=...
+
+    Tool handlers run inside the long-lived server task, not the per-request
+    task, so the per-request req= tag can't be threaded down here. Instead a
+    bridge-scoped ID is minted per REST call and logged as `bridge req=...`;
+    grepping that ID matches the bridge's log tag and X-Request-ID header.
+    """
+    rid = uuid.uuid4().hex[:8]
+    logger.info("bridge req=%s GET %s", rid, path)
+    return {"X-Request-ID": rid}
 
 
 # ---------------------------------------------------------------------------
@@ -285,8 +301,25 @@ def _get_trusted_cidrs() -> set[str]:
     which lives on the same subnet as the container. Trusting that subnet lets
     host-side tooling (make test, local AI agents) connect without a token,
     while LAN clients on a different subnet still must authenticate.
+
+    Set MCP_TRUSTED_CIDRS (comma-separated CIDRs) to override auto-detection —
+    e.g. tighten it to just loopback, or widen it to a known podman network.
+    Unparseable entries are ignored with a warning.
     """
     cidrs = {"127.0.0.0/8", "::1/128"}
+    override = os.environ.get("MCP_TRUSTED_CIDRS", "").strip()
+    if override:
+        for entry in override.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError:
+                logger.warning("Ignoring invalid MCP_TRUSTED_CIDRS entry: %s", entry)
+                continue
+            cidrs.add(entry)
+        return cidrs
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             ip = info[4][0]
@@ -386,7 +419,42 @@ def _format_search_results(result: dict) -> str:
         if r.get("engine"):
             line += f" (engine: {r['engine']})"
         lines.append(line)
+    unresponsive = _unresponsive_engines(result)
+    if unresponsive:
+        # Partial results must not read as complete ones — say which engines
+        # failed so agents know the list may be incomplete.
+        lines.append("")
+        lines.append(f"Note: some engines were unresponsive and their results are missing: {unresponsive}")
     return "\n".join(lines)
+
+
+def _unresponsive_engines(result: dict) -> str:
+    """Render SearXNG's unresponsive_engines entries as a compact string.
+
+    Entries are either plain names ("bing") or [name, error] pairs.
+    """
+    entries = result.get("unresponsive_engines") or []
+    names = []
+    for entry in entries[:5]:
+        if isinstance(entry, (list, tuple)) and entry:
+            names.append(str(entry[0]))
+        else:
+            names.append(str(entry))
+    return "; ".join(names)
+
+
+def _render_table(rows: list, max_rows: int = 8, max_chars: int = 1500) -> str:
+    """Render list-of-lists table rows as a compact markdown table."""
+    lines = []
+    for i, row in enumerate(rows[:max_rows]):
+        cells = [str(cell).replace("|", "\\|").replace("\n", " ")[:120] for cell in row]
+        if not cells:
+            continue
+        lines.append("| " + " | ".join(cells) + " |")
+        if i == 0:
+            lines.append("|" + " --- |" * len(cells))
+    out = "\n".join(lines)
+    return out[:max_chars]
 
 
 def _format_scrape_result(result: dict) -> str:
@@ -397,8 +465,16 @@ def _format_scrape_result(result: dict) -> str:
     body = result.get("markdown") or result.get("text") or ""
     if body:
         lines.append(body[:MCP_CONTENT_CHARS])
-    if result.get("tables"):
-        lines.append(f"\n**Tables:** {len(result['tables'])} table(s) extracted")
+    tables = result.get("tables") or []
+    if tables:
+        lines.append(f"\n**Tables:** {len(tables)} table(s) extracted")
+        # Inline the first few small tables — a count alone forces another
+        # round-trip when the agent actually needs the data.
+        for table in tables[:3]:
+            rendered = _render_table(table.get("rows") or [])
+            if rendered:
+                lines.append("")
+                lines.append(rendered)
     return "\n".join(lines)
 
 
@@ -458,15 +534,37 @@ async def _sweep_sessions() -> None:
         if session is None:
             continue
         logger.info("MCP session expired after %ss idle: %s", MCP_SESSION_TTL, sid)
-        session.task.cancel()
-        try:
-            await asyncio.wait_for(asyncio.shield(session.task), timeout=5)
-        except (TimeoutError, asyncio.CancelledError):
-            pass
-        try:
-            await session.cm.__aexit__(None, None, None)
-        except Exception:
-            pass
+        await _close_session(session)
+
+
+async def _close_session(session: Session) -> None:
+    """Cancel a session's server task and release its transport context."""
+    session.task.cancel()
+    try:
+        await asyncio.wait_for(asyncio.shield(session.task), timeout=5)
+    except (TimeoutError, asyncio.CancelledError):
+        pass
+    try:
+        await session.cm.__aexit__(None, None, None)
+    except Exception:
+        pass
+
+
+def _is_initialize_request(body: bytes) -> bool:
+    """True if a JSON-RPC body contains an initialize request.
+
+    Sessions are only created for initialize requests — a non-initialize POST
+    without a session ID is rejected before any transport/task is spawned, so
+    broken or abusive clients cannot pile up orphan sessions until the TTL
+    sweep.
+    """
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    if isinstance(payload, list):  # JSON-RPC batch
+        return any(isinstance(m, dict) and m.get("method") == "initialize" for m in payload)
+    return isinstance(payload, dict) and payload.get("method") == "initialize"
 
 
 async def _cleanup_loop() -> None:
@@ -485,13 +583,13 @@ def _ensure_cleanup() -> None:
         _cleanup_task = asyncio.create_task(_cleanup_loop())
 
 
-async def _send_json(scope, send, status: int, body: dict):
+async def _send_json(scope, send, status: int, body: dict, headers: list[tuple[bytes, bytes]] | None = None):
     """Send a plain JSON HTTP response (ASGI)."""
     payload = json.dumps(body).encode()
     await send({
         "type": "http.response.start",
         "status": status,
-        "headers": [(b"content-type", b"application/json")],
+        "headers": [(b"content-type", b"application/json"), *(headers or [])],
     })
     await send({"type": "http.response.body", "body": payload})
 
@@ -531,16 +629,24 @@ def _replay_body(messages: list[dict]):
     return receive
 
 
-async def handle_mcp(scope, receive, send):
+async def handle_mcp(scope, receive, send, body: bytes = b""):
     """ASGI handler for the single /mcp endpoint (POST, GET, DELETE).
 
     Uses the MCP Streamable HTTP transport (protocol version 2025-03-26+),
     which replaces the deprecated HTTP+SSE transport.
     """
     headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+    method = scope.get("method", "POST")
     session_id = headers.get("mcp-session-id")
 
     if not session_id:
+        # Per the MCP spec, the first request of a session must be initialize;
+        # anything else without a session ID is rejected *before* spawning a
+        # transport + server task (they would otherwise linger until the TTL
+        # sweep). The POST body is buffered by the caller for exactly this.
+        if method != "POST" or not _is_initialize_request(body):
+            await _send_json(scope, send, 400, {"error": "Missing Mcp-Session-Id header — send an initialize request first"})
+            return
         # New session — create transport, connect server, handle initialize request
         transport = StreamableHTTPServerTransport(
             mcp_session_id=uuid.uuid4().hex,
@@ -566,6 +672,13 @@ async def handle_mcp(scope, receive, send):
             return
         session.last_seen = time.monotonic()
         await session.transport.handle_request(scope, receive, send)
+        if method == "DELETE":
+            # The client ended the session (MCP spec: DELETE terminates it and
+            # the transport 404s further requests) — free its task + context
+            # now instead of waiting for the idle sweep.
+            _sessions.pop(session_id, None)
+            logger.info("MCP session terminated by client: %s", session_id)
+            await _close_session(session)
 
 
 async def handle_health(scope, receive, send):
@@ -633,6 +746,10 @@ def _cors_headers(scope) -> list[tuple[bytes, bytes]]:
     origin = _cors_origin(scope)
     if origin:
         headers.insert(0, (b"access-control-allow-origin", origin.encode()))
+    if MCP_ALLOWED_ORIGIN:
+        # Negotiation depends on the request Origin, so caches must vary on it
+        # even for responses that did not allow the origin — otherwise an
+        # allowed response can be cached and reused for a disallowed one.
         headers.append((b"vary", b"Origin"))
     return headers
 
@@ -694,12 +811,27 @@ async def app(scope, receive, send):
         _ensure_cleanup()
         if not _rate_limit_ok(scope):
             logger.warning("req=%s rate limited: %s %s from %s", rid, method, path, client)
-            await _send_json(scope, send_with_cors, 429, {"error": "rate limit exceeded", "request_id": rid})
+            # Retry-After matches the fixed sliding window so clients back off
+            # instead of hammering.
+            await _send_json(
+                scope,
+                send_with_cors,
+                429,
+                {"error": "rate limit exceeded", "request_id": rid},
+                headers=[(b"retry-after", b"60")],
+            )
             return
         content_length = headers_in.get("content-length")
-        if method == "POST" and content_length and int(content_length) > MCP_MAX_BODY:
-            await _send_json(scope, send_with_cors, 413, {"error": "request body too large", "request_id": rid})
-            return
+        if method == "POST" and content_length:
+            # A malformed Content-Length must not 500 — treat it as absent and
+            # let the streaming body limiter enforce the cap instead.
+            try:
+                declared_length = int(content_length)
+            except ValueError:
+                declared_length = 0
+            if declared_length > MCP_MAX_BODY:
+                await _send_json(scope, send_with_cors, 413, {"error": "request body too large", "request_id": rid})
+                return
         if not _auth_ok(scope):
             logger.warning("req=%s unauthorized: %s %s from %s", rid, method, path, client)
             await _send_json(scope, send_with_cors, 401, {"error": "unauthorized", "request_id": rid})
@@ -709,9 +841,14 @@ async def app(scope, receive, send):
             if body_messages is None:
                 await _send_json(scope, send_with_cors, 413, {"error": "request body too large", "request_id": rid})
                 return
+            # The buffered body is handed to handle_mcp for the initialize
+            # gate, and replayed into the transport via a fresh receive.
+            body = b"".join(m.get("body", b"") for m in body_messages if m.get("type") == "http.request")
             receive = _replay_body(body_messages)
+        else:
+            body = b""
         logger.info("req=%s %s %s from %s", rid, method, path, client)
-        await handle_mcp(scope, receive, send_with_cors)
+        await handle_mcp(scope, receive, send_with_cors, body=body)
     elif path == "/health" and method == "GET":
         await handle_health(scope, receive, send_with_cors)
     else:
