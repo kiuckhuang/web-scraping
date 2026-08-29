@@ -16,10 +16,14 @@ def _reset_browser_state():
     bc._browser = None
     bc._playwright_ctx = None
     bc._sessions.clear()
+    bc._timezone_id = None
+    bc._timezone_resolved = False
     yield
     bc._browser = None
     bc._playwright_ctx = None
     bc._sessions.clear()
+    bc._timezone_id = None
+    bc._timezone_resolved = False
 
 
 class _FakeBrowser:
@@ -172,8 +176,9 @@ def _session_fake_browser(recorder):
         def is_connected(self):
             return self.connected
 
-        async def new_context(self):
+        async def new_context(self, **kwargs):
             recorder["contexts"] = recorder.get("contexts", 0) + 1
+            recorder.setdefault("context_kwargs", []).append(kwargs)
             return _FakeSessionContext(recorder)
 
     return _FakeBrowserWithSessions()
@@ -247,3 +252,42 @@ def test_new_page_uses_session_context_and_guard(session_playwright):
     assert session_playwright["contexts"] == 1
     asyncio.run(bc._new_page("work"))
     assert session_playwright["contexts"] == 1  # second request reuses the session
+
+
+
+def test_context_timezone_derived_from_proxy(session_playwright, monkeypatch):
+    """With a proxy configured, the egress timezone (resolved once through the
+    proxy) is applied to every new context."""
+    monkeypatch.setattr(bc, "CAMOUFOX_PROXY_SERVER", "http://10.8.8.1:8088")
+    monkeypatch.setattr(bc, "CAMOUFOX_TIMEZONE", "")
+    monkeypatch.setattr(bc, "_resolve_timezone_sync", lambda: "Asia/Hong_Kong")
+
+    asyncio.run(bc._new_page("work"))
+    asyncio.run(bc._new_page())
+    kwargs = session_playwright["context_kwargs"]
+    assert kwargs[0] == {"timezone_id": "Asia/Hong_Kong"}
+    assert kwargs[1] == {"timezone_id": "Asia/Hong_Kong"}
+    # resolved once, cached globally
+    assert session_playwright["contexts"] == 2
+
+
+def test_context_timezone_override_wins(session_playwright, monkeypatch):
+    monkeypatch.setattr(bc, "CAMOUFOX_PROXY_SERVER", "http://10.8.8.1:8088")
+    monkeypatch.setattr(bc, "CAMOUFOX_TIMEZONE", "Asia/Tokyo")
+    called = {"n": 0}
+
+    def fake_resolve():
+        called["n"] += 1
+        return "Asia/Hong_Kong"
+
+    monkeypatch.setattr(bc, "_resolve_timezone_sync", fake_resolve)
+    asyncio.run(bc._new_page())
+    assert session_playwright["context_kwargs"][-1] == {"timezone_id": "Asia/Tokyo"}
+    assert called["n"] == 0  # explicit override: no lookup at all
+
+
+def test_context_timezone_skipped_without_proxy(session_playwright, monkeypatch):
+    monkeypatch.setattr(bc, "CAMOUFOX_PROXY_SERVER", "")
+    monkeypatch.setattr(bc, "CAMOUFOX_TIMEZONE", "")
+    asyncio.run(bc._new_page())
+    assert session_playwright["context_kwargs"][-1] == {}

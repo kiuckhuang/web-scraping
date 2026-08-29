@@ -75,6 +75,12 @@ covers the conventions and non-obvious decisions you must not regress.
    volume. Login persistence across scrape calls is provided by named
    sessions (`bridge/bridge/browser_client.py` + `POST /sessions`), which are
    bounded by `CAMOUFOX_MAX_SESSIONS` and die with the browser connection.
+10. **Proxy + GeoIP** — browser egress is configured via `CAMOUFOX_PROXY_*`
+    env in the ws-camoufox container (never per-scrape). The GeoIP database
+    is warmed at image build time (`camoufox[geoip]` + `download_mmdb()` in
+    the Dockerfile) — never download it at container start. `CAMOUFOX_GEOIP`
+    auto-enables with a proxy; the launcher retries once without geoip if the
+    launch-time IP lookup fails, so a flaky lookup cannot crash-loop.
 
 ## Style
 

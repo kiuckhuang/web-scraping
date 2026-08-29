@@ -117,6 +117,13 @@ services:
       - CAMOUFOX_PORT=9222
       - CAMOUFOX_WS_PATH=${CAMOUFOX_WS_PATH:-browser}
       - CAMOUFOX_MAX_CONNECTIONS=${CAMOUFOX_MAX_CONNECTIONS:-8}
+      # Outbound proxy for all browser traffic (see .env.example; empty = direct)
+      - CAMOUFOX_PROXY_SERVER=${CAMOUFOX_PROXY_SERVER:-}
+      - CAMOUFOX_PROXY_USERNAME=${CAMOUFOX_PROXY_USERNAME:-}
+      - CAMOUFOX_PROXY_PASSWORD=${CAMOUFOX_PROXY_PASSWORD:-}
+      - CAMOUFOX_PROXY_BYPASS=${CAMOUFOX_PROXY_BYPASS:-}
+      # GeoIP-consistent fingerprints: auto = on whenever a proxy is set
+      - CAMOUFOX_GEOIP=${CAMOUFOX_GEOIP:-auto}
     networks:
       - internal
     healthcheck:
@@ -165,6 +172,12 @@ services:
       - CAMOUFOX_ISOLATE_CONTEXTS=${CAMOUFOX_ISOLATE_CONTEXTS:-true}
       # Named sessions (login persistence): max concurrent session contexts
       - CAMOUFOX_MAX_SESSIONS=${CAMOUFOX_MAX_SESSIONS:-16}
+      # Proxy (bridge-side copy): derives the egress timezone for context
+      # creation so the fingerprint timezone matches the proxy exit
+      - CAMOUFOX_PROXY_SERVER=${CAMOUFOX_PROXY_SERVER:-}
+      - CAMOUFOX_PROXY_USERNAME=${CAMOUFOX_PROXY_USERNAME:-}
+      - CAMOUFOX_PROXY_PASSWORD=${CAMOUFOX_PROXY_PASSWORD:-}
+      - CAMOUFOX_TIMEZONE=${CAMOUFOX_TIMEZONE:-}
       # Wall-clock budget for a single /crawl call (s, 0 = unlimited)
       - CRAWL_MAX_SECONDS=${CRAWL_MAX_SECONDS:-1800}
       # TTL (s) for cached SSRF DNS verdicts (0 disables caching)

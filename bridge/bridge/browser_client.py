@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import socket
+import urllib.request
 from collections import deque
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -31,6 +32,16 @@ logger = logging.getLogger(__name__)
 
 ENGINE = "camoufox"
 CAMOUFOX_WS_URL = os.environ.get("CAMOUFOX_WS_URL", "ws://camoufox:9222/browser")
+# Proxy settings (bridge-side copy of the ws-camoufox container's env) — used
+# only to derive the egress timezone for context creation. Camoufox's server
+# mode applies fingerprint geo data browser-wide (WebRTC IP via prefs) but
+# cannot set per-context timezone/locale for remotely created contexts, so the
+# bridge derives them the same way camoufox upstream does: ip-api.com through
+# the proxy, resolved once and cached.
+CAMOUFOX_PROXY_SERVER = os.environ.get("CAMOUFOX_PROXY_SERVER", "").strip()
+CAMOUFOX_PROXY_USERNAME = os.environ.get("CAMOUFOX_PROXY_USERNAME", "").strip()
+CAMOUFOX_PROXY_PASSWORD = os.environ.get("CAMOUFOX_PROXY_PASSWORD", "").strip()
+CAMOUFOX_TIMEZONE = os.environ.get("CAMOUFOX_TIMEZONE", "").strip()
 SCRAPE_TIMEOUT = float(os.environ.get("CAMOUFOX_TIMEOUT", "60"))
 NAV_WAIT = os.environ.get("CAMOUFOX_NAV_WAIT", "domcontentloaded")
 NAV_DELAY = float(os.environ.get("CAMOUFOX_NAV_DELAY", "400"))
@@ -119,18 +130,20 @@ async def _new_page(session: str | None = None):
     isolated context (or the shared default one when isolation is disabled).
     """
     browser = await _get_browser()
+    tz = await _context_timezone()
+    context_kwargs = {"timezone_id": tz} if tz else {}
     if session is not None:
-        context = await get_session(session)
+        context = await get_session(session, **context_kwargs)
     elif ISOLATE_CONTEXTS:
-        context = await browser.new_context()
+        context = await browser.new_context(**context_kwargs)
     else:
-        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        context = browser.contexts[0] if browser.contexts else await browser.new_context(**context_kwargs)
     page = await context.new_page()
     await page.route("**/*", _guard_request)
     return page
 
 
-async def get_session(name: str):
+async def get_session(name: str, **context_kwargs):
     """Return the named long-lived context, creating it on first use."""
     if name in _sessions:
         return _sessions[name]
@@ -142,7 +155,7 @@ async def get_session(name: str):
                 f"Session limit reached ({MAX_SESSIONS}); delete a session first (DELETE /sessions/{{name}})"
             )
         browser = await _get_browser()
-        context = await browser.new_context()
+        context = await browser.new_context(**context_kwargs)
         _sessions[name] = context
         logger.info("Created browser session %r (%d/%d in use)", name, len(_sessions), MAX_SESSIONS)
         return context
@@ -172,6 +185,62 @@ async def close_session(name: str) -> bool:
 def list_sessions() -> list[str]:
     """Names of the live sessions."""
     return sorted(_sessions)
+
+
+# ---------------------------------------------------------------------------
+#  Egress timezone derivation (fingerprint consistency behind a proxy)
+# ---------------------------------------------------------------------------
+
+_timezone_id: str | None = None
+_timezone_resolved = False
+
+
+def _proxy_url() -> str | None:
+    """Proxy URL with credentials embedded, for urllib's ProxyHandler."""
+    if not CAMOUFOX_PROXY_SERVER:
+        return None
+    if CAMOUFOX_PROXY_USERNAME and CAMOUFOX_PROXY_PASSWORD:
+        parsed = urlparse(CAMOUFOX_PROXY_SERVER)
+        netloc = f"{CAMOUFOX_PROXY_USERNAME}:{CAMOUFOX_PROXY_PASSWORD}@{parsed.netloc}"
+        return parsed._replace(netloc=netloc).geturl()
+    return CAMOUFOX_PROXY_SERVER
+
+
+def _resolve_timezone_sync() -> str | None:
+    """Query ip-api.com THROUGH the proxy for the exit IP's timezone."""
+    import json
+
+    proxy_url = _proxy_url()
+    handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url} if proxy_url else None)
+    opener = urllib.request.build_opener(handler)
+    with opener.open("http://ip-api.com/json?fields=query,timezone", timeout=10) as resp:
+        data = json.load(resp)
+    return data.get("timezone") or None
+
+
+async def _context_timezone() -> str | None:
+    """Timezone for new contexts: CAMOUFOX_TIMEZONE override, else the proxy
+    exit's timezone (resolved once through the proxy), else None (UTC)."""
+    global _timezone_id, _timezone_resolved
+    if _timezone_resolved:
+        return _timezone_id
+    if CAMOUFOX_TIMEZONE:
+        _timezone_id, _timezone_resolved = CAMOUFOX_TIMEZONE, True
+        logger.info("Context timezone override: %s", _timezone_id)
+        return _timezone_id
+    if not CAMOUFOX_PROXY_SERVER:
+        _timezone_resolved = True
+        return None
+    try:
+        _timezone_id = await asyncio.to_thread(_resolve_timezone_sync)
+        logger.info("Proxy egress timezone resolved: %s", _timezone_id)
+    except Exception as exc:
+        logger.warning(
+            "Could not resolve the proxy egress timezone (%s) — contexts will use the browser default", exc
+        )
+        _timezone_id = None
+    _timezone_resolved = True
+    return _timezone_id
 
 
 def _is_public_http_url(url: str) -> bool:
