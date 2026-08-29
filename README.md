@@ -260,7 +260,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | Variable                | Default                  | Description                          |
 |-------------------------|--------------------------|--------------------------------------|
 | `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
-| `SEARXNG_CHANNEL`       | `2026.8.22-9fea41204`   | SearXNG image tag (change deliberately when updating) |
+| `SEARXNG_CHANNEL`       | `2026.8.28-a30b2d474`   | SearXNG image tag (change deliberately when updating) |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
 | `SEARXNG_REQUEST_TIMEOUT` | `10`                   | Outgoing request timeout (s) per engine |
 | `SEARXNG_MAX_REQUEST_TIMEOUT` | `15`              | Max allowed request timeout (s)     |
@@ -381,7 +381,7 @@ make update
 
 ### Fortress maintenance status (as of 2026-08)
 
-⚠️ **Upstream [tiliondev/fortress](https://github.com/tiliondev/fortress) has not shipped a build since 2026-07-15** (tag `150` = Chromium 150.0.7871.114), despite advertising a monthly rebase. Current Chrome stable is **151.x**, so version-database detectors will increasingly read Fortress 150 as an outdated — and therefore suspicious — browser. The stack still works, but treat Fortress as a decaying asset and evaluate alternatives:
+⚠️ **Upstream [tiliondev/fortress](https://github.com/tiliondev/fortress) has not shipped a build since 2026-07-15** (tag `150` = Chromium 150.0.7871.114), despite advertising a monthly rebase. Current Chrome stable is **151.x**, so version-database detectors will increasingly read Fortress 150 as an outdated — and therefore suspicious — browser. (A `151` tag exists on Docker Hub, but it is Chromium 151.0.7908.0 pushed 2026-07-11 — an *older* dev-channel snapshot that predates the 150 stable build, so `150` remains the pin.) The stack still works, but treat Fortress as a decaying asset and evaluate alternatives:
 
 | Alternative | Approach | Drop-in? | Notes |
 |-------------|----------|----------|-------|

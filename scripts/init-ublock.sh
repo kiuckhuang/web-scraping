@@ -3,8 +3,8 @@ set -eu
 
 PROFILE_DIR=/profile
 EXTENSION_DIR="$PROFILE_DIR/.ublock-origin-lite"
-VERSION=2026.804.1652
-SHA256=062d95b68aea70e6173a4c30d5f48a4d79f23ce889f3335a50b3edf7992c6c38
+VERSION=2026.825.1619
+SHA256=9f0acbe3eabd4ba1c1c0629438cfacafbdaf04cd150769932d5d265b2fac117e
 
 enabled="${UBLOCK_ORIGIN_LITE_ENABLED:-true}"
 if [ "$enabled" != "1" ] && [ "$enabled" != "true" ] && [ "$enabled" != "yes" ]; then
