@@ -16,7 +16,9 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     pids_limit: 256
-    command: valkey-server --save 30 1 --loglevel warning
+    # maxmemory below the container limit keeps heavy SearXNG caching from
+    # OOM-killing valkey; allkeys-lru evicts oldest keys instead of failing.
+    command: valkey-server --save 30 1 --loglevel warning --maxmemory 192mb --maxmemory-policy allkeys-lru
     volumes:
       - valkey-data:/data
     cap_drop:
@@ -194,13 +196,18 @@ services:
       - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:-300}
       - BRIDGE_CACHE_MAX=${BRIDGE_CACHE_MAX:-100}
       - BRIDGE_CACHE_MAX_BYTES=${BRIDGE_CACHE_MAX_BYTES:-26214400}
-      # Post-navigation pause (ms) before extraction
+      # Post-navigation pause (ms) before content extraction
       - FORTRESS_NAV_DELAY=${FORTRESS_NAV_DELAY:-400}
       - FORTRESS_TIMEOUT=${FORTRESS_TIMEOUT:-60}
       - FORTRESS_NAV_WAIT=${FORTRESS_NAV_WAIT:-domcontentloaded}
       - FORTRESS_MAX_CONCURRENT_PAGES=${FORTRESS_MAX_CONCURRENT_PAGES:-3}
       - FORTRESS_WAF_WAIT=${FORTRESS_WAF_WAIT:-15}
       - FORTRESS_ISOLATE_CONTEXTS=${FORTRESS_ISOLATE_CONTEXTS:-true}
+      # Wall-clock budget for a single /crawl call (s, 0 = unlimited)
+      - CRAWL_MAX_SECONDS=${CRAWL_MAX_SECONDS:-1800}
+      # TTL (s) for cached SSRF DNS verdicts (0 disables caching)
+      - SSRF_DNS_CACHE_TTL=${SSRF_DNS_CACHE_TTL:-60}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
       searxng:
         condition: service_healthy
@@ -251,6 +258,9 @@ services:
       - MCP_RATE_LIMIT=${MCP_RATE_LIMIT:-120}
       - MCP_MAX_BODY=${MCP_MAX_BODY:-1048576}
       - MCP_ALLOWED_ORIGIN=${MCP_ALLOWED_ORIGIN:-localhost}
+      # Trusted client CIDRs; empty = auto-detect (loopback + container /24)
+      - MCP_TRUSTED_CIDRS=${MCP_TRUSTED_CIDRS:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # Result token budgets (chars per item)
       - MCP_SNIPPET_CHARS=${MCP_SNIPPET_CHARS:-300}
       - MCP_CONTENT_CHARS=${MCP_CONTENT_CHARS:-5000}

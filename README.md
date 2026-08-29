@@ -275,7 +275,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | `FORTRESS_LANG`         | host `LANG`              | Browser language override             |
 | `fortress-profile`      | Podman volume            | Persistent Chromium profile volume           |
 | `FORTRESS_SHM_SIZE`     | `2gb`                    | Fortress shared memory size |
-| `FORTRESS_NAV_DELAY`    | `400`                    | Post-navigation pause (ms) for JS/SERP pages before extraction |
+| `FORTRESS_NAV_DELAY`    | `400`                    | Post-navigation pause (ms) before extraction (crawl, SERP, and extract-mode pages; fetch mode skips it) |
 | `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen address (internal container) |
 | `BRIDGE_PORT`           | `8000`                   | Bridge listen port (internal container) |
 | `BRIDGE_CACHE_TTL`      | `300`                    | Scrape cache TTL (s) — repeat scrapes of the same URL skip the browser |
@@ -287,6 +287,9 @@ await page.screenshot({ path: "stealth-check.png" });
 | `FORTRESS_WAF_WAIT`      | `15`                    | Maximum WAF challenge wait (s) |
 | `FORTRESS_ISOLATE_CONTEXTS` | `true`                | Isolate cookies/storage for each request |
 | `UBLOCK_ORIGIN_LITE_ENABLED` | `true`              | Enable the bundled uBlock Origin Lite extension |
+| `CRAWL_MAX_SECONDS`     | `1800`                   | Wall-clock budget per `/crawl` call (s); `0` = unlimited. Returns partial results when exhausted |
+| `SSRF_DNS_CACHE_TTL`    | `60`                     | TTL (s) for cached SSRF DNS verdicts (`0` disables caching) |
+| `LOG_LEVEL`             | `INFO`                   | Log level for the bridge and MCP services (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 | `BRIDGE_URL`            | `http://bridge:8000`     | Bridge URL used by MCP (container-internal) |
 | `PORT_SEARXNG`          | `8888`                   | Host port for SearXNG                |
 | `PORT_FORTRESS`         | `9222`                   | Host port for Fortress CDP           |
@@ -294,6 +297,7 @@ await page.screenshot({ path: "stealth-check.png" });
 | `PORT_MCP`              | `9100`                   | Host port for MCP server             |
 | `MCP_API_KEY`           | (auto-generated)         | Bearer token for remote MCP clients (localhost bypasses auth) |
 | `MCP_BIND_HOST`         | `127.0.0.1`              | Host address published for MCP; non-loopback requires `MCP_API_KEY` |
+| `MCP_TRUSTED_CIDRS`     | (auto-detected)          | Comma-separated CIDRs that bypass bearer auth; empty = loopback + container /24 subnets |
 | `MCP_SESSION_TTL`       | `1800`                   | Idle MCP session lifetime (s) before expiry |
 | `MCP_RATE_LIMIT`        | `120`                    | Max MCP requests/min per client IP (`0` = unlimited) |
 | `MCP_MAX_BODY`          | `1048576`                | Max MCP request body size (bytes)    |
@@ -411,7 +415,7 @@ The stack is split into two bridge networks:
 
 ### MCP hardening
 
-- **Idle session expiry** — MCP sessions are garbage-collected after `MCP_SESSION_TTL` seconds of inactivity (default 30 min), so abandoned client connections cannot leak memory or background tasks forever.
+- **Idle session expiry** — MCP sessions are garbage-collected after `MCP_SESSION_TTL` seconds of inactivity (default 30 min), so abandoned client connections cannot leak memory or background tasks forever. A client `DELETE /mcp` frees the session immediately, and only `initialize` requests can create sessions — headerless non-initialize requests are rejected with `400` instead of piling up orphan transports.
 - **Per-IP rate limiting** — `MCP_RATE_LIMIT` (default 120/min per IP) throttles abusive clients; excess requests get `429`. Set `0` to disable.
 - **Request body limit** — requests larger than `MCP_MAX_BODY` (default 1 MB) are rejected with `413`.
 - **Local-first authentication** — localhost clients may use the trusted local path. A non-loopback `MCP_BIND_HOST` requires a non-empty `MCP_API_KEY`; `make init` generates one.
@@ -537,11 +541,11 @@ Sessions are dropped after `MCP_SESSION_TTL` seconds of inactivity (default 30 m
 
 ### Correlating a failing call across logs
 
-Both the bridge and the MCP server tag every request with a short ID:
+Both services tag requests with short IDs:
 - bridge logs `req=abc12345 GET /search -> 502` and echoes `X-Request-ID: abc12345` in the response.
-- mcp logs `req=...` on each incoming request and includes `request_id` in error bodies.
+- mcp logs its own `req=...` per MCP request, and each bridge REST call it makes is logged as `bridge req=abc12345 GET /search` — that ID is the header the bridge receives.
 
-Grep both services for the same ID to trace a failure: `podman compose logs bridge mcp | grep abc12345`.
+Grep both services for the bridge-side ID to trace a failure: `podman compose logs bridge mcp | grep abc12345`.
 
 ### Scrape results look stale
 
