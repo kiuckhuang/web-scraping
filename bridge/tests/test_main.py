@@ -5,6 +5,7 @@ or via CI / `make test-unit`.
 """
 
 import asyncio
+import re
 import socket
 
 import pytest
@@ -15,6 +16,22 @@ from bridge.main import (
     _validate_public_url,
 )
 from fastapi import HTTPException
+
+from bridge import ssrf
+
+
+@pytest.fixture(autouse=True)
+def _reset_caches():
+    """Bridge scrape cache and SSRF DNS verdicts must not leak between tests."""
+    import bridge.main as main_mod
+
+    main_mod._cache.clear()
+    main_mod._cache_bytes = 0
+    ssrf.clear_dns_cache()
+    yield
+    main_mod._cache.clear()
+    main_mod._cache_bytes = 0
+    ssrf.clear_dns_cache()
 
 
 def _public_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
@@ -143,7 +160,70 @@ def test_search_and_scrape_skips_private_urls(monkeypatch):
     assert out["results"][1]["content"]["markdown"] == "scraped!"
 
 
-def test_close_page_closes_page_and_isolated_context():
+# ---------------------------------------------------------------------------
+#  Shared SSRF guard (bridge.bridge.ssrf)
+# ---------------------------------------------------------------------------
+
+def test_browser_guard_allows_inert_schemes():
+    """data:/blob:/about: are Chromium-internal and carry no network authority."""
+    assert ssrf.is_public_http_url("data:text/html,hello") is True
+    assert ssrf.is_public_http_url("blob:https://example.com/uuid") is True
+    assert ssrf.is_public_http_url("about:blank") is True
+
+
+def test_edge_validator_rejects_inert_schemes():
+    """The edge validator is stricter than the browser guard: no data:/file:."""
+    with pytest.raises(HTTPException) as exc:
+        _validate_public_url("data:text/html,hello")
+    assert exc.value.status_code == 400
+
+
+def test_browser_guard_blocks_private(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _mixed_getaddrinfo)
+    assert ssrf.is_public_http_url("http://192.168.1.1/x") is False
+    assert ssrf.is_public_http_url("http://example.com/x") is True
+
+
+def test_dns_verdict_is_cached(monkeypatch):
+    """Repeated verdicts within the TTL resolve only once (subresource flood guard)."""
+    calls = {"n": 0}
+
+    def counting_getaddrinfo(host, *args, **kwargs):
+        calls["n"] += 1
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(ssrf, "DNS_CACHE_TTL", 60.0)
+    monkeypatch.setattr(socket, "getaddrinfo", counting_getaddrinfo)
+    assert ssrf.dns_verdict("example.com") == "public"
+    assert ssrf.dns_verdict("example.com") == "public"
+    assert calls["n"] == 1
+
+
+def test_dns_cache_disabled_with_zero_ttl(monkeypatch):
+    monkeypatch.setattr(ssrf, "DNS_CACHE_TTL", 0.0)
+    calls = {"n": 0}
+
+    def counting_getaddrinfo(host, *args, **kwargs):
+        calls["n"] += 1
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", counting_getaddrinfo)
+    ssrf.dns_verdict("example.com")
+    ssrf.dns_verdict("example.com")
+    assert calls["n"] == 2
+    assert ssrf._dns_cache == {}
+
+
+def test_dns_cache_prunes_oldest_when_full(monkeypatch):
+    monkeypatch.setattr(ssrf, "DNS_CACHE_TTL", 60.0)
+    monkeypatch.setattr(ssrf, "DNS_CACHE_MAX", 4)
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    for i in range(6):
+        ssrf.dns_verdict(f"host{i}.example.com")
+    assert len(ssrf._dns_cache) <= 4
+
+
+def test_close_page_closes_page_and_isolated_context(monkeypatch):
     import bridge.fortress_client as fortress_mod
 
     class FakeContext:
@@ -162,15 +242,15 @@ def test_close_page_closes_page_and_isolated_context():
             self.closed = True
 
     page = FakePage()
-    old_isolate = fortress_mod.ISOLATE_CONTEXTS
-    fortress_mod.ISOLATE_CONTEXTS = True
-    try:
-        asyncio.run(fortress_mod._close_page(page))
-        assert page.closed is True
-        assert page.context.closed is True
-    finally:
-        fortress_mod.ISOLATE_CONTEXTS = old_isolate
+    monkeypatch.setattr(fortress_mod, "ISOLATE_CONTEXTS", True)
+    asyncio.run(fortress_mod._close_page(page))
+    assert page.closed is True
+    assert page.context.closed is True
 
+
+# ---------------------------------------------------------------------------
+#  Scrape cache
+# ---------------------------------------------------------------------------
 
 def test_scrape_cache_hits(monkeypatch):
     """Repeated scrapes of the same URL within the TTL skip the browser."""
@@ -184,20 +264,70 @@ def test_scrape_cache_hits(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
     monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
-    main_mod._cache.clear()
-    main_mod._cache_bytes = 0
 
-    try:
-        req = ScrapeRequest(url="https://example.com/", mode="extract")
-        first = asyncio.run(main_mod.scrape(req))
-        second = asyncio.run(main_mod.scrape(req))
-        assert calls["n"] == 1
-        assert "cached" not in first
-        assert second["cached"] is True
-        assert second["markdown"] == "cached body"
-    finally:
-        main_mod._cache.clear()
-        main_mod._cache_bytes = 0
+    req = ScrapeRequest(url="https://example.com/", mode="extract")
+    first = asyncio.run(main_mod.scrape(req))
+    second = asyncio.run(main_mod.scrape(req))
+    assert calls["n"] == 1
+    assert "cached" not in first
+    assert second["cached"] is True
+    assert second["markdown"] == "cached body"
+
+
+def test_cache_skips_waf_challenge_pages(monkeypatch):
+    """WAF challenge pages are served but never cached — retry must re-scrape."""
+    import bridge.main as main_mod
+
+    calls = {"n": 0}
+
+    async def fake_scrape(url, *, mode):
+        calls["n"] += 1
+        return {"url": url, "markdown": "just a moment...", "waf_challenge": True}
+
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+
+    req = ScrapeRequest(url="https://example.com/challenge", mode="extract")
+    asyncio.run(main_mod.scrape(req))
+    asyncio.run(main_mod.scrape(req))
+    assert calls["n"] == 2  # a cached challenge would have made this 1
+
+
+def test_cache_skips_http_error_pages(monkeypatch):
+    """4xx/5xx responses are transient — they must not stick for the TTL."""
+    import bridge.main as main_mod
+
+    calls = {"n": 0}
+
+    async def fake_scrape(url, *, mode):
+        calls["n"] += 1
+        return {"url": url, "text": "error", "status": 503}
+
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+
+    req = ScrapeRequest(url="https://example.com/flaky", mode="fetch")
+    asyncio.run(main_mod.scrape(req))
+    asyncio.run(main_mod.scrape(req))
+    assert calls["n"] == 2
+
+
+def test_cache_keeps_ok_status(monkeypatch):
+    import bridge.main as main_mod
+
+    calls = {"n": 0}
+
+    async def fake_scrape(url, *, mode):
+        calls["n"] += 1
+        return {"url": url, "markdown": "fine", "status": 200}
+
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
+
+    req = ScrapeRequest(url="https://example.com/ok", mode="extract")
+    asyncio.run(main_mod.scrape(req))
+    asyncio.run(main_mod.scrape(req))
+    assert calls["n"] == 1
 
 
 def test_cache_respects_max_entries(monkeypatch):
@@ -209,19 +339,12 @@ def test_cache_respects_max_entries(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
     monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
-    old_max = main_mod.BRIDGE_CACHE_MAX
-    main_mod.BRIDGE_CACHE_MAX = 2
-    main_mod._cache.clear()
-    main_mod._cache_bytes = 0
-    try:
-        for i in range(3):
-            req = ScrapeRequest(url=f"https://example.com/{i}", mode="extract")
-            asyncio.run(main_mod.scrape(req))
-        assert len(main_mod._cache) <= 2
-    finally:
-        main_mod.BRIDGE_CACHE_MAX = old_max
-        main_mod._cache.clear()
-        main_mod._cache_bytes = 0
+    monkeypatch.setattr(main_mod, "BRIDGE_CACHE_MAX", 2)
+
+    for i in range(3):
+        req = ScrapeRequest(url=f"https://example.com/{i}", mode="extract")
+        asyncio.run(main_mod.scrape(req))
+    assert len(main_mod._cache) <= 2
 
 
 def test_cache_respects_max_bytes(monkeypatch):
@@ -233,20 +356,17 @@ def test_cache_respects_max_bytes(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
     monkeypatch.setattr(main_mod, "fortress_scrape", fake_scrape)
-    old_bytes = main_mod.BRIDGE_CACHE_MAX_BYTES
-    main_mod.BRIDGE_CACHE_MAX_BYTES = 150
-    main_mod._cache.clear()
-    main_mod._cache_bytes = 0
-    try:
-        for i in range(3):
-            req = ScrapeRequest(url=f"https://example.com/{i}", mode="extract")
-            asyncio.run(main_mod.scrape(req))
-        assert main_mod._cache_bytes <= main_mod.BRIDGE_CACHE_MAX_BYTES
-    finally:
-        main_mod.BRIDGE_CACHE_MAX_BYTES = old_bytes
-        main_mod._cache.clear()
-        main_mod._cache_bytes = 0
+    monkeypatch.setattr(main_mod, "BRIDGE_CACHE_MAX_BYTES", 150)
 
+    for i in range(3):
+        req = ScrapeRequest(url=f"https://example.com/{i}", mode="extract")
+        asyncio.run(main_mod.scrape(req))
+    assert main_mod._cache_bytes <= main_mod.BRIDGE_CACHE_MAX_BYTES
+
+
+# ---------------------------------------------------------------------------
+#  HTTP layer
+# ---------------------------------------------------------------------------
 
 def test_health_endpoint_routes(monkeypatch):
     import bridge.main as main_mod
@@ -271,6 +391,37 @@ def test_health_endpoint_routes(monkeypatch):
             assert data["services"]["searxng"] == "up"
             assert data["services"]["fortress"] == "up"
             assert "x-request-id" in resp.headers
+
+    asyncio.run(run())
+
+
+def test_request_id_echoes_valid_client_id(monkeypatch):
+    import bridge.main as main_mod
+    import httpx
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/health", headers={"X-Request-ID": "abc-123._x"})
+            assert resp.headers["x-request-id"] == "abc-123._x"
+
+    asyncio.run(run())
+
+
+def test_request_id_replaces_unsafe_client_id(monkeypatch):
+    """Oversized/odd client IDs must not be echoed back or logged verbatim."""
+    import bridge.main as main_mod
+    import httpx
+
+    unsafe = "bad id with spaces and a very long " + "x" * 200
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/health", headers={"X-Request-ID": unsafe})
+            echoed = resp.headers["x-request-id"]
+            assert echoed != unsafe
+            assert re.fullmatch(r"[0-9a-f]{8}", echoed)
 
     asyncio.run(run())
 

@@ -13,7 +13,6 @@ provides high-level operations using Playwright:
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import os
 import socket
@@ -25,6 +24,8 @@ import httpx
 from markdownify import markdownify
 from playwright.async_api import Browser, Error as PlaywrightError, async_playwright
 
+from . import ssrf
+
 logger = logging.getLogger(__name__)
 
 FORTRESS_CDP_URL = os.environ.get("FORTRESS_CDP_URL", "http://fortress:9222")
@@ -34,6 +35,10 @@ NAV_DELAY = float(os.environ.get("FORTRESS_NAV_DELAY", "400"))
 MAX_CONCURRENT_PAGES = int(os.environ.get("FORTRESS_MAX_CONCURRENT_PAGES", "3"))
 WAF_WAIT = float(os.environ.get("FORTRESS_WAF_WAIT", "15"))
 ISOLATE_CONTEXTS = os.environ.get("FORTRESS_ISOLATE_CONTEXTS", "true").lower() not in {"0", "false", "no"}
+# Wall-clock budget for a single /crawl call (seconds, 0 = unlimited). Without
+# it a 200-page crawl against slow/challenging targets can run for hours while
+# the MCP client has long timed out.
+CRAWL_MAX_SECONDS = float(os.environ.get("CRAWL_MAX_SECONDS", "1800"))
 WAF_MARKERS = (
     "just a moment",
     "performing security verification",
@@ -105,7 +110,8 @@ async def _get_browser() -> Browser:
     if _browser is None or not _browser.is_connected():
         async with _lock:
             if _browser is None or not _browser.is_connected():
-                CDP_URL = _resolve_cdp_url(FORTRESS_CDP_URL)
+                # DNS must not run on the event loop (see _resolve_cdp_url).
+                CDP_URL = await asyncio.to_thread(_resolve_cdp_url, FORTRESS_CDP_URL)
                 logger.info("Connecting to Fortress CDP at %s", CDP_URL)
                 try:
                     _playwright_ctx = await async_playwright().start()
@@ -130,31 +136,13 @@ async def _new_page():
 
 
 def _is_public_http_url(url: str) -> bool:
-    """Reject browser requests to local, private, or otherwise special hosts."""
-    parsed = urlparse(url)
-    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
-        return parsed.scheme.lower() in ("data", "blob", "about")
-    host = parsed.hostname
-    if host.lower() in {"localhost", "0.0.0.0", "127.0.0.1", "::1"}:
-        return False
-    try:
-        addresses = socket.getaddrinfo(host, None)
-    except OSError:
-        return False
-    for info in addresses:
-        ip = ipaddress.ip_address(info[4][0])
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-            ip = ip.ipv4_mapped
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_reserved
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            return False
-    return True
+    """Reject browser requests to local, private, or otherwise special hosts.
+
+    Delegates to the shared SSRF guard (same policy as the bridge edge, plus
+    inert browser schemes); DNS verdicts are cached there per host so a
+    JS-heavy page's subresources don't hammer the resolver.
+    """
+    return ssrf.is_public_http_url(url)
 
 
 async def _guard_request(route, request) -> None:
@@ -246,7 +234,9 @@ async def fetch_page(url: str) -> dict[str, Any]:
         title = await page.title()
         text = await page.inner_text("body")
         html = await page.content()
-        status = response.status if response else 200
+        # None when no navigation response is available (e.g. a client-side
+        # redirect chain) — never fabricate a 200, callers filter on status.
+        status = response.status if response else None
 
         result = {
             "url": page.url,
@@ -275,6 +265,10 @@ async def extract_page(url: str) -> dict[str, Any]:
     try:
         await page.goto(url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
         await _wait_for_waf(page)
+        # domcontentloaded alone can race SPA hydration — give JS pages the
+        # configured settle pause before extraction (same as crawl/SERP paths).
+        if NAV_DELAY > 0:
+            await page.wait_for_timeout(int(NAV_DELAY))
 
         title = await page.title()
 
@@ -403,8 +397,19 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
     pages: list[dict] = []
     sitemap: list[str] = []
     queue: deque[tuple[str, int]] = deque([(url, 0)])
+    deadline = (
+        asyncio.get_running_loop().time() + CRAWL_MAX_SECONDS if CRAWL_MAX_SECONDS > 0 else None
+    )
 
     while queue and len(pages) < max_pages:
+        if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+            logger.warning(
+                "Crawl budget of %ss exhausted at %d/%d pages; returning partial results",
+                CRAWL_MAX_SECONDS,
+                len(pages),
+                max_pages,
+            )
+            break
         current_url, current_depth = queue.popleft()
 
         if current_url in visited:
@@ -437,10 +442,19 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50) -> dict[str,
                                 .map(a => a.href)
                                 .filter(href => href.startsWith('http'))
                         """)
-                        for link in links:
-                            if link not in queued and _same_origin(url, link) and _is_public_http_url(link):
-                                queued.add(link)
-                                queue.append((link, current_depth + 1))
+                        # Filter in one worker-thread batch — same-origin plus
+                        # shared-guard DNS checks for every link would otherwise
+                        # run (blocking) on the event loop.
+                        public_links = await asyncio.to_thread(
+                            lambda: [
+                                link
+                                for link in links
+                                if link not in queued and _same_origin(url, link) and _is_public_http_url(link)
+                            ]
+                        )
+                        for link in public_links:
+                            queued.add(link)
+                            queue.append((link, current_depth + 1))
                 finally:
                     await _close_page(page)
         except Exception as exc:

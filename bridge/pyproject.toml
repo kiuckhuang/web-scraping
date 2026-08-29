@@ -2,7 +2,7 @@
 name = "web-scrape-bridge"
 version = "0.1.0"
 description = "Bridge service: SearXNG search + Tilion Fortress stealth scrape"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
     "fastapi==0.141.1",

@@ -12,21 +12,20 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import logging
 import os
-import socket
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Literal
-from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from . import ssrf
 from .fortress_client import (
     crawl_site as fortress_crawl,
     health as fortress_health,
@@ -40,7 +39,10 @@ from .searxng_client import (
     shutdown as searxng_shutdown,
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.basicConfig(
+    level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 # Scrape cache: repeated scrapes of the same URL within the TTL skip the
@@ -72,14 +74,22 @@ async def request_id_middleware(request, call_next):
     """Tag every request with a short request ID and log it.
 
     The ID is echoed back via the X-Request-ID header so a failing agent call
-    can be correlated across bridge/Fortress/SearXNG logs.
+    can be correlated across bridge/Fortress/SearXNG logs. A client-supplied
+    ID is honored only if it is short and printable — it goes back in a
+    response header and into log lines, so it must not be attack surface.
     """
-    rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:8]
+    supplied = request.headers.get("X-Request-ID") or ""
+    rid = supplied if _REQUEST_ID_RE.fullmatch(supplied) else uuid.uuid4().hex[:8]
     response = await call_next(request)
     response.headers["X-Request-ID"] = rid
     if request.url.path != "/health":  # keep healthchecks out of the logs
         logger.info("req=%s %s %s -> %s", rid, request.method, request.url.path, response.status_code)
     return response
+
+
+# Client-supplied request IDs: 1-64 chars of [A-Za-z0-9._-]; anything else
+# (oversized, whitespace, control characters) is replaced with a fresh ID.
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
 # ---------------------------------------------------------------------------
@@ -101,55 +111,29 @@ class SearchAndScrapeRequest(BaseModel):
 
 # ---------------------------------------------------------------------------
 #  URL validation — block private/internal networks (SSRF protection)
+#  (core logic lives in bridge.bridge.ssrf, shared with the browser guard)
 # ---------------------------------------------------------------------------
 
 def _validate_public_url(url: str) -> str:
     """Reject URLs pointing to private/internal networks.
 
-    Raises HTTPException(403) for SSRF attempts.
-
-    Note on DNS rebinding: the host is resolved here and again by the browser
-    when navigating. We reject unresolvable hosts outright so a host that
-    fails validation-time resolution cannot slip through a later re-resolution.
+    Raises HTTPException(403) for SSRF attempts, HTTPException(400) for
+    malformed URLs. Blocking DNS resolution runs in a worker thread via
+    asyncio.to_thread at the call sites — a slow resolver must not stall
+    the event loop.
     """
-    parsed = urlparse(url)
-    if parsed.scheme.lower() not in ("http", "https"):
-        raise HTTPException(status_code=400, detail=f"Unsupported scheme: {parsed.scheme}")
-    host = parsed.hostname or ""
-    if not host:
-        raise HTTPException(status_code=400, detail="Missing host")
-    # Block obvious local names
-    if host.lower() in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-        raise HTTPException(status_code=403, detail="Access to internal addresses is blocked")
-    # Resolve and block private ranges
     try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError:
-        # Unresolvable host — reject rather than let a later re-resolution
-        # by the browser silently bypass the check (DNS-rebinding defense).
-        raise HTTPException(status_code=403, detail="Could not resolve host; access blocked")
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-            ip = ip.ipv4_mapped
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_reserved
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            raise HTTPException(status_code=403, detail="Access to internal addresses is blocked")
-    return url
+        return ssrf.validate_public_url(url)
+    except ssrf.UrlBlockedError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
 def _is_public_url(url: str) -> bool:
     """True if the URL is allowed to be scraped (public http/https only)."""
     try:
-        _validate_public_url(url)
+        ssrf.validate_public_url(url)
         return True
-    except HTTPException:
+    except ssrf.UrlBlockedError:
         return False
 
 
@@ -189,6 +173,15 @@ def _cache_set(url: str, mode: str, value: dict[str, Any]) -> None:
         _cache_bytes -= _cache.pop(oldest)[2]
     _cache[(url, mode)] = (time.monotonic(), value, size)
     _cache_bytes += size
+
+
+def _cacheable(content: dict[str, Any]) -> bool:
+    """WAF challenges and HTTP error pages must not be cached: a challenge can
+    clear on retry and an error may be transient — serve them once, uncached."""
+    if content.get("waf_challenge"):
+        return False
+    status = content.get("status")
+    return not (isinstance(status, int) and status >= 400)
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +244,7 @@ async def scrape(req: ScrapeRequest) -> dict[str, Any]:
     Bypasses Cloudflare, DataDome, PerimeterX, Akamai, and other bot detection.
     Returns clean markdown (extract mode) or raw HTML + text (fetch mode).
     """
-    _validate_public_url(req.url)
+    await asyncio.to_thread(_validate_public_url, req.url)
     cached = await _cache_get(req.url, req.mode)
     if cached is not None:
         return {**cached, "cached": True}
@@ -259,7 +252,8 @@ async def scrape(req: ScrapeRequest) -> dict[str, Any]:
         content = await fortress_scrape(req.url, mode=req.mode)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Fortress scrape error: {exc}")
-    _cache_set(req.url, req.mode, content)
+    if _cacheable(content):
+        _cache_set(req.url, req.mode, content)
     return content
 
 
@@ -284,27 +278,30 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"SearXNG error: {exc}")
 
-    urls = [r["url"] for r in results.get("results", []) if r.get("url")]
-    if not urls:
+    url_results = [r for r in results.get("results", []) if r.get("url")]
+    if not url_results:
         return {"query": req.query, "results": [], "scraped": []}
 
     async def scrape_one(result: dict) -> dict:
         url = result.get("url", "")
         # SSRF guard: never hand a private/internal URL to Fortress, even if a
-        # search engine returned it.
-        if not _is_public_url(url):
+        # search engine returned it. DNS runs in a worker thread — with up to
+        # 50 results gathered concurrently, on-loop resolution would serialize
+        # and stall the whole event loop.
+        if not await asyncio.to_thread(_is_public_url, url):
             return {**result, "content": None, "scrape_error": "blocked: internal or private address"}
         cached = await _cache_get(url, req.scrape_mode)
         if cached is not None:
             return {**result, "content": cached, "cached": True}
         try:
             content = await fortress_scrape(url, mode=req.scrape_mode)
-            _cache_set(url, req.scrape_mode, content)
+            if _cacheable(content):
+                _cache_set(url, req.scrape_mode, content)
             return {**result, "content": content}
         except Exception as exc:
             return {**result, "content": None, "scrape_error": str(exc)}
 
-    scraped = await asyncio.gather(*[scrape_one(r) for r in results["results"]])
+    scraped = await asyncio.gather(*[scrape_one(r) for r in url_results])
     return {
         "query": req.query,
         "number_of_results": results.get("number_of_results", 0),
@@ -323,7 +320,7 @@ async def crawl(
     max_pages: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
     """Crawl a whole site via Fortress (auto-handles SPA/JS + lazy-load)."""
-    _validate_public_url(url)
+    await asyncio.to_thread(_validate_public_url, url)
     try:
         return await fortress_crawl(url, depth=depth, max_pages=max_pages)
     except Exception as exc:
