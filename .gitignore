@@ -13,3 +13,6 @@ build/
 # Podman / containers
 .env.local
 fortress-profile/
+
+# Local diagnostic logs
+/test.log

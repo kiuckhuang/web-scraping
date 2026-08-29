@@ -404,10 +404,12 @@ To A/B test it:
 
 ```bash
 # in .env:  BROWSER_ENGINE=camoufox
-make up-camoufox          # builds the ws-camoufox image and starts everything
+make up-camoufox          # builds all images and starts everything
 make test-scrape          # hits the bridge, which now drives Camoufox
 # switch back: set BROWSER_ENGINE=fortress in .env, then: make up
 ```
+
+Once `BROWSER_ENGINE=camoufox` is set in `.env`, plain `make up` (and `make rebuild` / `make update`) start the camoufox service automatically; `make down` always cleans it up. Note that `make up` reuses existing images — after code changes run `make rebuild` (or `make up-camoufox`, which builds first) so the bridge actually contains the engine-selection code.
 
 Tip: the compose *service* is named `camoufox` (container `ws-camoufox`), and profile-gated services are only visible to commands that enable the profile. View its logs with `podman logs ws-camoufox`, or `podman compose --profile camoufox logs camoufox`. Confirm the active engine via the bridge: `curl -s localhost:8000/health` → `"engine"`.
 
