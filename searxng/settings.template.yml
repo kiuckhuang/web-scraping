@@ -24,7 +24,7 @@ general:
 server:
   port: 8080
   bind_address: "0.0.0.0"
-  base_url: "http://localhost:8888/"
+  base_url: "${SEARXNG_BASE_URL}"
   secret_key: "change-me-via-SEARXNG_SECRET_KEY-env"
   # This instance is private and only reachable by the internal bridge.
   limiter: false

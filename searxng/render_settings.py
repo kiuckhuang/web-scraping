@@ -11,6 +11,7 @@ import os
 import sys
 
 DEFAULTS = {
+    "SEARXNG_BASE_URL": "http://localhost:8888/",
     "SEARXNG_REQUEST_TIMEOUT": "10",
     "SEARXNG_MAX_REQUEST_TIMEOUT": "15",
     "SEARXNG_BAN_TIME_ON_FAIL": "5",
