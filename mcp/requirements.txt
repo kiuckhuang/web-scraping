@@ -1,7 +1,7 @@
-mcp==2.0.0
+mcp==2.1.1
 httpx==0.28.1
 uvicorn==0.52.4
-# Pinned explicitly: mcp 2.0.0 only sets lower bounds (starlette>=0.27,
+# Pinned explicitly: mcp 2.1.1 only sets lower bounds (starlette>=0.27,
 # pyjwt>=2.10.1), so without these the image silently pulls transitive deps
 # that may predate the 2026 security fixes (Starlette CVE-2026-48710
 # "BadHost" + CVE-2026-48817/48818/54282/54283; PyJWT CVE-2026-32597 and the

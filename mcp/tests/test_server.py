@@ -247,6 +247,73 @@ def test_redact_args():
 #  Bridge request-ID correlation
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+#  Transport integration — full MCP lifecycle through the real SDK transport
+#  (network-free; guards against mcp SDK upgrades breaking our raw-ASGI usage)
+# ---------------------------------------------------------------------------
+
+def test_mcp_lifecycle_initialize_tools_delete(monkeypatch):
+    async def go():
+        monkeypatch.setattr(server_mod, "_ensure_cleanup", lambda: None)
+        server_mod._sessions.clear()
+        try:
+            headers = [
+                (b"content-type", b"application/json"),
+                (b"accept", b"application/json, text/event-stream"),
+            ]
+
+            async def call(method, extra_headers, payload):
+                scope = {
+                    "type": "http",
+                    "method": method,
+                    "path": "/mcp",
+                    "headers": headers + extra_headers,
+                    "client": ("127.0.0.1", 5),
+                }
+
+                async def receive():
+                    return {"type": "http.request", "body": payload, "more_body": False}
+
+                sent = []
+
+                async def send(message):
+                    sent.append(message)
+
+                await server_mod.app(scope, receive, send)
+                start = next(m for m in sent if m["type"] == "http.response.start")
+                out = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+                hdrs = {k.decode().lower(): v.decode() for k, v in start["headers"]}
+                return start["status"], hdrs, out
+
+            init_body = (
+                b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+                b'{"protocolVersion":"2025-03-26","capabilities":{},'
+                b'"clientInfo":{"name":"test","version":"0"}}}'
+            )
+            status, hdrs, out = await call("POST", headers, init_body)
+            sid = hdrs.get("mcp-session-id", "")
+            assert status == 200 and sid and b"web-scrape-bridge" in out
+
+            status, _, out = await call(
+                "POST", [(b"mcp-session-id", sid.encode())],
+                b'{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}',
+            )
+            assert status == 200 and out.count(b'"name"') >= 5
+
+            status, _, _ = await call("DELETE", [(b"mcp-session-id", sid.encode())], b"")
+            assert status == 200 and sid not in server_mod._sessions
+
+            status, _, _ = await call(
+                "POST", [(b"mcp-session-id", sid.encode())],
+                b'{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}',
+            )
+            assert status == 404  # terminated session must not come back
+        finally:
+            server_mod._sessions.clear()
+
+    asyncio.run(go())
+
+
 def test_request_headers_attaches_x_request_id():
     headers = server_mod._request_headers("/search")
     assert re.fullmatch(r"[0-9a-f]{8}", headers["X-Request-ID"])
