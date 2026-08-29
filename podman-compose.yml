@@ -145,6 +145,45 @@ services:
       retries: 5
       start_period: 15s
 
+  # ---------------------------------------------------------------------------
+  #  Camoufox — anti-detect Firefox fork (patched at the C++ level), served
+  #  over Playwright's websocket protocol. Opt-in alternative to Fortress
+  #  (stage 1 of the migration path; see README "Alternative browser engine").
+  #  Start with:  make up-camoufox   (or: podman compose --profile camoufox up -d)
+  #  Then set BROWSER_ENGINE=camoufox in .env and recreate the bridge.
+  #  Bind: 127.0.0.1 only (host) / internal network (bridge access).
+  #  NOTE: runs alongside Fortress so both can be A/B tested; the bridge only
+  #  connects to the engine selected via BROWSER_ENGINE.
+  # ---------------------------------------------------------------------------
+  camoufox:
+    build:
+      context: ./camoufox
+      dockerfile: Dockerfile
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    image: localhost/ws-camoufox:${CAMOUFOX_IMAGE_TAG:-local}
+    container_name: ws-camoufox
+    restart: unless-stopped
+    profiles: ["camoufox"]
+    mem_limit: 2g
+    pids_limit: 512
+    shm_size: ${CAMOUFOX_SHM_SIZE:-1gb}
+    ports:
+      - "127.0.0.1:${PORT_CAMOUFOX:-9223}:9222"
+    environment:
+      - CAMOUFOX_PORT=9222
+      - CAMOUFOX_WS_PATH=${CAMOUFOX_WS_PATH:-browser}
+      - CAMOUFOX_MAX_CONNECTIONS=${CAMOUFOX_MAX_CONNECTIONS:-8}
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 9222), timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   ublock-init:
     image: docker.io/library/alpine:3.24
     container_name: ws-ublock-init
@@ -208,6 +247,10 @@ services:
       - CRAWL_MAX_SECONDS=${CRAWL_MAX_SECONDS:-1800}
       # TTL (s) for cached SSRF DNS verdicts (0 disables caching)
       - SSRF_DNS_CACHE_TTL=${SSRF_DNS_CACHE_TTL:-60}
+      # Browser engine: fortress (default) or camoufox (see README "Alternative
+      # browser engine"). Requires the camoufox service: make up-camoufox.
+      - BROWSER_ENGINE=${BROWSER_ENGINE:-fortress}
+      - CAMOUFOX_WS_URL=${CAMOUFOX_WS_URL:-ws://camoufox:9222/browser}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
       searxng:

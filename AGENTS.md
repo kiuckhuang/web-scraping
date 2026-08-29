@@ -46,25 +46,38 @@ covers the conventions and non-obvious decisions you must not regress.
    Chrome stable is newer). See README "Fortress maintenance status" before
    assuming tag 150 is current. Do not silently switch engines — the SSRF
    guard, WAF-wait logic, and `_guard_request` routing are Fortress-shaped.
-5. **SSRF defense in depth** — URLs are validated at the bridge edge
+   Stage 1 of the exit path is implemented: `BROWSER_ENGINE` (fortress |
+   camoufox) selects the engine in `fortress_client.py`, and an opt-in
+   `camoufox` compose service (profiles-gated) runs alongside Fortress. The
+   SSRF route guard and the scrape/crawl/search layers are engine-agnostic
+   Playwright API — keep them that way.
+5. **Playwright client/server version parity (Camoufox)** — Playwright's
+   remote protocol enforces *minor*-version parity (the server rejects
+   mismatched clients with HTTP 428), and the camoufox image's driver is
+   pinned by camoufox 0.5.5 to playwright 1.60.x. `bridge/pyproject.toml`
+   therefore pins `playwright==1.60.0`. Bump the bridge pin and the camoufox
+   Dockerfile pin **together**, and only once Camoufox upstream supports the
+   new minor. The Fortress CDP path is version-agnostic.
+6. **SSRF defense in depth** — URLs are validated at the bridge edge
    (`_validate_public_url`), again per search-result URL, and again inside the
    browser (`_guard_request` intercepts redirects/subresources). Unresolvable
    hosts are *rejected*, not passed through (DNS-rebinding defense). Any new
    endpoint that fetches a URL must go through the same validator.
-6. **MCP auth model** — localhost/podman-forwarded subnets bypass bearer auth
+7. **MCP auth model** — localhost/podman-forwarded subnets bypass bearer auth
    (`_get_trusted_cidrs`); a non-loopback `MCP_BIND_HOST` without
    `MCP_API_KEY` is a hard startup error. Keep it that way.
-7. **SearXNG settings are rendered at container start** from
+8. **SearXNG settings are rendered at container start** from
    `searxng/settings.template.yml` + env overrides (`render_settings.py`,
    `searxng-entrypoint.sh`). The `/etc/searxng/settings.yml` mount is a
    *placeholder* for the upstream entrypoint's existence check; the real config
    is `/tmp/searxng-settings.yml` via `SEARXNG_SETTINGS_PATH`.
-8. **Log redaction** — MCP logs tool args through `_redact_args()` (masks
+9. **Log redaction** — MCP logs tool args through `_redact_args()` (masks
    `user:pass@` and `?token=`/`?key=` etc.). Route any new logged user input
    through it.
-9. **uBlock Origin Lite** is downloaded by `scripts/init-ublock.sh` with a
-   pinned version + SHA-256. Never download unverified blobs at container
-   start.
+10. **uBlock Origin Lite** is downloaded by `scripts/init-ublock.sh` with a
+    pinned version + SHA-256. Never download unverified blobs at container
+    start. (Camoufox bundles uBlock Origin in its browser build; the init
+    container is Fortress-specific.)
 
 ## Style
 

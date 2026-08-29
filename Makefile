@@ -9,7 +9,7 @@
 
 CONTAINER := podman
 
-.PHONY: all init build up down logs test test-unit test-unit-host test-scrape doctor rebuild clean update help
+.PHONY: all init build up up-camoufox down logs test test-unit test-unit-host test-scrape doctor rebuild clean update help
 
 all: help
 
@@ -20,6 +20,7 @@ help:
 	@echo "  init      — Create .env from .env.example with your host UID/GID"
 	@echo "  build     — Build bridge and mcp images"
 	@echo "  up        — Start all services (podman compose up -d)"
+	@echo "  up-camoufox — Start all services including the opt-in Camoufox engine"
 	@echo "  down      — Stop all services"
 	@echo "  logs      — Follow logs from all services"
 	@echo "  test      — Unit tests + integration tests (health checks + API smoke tests)"
@@ -42,6 +43,11 @@ build:
 
 up: init
 	$(CONTAINER) compose up -d
+
+# Opt-in Camoufox engine (profiles-gated service). Set BROWSER_ENGINE=camoufox
+# in .env first; `up -d` recreates the bridge when its environment changed.
+up-camoufox: init
+	$(CONTAINER) compose --profile camoufox up -d
 
 down:
 	$(CONTAINER) compose down

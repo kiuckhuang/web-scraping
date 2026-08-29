@@ -77,6 +77,7 @@ sequenceDiagram
 | [SearXNG](https://github.com/searxng/searxng) | 8888 (127.0.0.1) | Metasearch web UI + JSON API             |
 | [Valkey](https://github.com/valkey-io/valkey) | —     | Redis-compatible cache for SearXNG           |
 | [Fortress](https://github.com/tiliondev/fortress) | 9222 (127.0.0.1) | Stealth Chromium (CDP endpoint)       |
+| [Camoufox](https://github.com/daijro/camoufox) | 9223 (127.0.0.1, opt-in) | Anti-detect Firefox (Playwright WS) — alternative engine |
 | Bridge     | 8000 (127.0.0.1) | Unified REST API ([FastAPI](https://fastapi.tiangolo.com/)) |
 | MCP        | 9100 (127.0.0.1 by default) | Streamable HTTP server for AI agents ([MCP](https://modelcontextprotocol.io/)) |
 
@@ -290,6 +291,9 @@ await page.screenshot({ path: "stealth-check.png" });
 | `CRAWL_MAX_SECONDS`     | `1800`                   | Wall-clock budget per `/crawl` call (s); `0` = unlimited. Returns partial results when exhausted |
 | `SSRF_DNS_CACHE_TTL`    | `60`                     | TTL (s) for cached SSRF DNS verdicts (`0` disables caching) |
 | `LOG_LEVEL`             | `INFO`                   | Log level for the bridge and MCP services (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
+| `BROWSER_ENGINE`        | `fortress`               | Browser engine the bridge drives: `fortress` or `camoufox` (opt-in; requires `make up-camoufox`) |
+| `CAMOUFOX_WS_URL`       | `ws://camoufox:9222/browser` | Playwright websocket endpoint of the ws-camoufox container |
+| `PORT_CAMOUFOX`         | `9223`                   | Host (loopback) port for direct access to the ws-camoufox container |
 | `BRIDGE_URL`            | `http://bridge:8000`     | Bridge URL used by MCP (container-internal) |
 | `PORT_SEARXNG`          | `8888`                   | Host port for SearXNG                |
 | `PORT_FORTRESS`         | `9222`                   | Host port for Fortress CDP           |
@@ -391,6 +395,28 @@ make update
 | **[curl_cffi](https://github.com/lexiforest/curl_cffi)** | TLS-impersonating HTTP client, no browser | No — HTTP only, no JS rendering | Surprisingly effective (26/31 in the same benchmark); good complement for pages that don't need JS. |
 
 Migration notes if Fortress goes fully stale: the bridge only talks to Fortress over CDP (`fortress_client.py`), so swapping engines is confined to one module plus the compose service. Patchright is the smallest code change (same Playwright calls, different browser binary); Camoufox is the closest in spirit (C++-patched engine, Docker-friendly).
+
+### Alternative browser engine: Camoufox (opt-in, stage 1)
+
+Stage 1 of the Fortress exit plan is implemented: **Camoufox** runs alongside Fortress as a profile-gated, opt-in service, and the bridge selects the engine via `BROWSER_ENGINE`. The scrape/crawl/search API, the SSRF guard (Playwright route interception works on Firefox too), WAF-wait logic, and the MCP tools are engine-agnostic and unchanged.
+
+To A/B test it:
+
+```bash
+# in .env:  BROWSER_ENGINE=camoufox
+make up-camoufox          # builds the ws-camoufox image and starts everything
+make test-scrape          # hits the bridge, which now drives Camoufox
+# switch back: set BROWSER_ENGINE=fortress in .env, then: make up
+```
+
+How it works and what to know:
+
+- The `ws-camoufox` container pins the Camoufox package (0.5.5) **and** the browser build (`152.0.4-beta.29`) at image build time — nothing is downloaded at container start.
+- **Playwright version parity is mandatory**: the bridge and the Camoufox image must run the same Playwright *minor* (the server rejects mismatched clients with HTTP 428). Both are pinned to 1.60.x because Camoufox 0.5.5 requires `playwright<1.61`. When Camoufox ships support for a newer Playwright, bump both pins together.
+- The browser is plain headless (`headless='virtual'`/Xvfb is not wired through Camoufox's server mode yet) and serves a **single browser instance with a fixed fingerprint** — same trust model as Fortress, with per-request context isolation.
+- The websocket endpoint has no built-in token auth; it stays on the `internal` network and is published to `127.0.0.1:9223` only (loopback), mirroring Fortress's CDP exposure.
+- uBlock Origin ships inside the Camoufox build (fetched with the browser), replacing the Fortress uBlock-init machinery on this engine.
+- Camoufox's remote-server mode is officially **experimental** — validate against your real target set (`make test-scrape` + your own URLs) before relying on it.
 
 ## Security
 
