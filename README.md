@@ -304,7 +304,9 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `SEARXNG_FORCE_OWNERSHIP` | `true`                | Force SearXNG file ownership on start |
 | `SEARXNG_UWSGI_THREADS` | `4`                    | SearXNG worker thread count          |
 | `CAMOUFOX_WS_URL`       | `ws://camoufox:9222/browser` | Playwright websocket endpoint (container-internal) |
-| `CAMOUFOX_SHM_SIZE`     | `1gb`                    | Browser shared memory size |
+| `CAMOUFOX_MEM_LIMIT`    | `4g`                     | Camoufox container memory ceiling (not a reservation) |
+| `CAMOUFOX_PIDS_LIMIT`   | `1024`                   | Camoufox container process/thread limit |
+| `CAMOUFOX_SHM_SIZE`     | `4gb`                    | Browser shared memory (/dev/shm) size |
 | `CAMOUFOX_NAV_DELAY`    | `400`                    | Post-navigation pause (ms) before extraction (crawl, SERP, and extract-mode pages; fetch mode skips it) |
 | `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen address (internal container) |
 | `BRIDGE_PORT`           | `8000`                   | Bridge listen port (internal container) |
