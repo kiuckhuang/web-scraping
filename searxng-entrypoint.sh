@@ -20,6 +20,10 @@ export SEARXNG_MAX_REQUEST_TIMEOUT="${SEARXNG_MAX_REQUEST_TIMEOUT:-15}"
 export SEARXNG_BAN_TIME_ON_FAIL="${SEARXNG_BAN_TIME_ON_FAIL:-5}"
 export SEARXNG_MAX_BAN_TIME_ON_FAIL="${SEARXNG_MAX_BAN_TIME_ON_FAIL:-120}"
 export SEARXNG_SUSPEND_TOO_MANY="${SEARXNG_SUSPEND_TOO_MANY:-180}"
+# Outbound proxy for SearXNG engine requests (empty = direct egress). Needed
+# where the direct egress IP is bot-challenged by engines (google/duckduckgo
+# served CAPTCHAs from this host's direct route; the campus proxy passes).
+export SEARXNG_OUTGOING_PROXY="${SEARXNG_OUTGOING_PROXY:-}"
 
 /usr/local/searxng/.venv/bin/python \
     /usr/local/bin/ws-render-settings.py \

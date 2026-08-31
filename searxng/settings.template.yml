@@ -6,15 +6,20 @@
 use_default_settings:
   engines:
     keep_only:
+      # Priority 1 + 2 general web engines. bing is intentionally NOT kept:
+      # its results dominated the merge whenever google/duckduckgo were
+      # bot-challenged, masking the failure. Re-add it here (and in the
+      # engines list below) only if you accept bing-quality fallback results.
       - google
-      - bing
       - duckduckgo
+      - duckduckgo news
       - wikipedia
       - github
       - stackoverflow
-      - reddit
-      - duckduckgo news
       - wikinews
+      # NOTE: reddit is not kept — upstream's reddit engine definition in
+      # this SearXNG channel fails to register ("The 'engine' field is
+      # missing"), which only produces ERROR noise at startup.
 
 general:
   instance_name: "Web Scrape Stack"
@@ -62,28 +67,28 @@ ui:
 outgoing:
   request_timeout: ${SEARXNG_REQUEST_TIMEOUT}
   max_request_timeout: ${SEARXNG_MAX_REQUEST_TIMEOUT}
-  # Uncomment to route SearXNG engine requests through a proxy:
-  # proxies:
-  #   all://:
-  #     - socks5h://proxy-host:1080
+${SEARXNG_OUTGOING_PROXY_BLOCK}
 
-# Engines — enable useful ones, disable noisy ones
+# Engines — enable useful ones, disable noisy ones. SearXNG queries every
+# enabled engine of the requested category in PARALLEL and merges by score,
+# so "priority" is expressed as (a) which engines exist at all and (b) the
+# per-engine `weight` that scales each result's score in the merge.
 engines:
+  # Priority 1 — weight > 1 lets google results outrank equal-relevance
+  # duckduckgo results in the merged ranking.
   - name: google
     disabled: false
-  - name: bing
-    disabled: false
+    weight: 1.2
+  # Priority 2 — default weight; still answers when google is CAPTCHA-walled
   - name: duckduckgo
+    disabled: false
+  - name: duckduckgo news
     disabled: false
   - name: wikipedia
     disabled: false
   - name: github
     disabled: false
   - name: stackoverflow
-    disabled: false
-  - name: reddit
-    disabled: false
-  - name: duckduckgo news
     disabled: false
   - name: wikinews
     disabled: false
