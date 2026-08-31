@@ -561,3 +561,21 @@ def test_format_search_results_notes_unresponsive_engines():
 def test_format_search_results_no_engine_note_when_all_healthy():
     result = {"number_of_results": 1, "results": [{"title": "A", "url": "https://a.com"}]}
     assert "unresponsive" not in server_mod._format_search_results(result)
+
+
+def test_format_search_results_notes_fallback_source():
+    result = {
+        "number_of_results": 1,
+        "results": [{"title": "A", "url": "https://a.com", "engine": "google"}],
+        "unresponsive_engines": [["duckduckgo", "CAPTCHA"]],
+        "fallback": "browser:google",
+    }
+    out = server_mod._format_search_results(result)
+    assert "served by the browser:google fallback" in out
+    assert "duckduckgo" in out  # unresponsive note still present
+
+
+def test_format_search_results_no_fallback_note_on_primary_results():
+    result = {"number_of_results": 1, "results": [{"title": "A", "url": "https://a.com"}]}
+    out = server_mod._format_search_results(result)
+    assert "fallback" not in out

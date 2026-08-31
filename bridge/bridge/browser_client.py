@@ -583,59 +583,115 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50, session: str
     return {"pages": pages, "sitemap": sitemap, "count": len(pages)}
 
 
-async def search_web(query: str, count: int = 10) -> dict[str, Any]:
-    """Web search through the stealth browser.
+async def search_web(query: str, count: int = 10, engines: tuple[str, ...] | None = None) -> dict[str, Any]:
+    """Web search through the stealth browser (real SERP, no API).
 
-    Navigates to DuckDuckGo, extracts organic results.
+    Tries the given engines in order (default: DuckDuckGo only) and returns
+    the first engine that yields results. Each engine gets a fresh page so
+    one engine's challenge/consent page cannot poison the next attempt.
+
+    Returns {"engine": <used>, "query": ..., "results": [{title,url,snippet}]}.
+    On total failure the shape is kept, with the last engine's (empty) results
+    and "engines_tried" listing what was attempted.
     """
+    if engines is None:
+        engines = ("duckduckgo",)
+    parsers = {"google": _serp_google, "duckduckgo": _serp_ddg}
+    last: dict[str, Any] = {}
+    tried: list[str] = []
     async with _page_slots:
-        page = await _new_page()
-        try:
-            search_url = f"https://duckduckgo.com/html/?q={quote(query)}"
-            await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
-            await page.wait_for_timeout(int(NAV_DELAY))
+        for engine in engines:
+            parser = parsers.get(engine)
+            if parser is None:
+                raise ValueError(f"Unknown browser search engine: {engine}")
+            tried.append(engine)
+            page = await _new_page()
+            try:
+                results = await parser(page, query, count)
+            except Exception as exc:
+                logger.warning("Browser SERP %s failed for %r: %s", engine, query, exc)
+                results = []
+            finally:
+                await _close_page(page)
+            if results:
+                return {"engine": engine, "query": query, "results": results[:count]}
+            last = {"engine": engine, "query": query, "results": []}
 
-            results = await page.evaluate("""
-            (count) => {
-                const results = [];
-                const items = document.querySelectorAll(
-                    '.result, .web-result, .result--more, ' +
-                    '[data-testid="result"], article[data-testid="result"], li.result'
-                );
-                for (const item of items) {
-                    if (results.length >= count) break;
-                    const titleEl = item.querySelector('h2 a, .result__title a, .result__a');
-                    const snippetEl = item.querySelector('.result__snippet, .snippet');
-                    if (titleEl) {
-                        results.push({
-                            title: titleEl.innerText.trim(),
-                            url: titleEl.href,
-                            snippet: snippetEl ? snippetEl.innerText.trim() : '',
-                        });
-                    }
+        logger.warning(
+            "Browser web search returned 0 results for %r across %s — "
+            "SERP selectors may be stale or engines served challenge pages",
+            query,
+            tried,
+        )
+        return {**last, "engines_tried": tried}
+
+
+async def _serp_google(page, query: str, count: int) -> list[dict[str, str]]:
+    """Parse the Google SERP from a Camoufox page (JS-heavy page — the stealth
+    browser handles it; zero results usually means a consent/CAPTCHA page)."""
+    search_url = f"https://www.google.com/search?q={quote(query)}&num={count}&hl=en"
+    await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
+    await page.wait_for_timeout(int(NAV_DELAY))
+    return await page.evaluate(
+        """
+        (count) => {
+            const seen = new Set();
+            const results = [];
+            // h3 nodes inside result anchors; closest('a') carries the URL.
+            for (const h3 of document.querySelectorAll('#search a h3, #rso a h3, a > h3')) {
+                if (results.length >= count) break;
+                const anchor = h3.closest('a');
+                if (!anchor || !anchor.href) continue;
+                const url = anchor.href;
+                // Skip Google-internal links (search params, accounts, consent).
+                if (!/^https?:\\/\\//.test(url) || url.includes('google.com/search')
+                    || url.includes('google.com/url') || seen.has(url)) continue;
+                seen.add(url);
+                const block = h3.closest('div.g, div[data-hveid], li');
+                const snippetEl = block && block.querySelector('div.VwiC3b, span.aCOpRe');
+                results.push({
+                    title: h3.innerText.trim(),
+                    url,
+                    snippet: snippetEl ? snippetEl.innerText.trim() : '',
+                });
+            }
+            return results;
+        }
+        """,
+        count,
+    )
+
+
+async def _serp_ddg(page, query: str, count: int) -> list[dict[str, str]]:
+    """Parse the DuckDuckGo HTML SERP from a Camoufox page."""
+    search_url = f"https://duckduckgo.com/html/?q={quote(query)}"
+    await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
+    await page.wait_for_timeout(int(NAV_DELAY))
+    return await page.evaluate(
+        """
+        (count) => {
+            const results = [];
+            const items = document.querySelectorAll(
+                '.result, .web-result, .result--more, ' +
+                '[data-testid="result"], article[data-testid="result"], li.result'
+            );
+            for (const item of items) {
+                if (results.length >= count) break;
+                const titleEl = item.querySelector('h2 a, .result__title a, .result__a');
+                const snippetEl = item.querySelector('.result__snippet, .snippet');
+                if (titleEl) {
+                    results.push({
+                        title: titleEl.innerText.trim(),
+                        url: titleEl.href,
+                        snippet: snippetEl ? snippetEl.innerText.trim() : '',
+                    });
                 }
-                return results;
             }
-            """, count)
-
-            if not results:
-                # Zero results usually means DuckDuckGo changed its markup and
-                # the selectors above no longer match (or a challenge page was
-                # served). Log it so operators can distinguish selector rot
-                # from a genuine no-results query.
-                logger.warning(
-                    "Browser web search returned 0 results for %r — "
-                    "DuckDuckGo HTML selectors may be stale",
-                    query,
-                )
-
-            return {
-                "engine": "duckduckgo",
-                "query": query,
-                "results": results[:count],
-            }
-        finally:
-            await _close_page(page)
+            return results;
+        }
+        """,
+        count,
+    )
 
 
 async def health() -> bool:

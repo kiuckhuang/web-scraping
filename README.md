@@ -314,6 +314,8 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `BRIDGE_CACHE_TTL`      | `300`                    | Scrape cache TTL (s) — repeat scrapes of the same URL skip the browser |
 | `BRIDGE_CACHE_MAX`      | `100`                    | Max pages held in the scrape cache |
 | `BRIDGE_CACHE_MAX_BYTES` | `26214400`              | Max serialized scrape-cache size (25 MiB) |
+| `SEARCH_FALLBACK_BING` | `true`                   | When the SearXNG merge returns zero results, retry with a forced `!bing` query (bing is registered but disabled, so it never joins normal merges) |
+| `SEARCH_FALLBACK_BROWSER` | `true`                | When SearXNG (incl. bing) still returns zero results, scrape real SERPs through Camoufox — google first, then duckduckgo |
 | `CAMOUFOX_TIMEOUT`       | `60`                    | Browser navigation timeout (s) |
 | `CAMOUFOX_NAV_WAIT`      | `domcontentloaded`      | Browser navigation wait condition |
 | `CAMOUFOX_MAX_CONCURRENT_PAGES` | `3`              | Maximum concurrent browser pages |

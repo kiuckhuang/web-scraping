@@ -481,6 +481,12 @@ def _format_search_results(result: dict) -> str:
         # failed so agents know the list may be incomplete.
         lines.append("")
         lines.append(f"Note: some engines were unresponsive and their results are missing: {unresponsive}")
+    fallback = result.get("fallback")
+    if fallback:
+        # The result list came from a fallback path (bing / stealth-browser
+        # SERP), not the normal SearXNG merge — say so explicitly.
+        lines.append("")
+        lines.append(f"Note: primary SearXNG engines returned nothing; these results were served by the {fallback} fallback.")
     return "\n".join(lines)
 
 
