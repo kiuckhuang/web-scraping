@@ -6,12 +6,14 @@
 use_default_settings:
   engines:
     keep_only:
-      # Priority 1 + 2 general web engines. bing is intentionally NOT kept:
-      # its results dominated the merge whenever google/duckduckgo were
-      # bot-challenged, masking the failure. Re-add it here (and in the
-      # engines list below) only if you accept bing-quality fallback results.
+      # Priority 1 + 2 general web engines, plus bing as a conditional
+      # last resort: bing is registered but DISABLED by default, so it never
+      # joins the normal merge — the bridge forces it via an "!bing" retry
+      # only when the merge returns zero results (see SEARCH_FALLBACK_BING).
+      # Its results quality is poor; "better than none" is the tradeoff.
       - google
       - duckduckgo
+      - bing
       - duckduckgo news
       - wikipedia
       - github
@@ -82,6 +84,10 @@ engines:
   # Priority 2 — default weight; still answers when google is CAPTCHA-walled
   - name: duckduckgo
     disabled: false
+  # Last resort — disabled by default (never in the normal merge); the bridge
+  # activates it per-query via "!bing" only when the merge returns zero rows.
+  - name: bing
+    disabled: true
   - name: duckduckgo news
     disabled: false
   - name: wikipedia

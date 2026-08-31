@@ -165,6 +165,10 @@ services:
       - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:-300}
       - BRIDGE_CACHE_MAX=${BRIDGE_CACHE_MAX:-100}
       - BRIDGE_CACHE_MAX_BYTES=${BRIDGE_CACHE_MAX_BYTES:-26214400}
+      # Search fallbacks when the SearXNG merge returns zero results: a
+      # forced "!bing" SearXNG query, then stealth-browser SERPs (google, ddg)
+      - SEARCH_FALLBACK_BING=${SEARCH_FALLBACK_BING:-true}
+      - SEARCH_FALLBACK_BROWSER=${SEARCH_FALLBACK_BROWSER:-true}
       # Post-navigation pause (ms) before content extraction
       - CAMOUFOX_NAV_DELAY=${CAMOUFOX_NAV_DELAY:-400}
       - CAMOUFOX_TIMEOUT=${CAMOUFOX_TIMEOUT:-60}
