@@ -301,6 +301,7 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `SEARXNG_BAN_TIME_ON_FAIL` | `5`                   | Engine ban duration (s) after a failed request |
 | `SEARXNG_MAX_BAN_TIME_ON_FAIL` | `120`            | Upper cap on the engine ban (s)     |
 | `SEARXNG_SUSPEND_TOO_MANY` | `180`                | How long an engine is suspended (s) after a 429 / rate-limit |
+| `SEARXNG_OUTGOING_PROXY` | (unset)               | Outbound proxy for all engine requests (e.g. `http://10.8.8.1:8088`); unset = direct egress — set it when engines bot-challenge your IP |
 | `SEARXNG_FORCE_OWNERSHIP` | `true`                | Force SearXNG file ownership on start |
 | `SEARXNG_UWSGI_THREADS` | `4`                    | SearXNG worker thread count          |
 | `CAMOUFOX_WS_URL`       | `ws://camoufox:9222/browser` | Playwright websocket endpoint (container-internal) |

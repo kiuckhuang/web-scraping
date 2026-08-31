@@ -72,6 +72,8 @@ services:
       - SEARXNG_BAN_TIME_ON_FAIL=${SEARXNG_BAN_TIME_ON_FAIL:-5}
       - SEARXNG_MAX_BAN_TIME_ON_FAIL=${SEARXNG_MAX_BAN_TIME_ON_FAIL:-120}
       - SEARXNG_SUSPEND_TOO_MANY=${SEARXNG_SUSPEND_TOO_MANY:-180}
+      # Outbound proxy for engine requests (empty = direct egress); see .env
+      - SEARXNG_OUTGOING_PROXY=${SEARXNG_OUTGOING_PROXY:-}
     depends_on:
       valkey:
         condition: service_healthy

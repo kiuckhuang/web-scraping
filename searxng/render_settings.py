@@ -20,13 +20,38 @@ DEFAULTS = {
 }
 
 
+def _outgoing_proxy_block() -> str:
+    """Build the `outgoing.proxies` YAML block from SEARXNG_OUTGOING_PROXY.
+
+    Empty/unset keeps SearXNG on direct connections (the token in the
+    template renders to a comment); a value like http://10.8.8.1:8088
+    routes every engine request through that proxy (httpx `all://` form).
+    """
+    proxy = (os.environ.get("SEARXNG_OUTGOING_PROXY", "") or "").strip()
+    if not proxy:
+        return (
+            "  # SEARXNG_OUTGOING_PROXY is unset — engines connect directly.\n"
+            "  # Set it (e.g. http://10.8.8.1:8088) to route engine requests\n"
+            "  # through an outbound proxy.\n"
+        )
+    return (
+        "  # Engine requests routed through SEARXNG_OUTGOING_PROXY\n"
+        "  proxies:\n"
+        "    all://:\n"
+        f"      - {proxy}\n"
+    )
+
+
 def main() -> None:
     src, dst = sys.argv[1], sys.argv[2]
     with open(src, encoding="utf-8") as fh:
         data = fh.read()
+    os.environ.setdefault("SEARXNG_OUTGOING_PROXY", "")
+    os.environ["SEARXNG_OUTGOING_PROXY_BLOCK"] = _outgoing_proxy_block()
     for token, default in DEFAULTS.items():
         val = os.environ.get(token, default) or default
         data = data.replace(f"${{{token}}}", val)
+    data = data.replace("${SEARXNG_OUTGOING_PROXY_BLOCK}", os.environ["SEARXNG_OUTGOING_PROXY_BLOCK"])
     with open(dst, "w", encoding="utf-8") as fh:
         fh.write(data)
 
