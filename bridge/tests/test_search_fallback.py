@@ -1,8 +1,9 @@
-"""Unit tests for the /search fallback chain (no network required).
+"""Unit tests for the /search stage chain (no network required).
 
-Chain under test: SearXNG merge → SearXNG "!bing" forced query → stealth-
-browser SERP (google, then duckduckgo). All clients are faked; the tests
-assert wiring and gating, not network behavior.
+Chain under test (SEARCH_PRIMARY): SearXNG merge → SearXNG "!bing" forced
+query → stealth-browser SERPs, or browser-first when SEARCH_PRIMARY=browser.
+All clients are faked; the tests assert wiring and gating, not network
+behavior.
 """
 
 import asyncio
@@ -10,6 +11,16 @@ import asyncio
 import bridge.main as main_mod
 import pytest
 from fastapi import HTTPException
+
+
+@pytest.fixture(autouse=True)
+def _pin_classic_chain(monkeypatch):
+    """Pin the classic searxng-primary chain: module-level knobs are read at
+    import time and defaults changed over time — tests must not depend on
+    deployment config. Individual tests override via monkeypatch."""
+    monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "searxng")
+    monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BING", True)
+    monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BROWSER", True)
 
 
 def _hit(title: str = "Example") -> dict:
@@ -105,7 +116,7 @@ def test_browser_fallback_normalizes_results(monkeypatch):
     async def fake_searxng(query, **_k):
         return _searxng_response([])
 
-    async def fake_browser(query, count=10, engines=("google", "duckduckgo")):
+    async def fake_browser(query, count=10, engines=None):
         return {
             "engine": "google",
             "results": [
@@ -126,8 +137,8 @@ def test_browser_falls_back_to_ddg_when_google_empty(monkeypatch):
     async def fake_searxng(query, **_k):
         return _searxng_response([])
 
-    async def fake_browser(query, count=10, engines=("google", "duckduckgo")):
-        assert list(engines) == ["google", "duckduckgo"]
+    async def fake_browser(query, count=10, engines=None):
+        assert list(engines) == list(main_mod.BROWSER_SEARCH_ENGINES)
         return {"engine": "duckduckgo", "results": [{"title": "D", "url": "https://d.example/", "snippet": "s"}]}
 
     monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
@@ -140,7 +151,7 @@ def test_everything_empty_returns_primary(monkeypatch):
     async def fake_searxng(query, **_k):
         return _searxng_response([])
 
-    async def fake_browser(query, count=10, engines=("google", "duckduckgo")):
+    async def fake_browser(query, count=10, engines=None):
         return {"engine": "duckduckgo", "results": [], "engines_tried": list(engines)}
 
     monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
@@ -156,7 +167,7 @@ def test_searxng_down_browser_serves(monkeypatch):
     async def fake_searxng(query, **_k):
         _boom()
 
-    async def fake_browser(query, count=10, engines=("google", "duckduckgo")):
+    async def fake_browser(query, count=10, engines=None):
         return {"engine": "duckduckgo", "results": [{"title": "D", "url": "https://d.example/", "snippet": "s"}]}
 
     monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
@@ -170,7 +181,7 @@ def test_searxng_down_and_nothing_else_serves(monkeypatch):
     async def fake_searxng(query, **_k):
         _boom()
 
-    async def fake_browser(query, count=10, engines=("google", "duckduckgo")):
+    async def fake_browser(query, count=10, engines=None):
         return {"engine": "duckduckgo", "results": []}
 
     monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
@@ -178,7 +189,7 @@ def test_searxng_down_and_nothing_else_serves(monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         _run()
     assert excinfo.value.status_code == 502
-    assert "All search backends failed" in excinfo.value.detail
+    assert "All search stages failed" in excinfo.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +219,7 @@ def test_general_category_still_falls_back(monkeypatch):
     async def fake_searxng(query, **_k):
         return _searxng_response([])
 
-    async def fake_browser(query, count=10, engines=("google", "duckduckgo")):
+    async def fake_browser(query, count=10, engines=None):
         return {"engine": "google", "results": [{"title": "G", "url": "https://g.example/", "snippet": "s"}]}
 
     monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
@@ -242,7 +253,7 @@ def test_bing_knob_off_skips_bing(monkeypatch):
             raise AssertionError("bing stage must be skipped when SEARCH_FALLBACK_BING is off")
         return _searxng_response([])
 
-    async def fake_browser(query, count=10, engines=("google", "duckduckgo")):
+    async def fake_browser(query, count=10, engines=None):
         return {"engine": "google", "results": [{"title": "G", "url": "https://g.example/", "snippet": "s"}]}
 
     monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
@@ -265,3 +276,80 @@ def test_browser_knob_off_skips_browser(monkeypatch):
     resp = _run()
     assert resp["results"] == []
     assert "fallback" not in resp
+
+
+# ---------------------------------------------------------------------------
+#  SEARCH_PRIMARY=browser — browser SERPs first, SearXNG as fallback
+# ---------------------------------------------------------------------------
+
+def test_browser_primary_serves_without_searxng(monkeypatch):
+    """In browser-primary mode a working browser stage must not touch SearXNG."""
+    monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "browser")
+
+    def fail(*_a, **_k):
+        raise AssertionError("searxng stage must not run when the browser stage serves")
+
+    async def fake_browser(query, count=10, engines=None):
+        assert list(engines) == list(main_mod.BROWSER_SEARCH_ENGINES)
+        return {"engine": "duckduckgo", "results": [{"title": "D", "url": "https://d.example/", "snippet": "s"}]}
+
+    monkeypatch.setattr(main_mod, "searxng_search", fail)
+    monkeypatch.setattr(main_mod, "browser_web_search", fake_browser)
+    resp = _run()
+    assert resp["fallback"] == "browser:duckduckgo"
+
+
+def test_browser_primary_falls_back_to_searxng(monkeypatch):
+    monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "browser")
+    seen: list[str] = []
+
+    async def fake_searxng(query, **_k):
+        seen.append(query)
+        return _searxng_response([_hit("SearXNG result")])
+
+    async def fake_browser(query, count=10, engines=None):
+        return {"engine": "duckduckgo", "results": []}
+
+    monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
+    monkeypatch.setattr(main_mod, "browser_web_search", fake_browser)
+    resp = _run()
+    assert seen == ["q"]
+    assert "fallback" not in resp
+    assert resp["results"][0]["engine"] == "x"
+
+
+def test_browser_primary_searxng_down_raises_502(monkeypatch):
+    """Browser-primary + browser empty + SearXNG unreachable: every stage
+    failed to produce a response, so the endpoint raises a 502."""
+    monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "browser")
+
+    async def fake_searxng(query, **_k):
+        _boom()
+
+    async def fake_browser(query, count=10, engines=None):
+        return {"engine": "duckduckgo", "results": []}
+
+    monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
+    monkeypatch.setattr(main_mod, "browser_web_search", fake_browser)
+    with pytest.raises(HTTPException) as excinfo:
+        _run()
+    assert excinfo.value.status_code == 502
+    assert "All search stages failed" in excinfo.value.detail
+
+
+def test_browser_primary_bing_stage_absent(monkeypatch):
+    """Bing is dropped from the chain — it must never be consulted, even as
+    a stage between browser and searxng in browser-primary mode."""
+    monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "browser")
+
+    async def fake_searxng(query, **_k):
+        assert not query.startswith("!bing"), "bing stage must not exist anymore"
+        return _searxng_response([])
+
+    async def fake_browser(query, count=10, engines=None):
+        return {"engine": "duckduckgo", "results": []}
+
+    monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
+    monkeypatch.setattr(main_mod, "browser_web_search", fake_browser)
+    resp = _run()
+    assert resp["results"] == []
