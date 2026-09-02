@@ -60,8 +60,8 @@ BRIDGE_CACHE_MAX_BYTES = int(os.environ.get("BRIDGE_CACHE_MAX_BYTES", str(25 * 1
 # bot-challenged into returning zero results, while the stealth browser's
 # real-SERP scraping gets through. SEARCH_PRIMARY picks which transport is
 # queried first:
-#   "searxng" (default) — SearXNG merge, then bing, then browser SERPs
-#   "browser"           — browser SERPs (google → ddg → ddg-lite) first, then SearXNG
+#   "browser" (default) — browser SERPs (google → ddg → ddg-lite) first, then SearXNG
+#   "searxng"           — SearXNG merge, then bing, then browser SERPs
 # Bing was dropped from the chain: its result quality proved useless.
 def _env_flag(name: str, default: str = "true") -> bool:
     return os.environ.get(name, default).strip().lower() not in ("", "0", "false", "no", "off")
@@ -74,7 +74,7 @@ def _env_engines(name: str, default: str) -> tuple[str, ...]:
     return engines or tuple(default.split(","))
 
 
-SEARCH_PRIMARY = os.environ.get("SEARCH_PRIMARY", "searxng").strip().lower()
+SEARCH_PRIMARY = os.environ.get("SEARCH_PRIMARY", "browser").strip().lower()
 SEARCH_FALLBACK_BING = _env_flag("SEARCH_FALLBACK_BING", "false")
 SEARCH_FALLBACK_BROWSER = _env_flag("SEARCH_FALLBACK_BROWSER")
 BROWSER_SEARCH_ENGINES: tuple[str, ...] = _env_engines("BROWSER_SEARCH_ENGINES", "google,duckduckgo,duckduckgo lite")

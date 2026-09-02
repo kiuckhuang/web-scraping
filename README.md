@@ -314,7 +314,7 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `BRIDGE_CACHE_TTL`      | `300`                    | Scrape cache TTL (s) — repeat scrapes of the same URL skip the browser |
 | `BRIDGE_CACHE_MAX`      | `100`                    | Max pages held in the scrape cache |
 | `BRIDGE_CACHE_MAX_BYTES` | `26214400`              | Max serialized scrape-cache size (25 MiB) |
-| `SEARCH_PRIMARY` | `searxng`                | First search transport: `searxng` (merge → bing → browser SERPs) or `browser` (Camoufox SERPs → SearXNG merge). Use `browser` where engines bot-wall datacenter IPs |
+| `SEARCH_PRIMARY` | `browser`                | First search transport: `browser` (Camoufox SERPs → SearXNG merge) or `searxng` (merge → bing → browser SERPs). Browser-first is robust against engine bot-walls; `searxng` is lower-latency where your IP isn't challenged |
 | `SEARCH_FALLBACK_BING` | `false`                  | Insert a forced `!bing` SearXNG stage between the two transports (default off — bing result quality proved useless) |
 | `SEARCH_FALLBACK_BROWSER` | `true`                | Allow the stealth-browser SERP stage at all (as primary or fallback) |
 | `BROWSER_SEARCH_ENGINES` | `google,duckduckgo,duckduckgo lite` | Browser SERP engine order (first non-empty wins; engines tripping the empty-results circuit breaker are skipped for 10 min) |
