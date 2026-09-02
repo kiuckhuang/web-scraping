@@ -23,16 +23,21 @@ DEFAULTS = {
 def _outgoing_proxy_block() -> str:
     """Build the `outgoing.proxies` YAML block from SEARXNG_OUTGOING_PROXY.
 
-    Empty/unset keeps SearXNG on direct connections (the token in the
-    template renders to a comment); a value like http://10.8.8.1:8088
+    Falls back to the stack-wide EGRESS_PROXY when the SearXNG-specific knob
+    is unset. Empty/unset keeps SearXNG on direct connections (the token in
+    the template renders to a comment); a value like http://10.8.8.1:8088
     routes every engine request through that proxy (httpx `all://` form).
     """
-    proxy = (os.environ.get("SEARXNG_OUTGOING_PROXY", "") or "").strip()
+    proxy = (
+        os.environ.get("SEARXNG_OUTGOING_PROXY", "")
+        or os.environ.get("EGRESS_PROXY", "")
+        or ""
+    ).strip()
     if not proxy:
         return (
-            "  # SEARXNG_OUTGOING_PROXY is unset — engines connect directly.\n"
-            "  # Set it (e.g. http://10.8.8.1:8088) to route engine requests\n"
-            "  # through an outbound proxy.\n"
+            "  # SEARXNG_OUTGOING_PROXY / EGRESS_PROXY are unset — engines connect\n"
+            "  # directly. Set one (e.g. http://10.8.8.1:8088) to route engine\n"
+            "  # requests through an outbound proxy.\n"
         )
     return (
         "  # Engine requests routed through SEARXNG_OUTGOING_PROXY\n"

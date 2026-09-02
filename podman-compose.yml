@@ -72,7 +72,9 @@ services:
       - SEARXNG_BAN_TIME_ON_FAIL=${SEARXNG_BAN_TIME_ON_FAIL:-5}
       - SEARXNG_MAX_BAN_TIME_ON_FAIL=${SEARXNG_MAX_BAN_TIME_ON_FAIL:-120}
       - SEARXNG_SUSPEND_TOO_MANY=${SEARXNG_SUSPEND_TOO_MANY:-180}
-      # Outbound proxy for engine requests (empty = direct egress); see .env
+      # Outbound proxy for engine requests (SEARXNG_OUTGOING_PROXY wins, else
+      # the stack-wide EGRESS_PROXY; empty = direct egress); see .env.example
+      - EGRESS_PROXY=${EGRESS_PROXY:-}
       - SEARXNG_OUTGOING_PROXY=${SEARXNG_OUTGOING_PROXY:-}
     depends_on:
       valkey:
@@ -119,7 +121,9 @@ services:
       - CAMOUFOX_PORT=9222
       - CAMOUFOX_WS_PATH=${CAMOUFOX_WS_PATH:-browser}
       - CAMOUFOX_MAX_CONNECTIONS=${CAMOUFOX_MAX_CONNECTIONS:-8}
-      # Outbound proxy for all browser traffic (see .env.example; empty = direct)
+      # Outbound proxy for all browser traffic — CAMOUFOX_PROXY_SERVER wins,
+      # else the stack-wide EGRESS_PROXY applies (see .env.example)
+      - EGRESS_PROXY=${EGRESS_PROXY:-}
       - CAMOUFOX_PROXY_SERVER=${CAMOUFOX_PROXY_SERVER:-}
       - CAMOUFOX_PROXY_USERNAME=${CAMOUFOX_PROXY_USERNAME:-}
       - CAMOUFOX_PROXY_PASSWORD=${CAMOUFOX_PROXY_PASSWORD:-}
@@ -168,8 +172,9 @@ services:
       # HTTP fast path: static pages are fetched directly with a Chrome-shaped
       # TLS stack (curl_cffi) — WAF challenges / JS shells / HTTP errors
       # escalate to the browser. Named sessions always use the browser (login
-      # persistence needs its cookie contexts); the proxy is separate from
-      # CAMOUFOX_PROXY_* so both transports can share one egress (empty=direct)
+      # persistence needs its cookie contexts); HTTP_FASTPATH_PROXY wins, else
+      # the stack-wide EGRESS_PROXY applies (empty = direct)
+      - EGRESS_PROXY=${EGRESS_PROXY:-}
       - HTTP_FASTPATH=${HTTP_FASTPATH:-true}
       - HTTP_FASTPATH_TIMEOUT=${HTTP_FASTPATH_TIMEOUT:-15}
       - HTTP_FASTPATH_IMPERSONATE=${HTTP_FASTPATH_IMPERSONATE:-chrome}
@@ -192,7 +197,9 @@ services:
       # Named sessions (login persistence): max concurrent session contexts
       - CAMOUFOX_MAX_SESSIONS=${CAMOUFOX_MAX_SESSIONS:-16}
       # Proxy (bridge-side copy): derives the egress timezone for context
-      # creation so the fingerprint timezone matches the proxy exit
+      # creation so the fingerprint timezone matches the proxy exit.
+      # CAMOUFOX_PROXY_SERVER wins, else the stack-wide EGRESS_PROXY applies
+      - EGRESS_PROXY=${EGRESS_PROXY:-}
       - CAMOUFOX_PROXY_SERVER=${CAMOUFOX_PROXY_SERVER:-}
       - CAMOUFOX_PROXY_USERNAME=${CAMOUFOX_PROXY_USERNAME:-}
       - CAMOUFOX_PROXY_PASSWORD=${CAMOUFOX_PROXY_PASSWORD:-}

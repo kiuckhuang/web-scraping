@@ -38,8 +38,12 @@ CAMOUFOX_WS_URL = os.environ.get("CAMOUFOX_WS_URL", "ws://camoufox:9222/browser"
 # mode applies fingerprint geo data browser-wide (WebRTC IP via prefs) but
 # cannot set per-context timezone/locale for remotely created contexts, so the
 # bridge derives them the same way camoufox upstream does: ip-api.com through
-# the proxy, resolved once and cached.
-CAMOUFOX_PROXY_SERVER = os.environ.get("CAMOUFOX_PROXY_SERVER", "").strip()
+# the proxy, resolved once and cached. Falls back to the stack-wide
+# EGRESS_PROXY, mirroring the ws-camoufox launcher's resolution order.
+CAMOUFOX_PROXY_SERVER = (
+    os.environ.get("CAMOUFOX_PROXY_SERVER", "").strip()
+    or os.environ.get("EGRESS_PROXY", "").strip()
+)
 CAMOUFOX_PROXY_USERNAME = os.environ.get("CAMOUFOX_PROXY_USERNAME", "").strip()
 CAMOUFOX_PROXY_PASSWORD = os.environ.get("CAMOUFOX_PROXY_PASSWORD", "").strip()
 CAMOUFOX_TIMEZONE = os.environ.get("CAMOUFOX_TIMEZONE", "").strip()
