@@ -34,6 +34,25 @@ def _reset_caches():
     ssrf.clear_dns_cache()
 
 
+@pytest.fixture(autouse=True)
+def _pin_searxng_primary(monkeypatch):
+    """Tests here fake `searxng_search` and assert on its exact results.
+
+    The search endpoints route through `_search_with_fallbacks`, whose stage
+    order follows the deployed SEARCH_PRIMARY. With the default
+    SEARCH_PRIMARY=browser the browser-SERP stage runs a *live* search before
+    the fake is ever reached (network-dependent, machine-dependent results —
+    and a real SERP hit on every container test run). Pin the chain to the
+    SearXNG stage only; fallback behavior has dedicated tests in
+    test_search_fallback.py, which fake every stage it exercises.
+    """
+    import bridge.main as main_mod
+
+    monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "searxng")
+    monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BING", False)
+    monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BROWSER", False)
+
+
 def _public_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
     """Fake resolver: everything resolves to a public IP."""
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
