@@ -2,8 +2,8 @@
 
 Endpoints:
   GET  /health              — check SearXNG + browser engine status
-  GET  /search              — search the web via SearXNG (bing + stealth-browser fallbacks)
-  POST /scrape              — scrape a URL via the stealth browser (Camoufox)
+  GET  /search              — search the web (browser SERPs and SearXNG fallbacks)
+  POST /scrape              — scrape a URL (HTTP fast path, escalating to Camoufox)
   POST /search_and_scrape   — search via SearXNG (with fallbacks), then scrape top results
   GET  /crawl               — crawl a whole site via the stealth browser
   GET  /web_search          — web search via the stealth browser (not SearXNG)
@@ -37,6 +37,10 @@ from .browser_client import (
     scrape as browser_scrape,
     search_web as browser_web_search,
     shutdown as browser_shutdown,
+)
+from .http_client import (
+    Escalation as HttpFastpathEscalation,
+    scrape as http_scrape,
 )
 from .searxng_client import (
     health as searxng_health,
@@ -78,6 +82,12 @@ SEARCH_PRIMARY = os.environ.get("SEARCH_PRIMARY", "browser").strip().lower()
 SEARCH_FALLBACK_BING = _env_flag("SEARCH_FALLBACK_BING", "false")
 SEARCH_FALLBACK_BROWSER = _env_flag("SEARCH_FALLBACK_BROWSER")
 BROWSER_SEARCH_ENGINES: tuple[str, ...] = _env_engines("BROWSER_SEARCH_ENGINES", "google,duckduckgo,duckduckgo lite")
+
+# HTTP fast path — static pages are fetched directly with a Chrome-shaped TLS
+# stack (curl_cffi) instead of a Camoufox context: orders of magnitude faster,
+# and the shaped JA3/JA4 handshake passes TLS-fingerprint gates. WAF
+# challenges, JS-rendered shells and HTTP errors escalate to the browser.
+HTTP_FASTPATH_ENABLED = _env_flag("HTTP_FASTPATH")
 
 
 @asynccontextmanager
@@ -428,12 +438,36 @@ async def search(
 
 
 # ---------------------------------------------------------------------------
-#  Scrape (stealth browser)
+#  Scrape (HTTP fast path, escalating to the stealth browser)
 # ---------------------------------------------------------------------------
+
+async def _scrape_with_transports(url: str, *, mode: str, session: str | None) -> dict[str, Any]:
+    """Scrape through the cheapest transport that can serve the page.
+
+    The HTTP fast path (curl_cffi, Chrome-shaped TLS) serves static pages in
+    one round-trip; WAF challenges, JS-rendered shells and HTTP errors
+    escalate to the stealth browser, which renders JS and waits challenges
+    out. Named sessions skip the fast path entirely: login persistence lives
+    in the browser's long-lived cookie contexts — the HTTP path is cookieless.
+    Fast-path results carry "transport": "http" (browser results are
+    unchanged).
+    """
+    if session is None and HTTP_FASTPATH_ENABLED:
+        try:
+            content = await http_scrape(url, mode=mode)
+            logger.info("HTTP fast path served %s (mode=%s)", url, mode)
+            return {**content, "transport": "http"}
+        except HttpFastpathEscalation as exc:
+            logger.info("HTTP fast path escalated for %s: %s", url, exc.reason)
+        except Exception as exc:
+            logger.warning("HTTP fast path failed for %s (%s) — escalating to browser", url, exc)
+    return await browser_scrape(url, mode=mode, session=session)
+
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest) -> dict[str, Any]:
-    """Scrape a single URL through the stealth browser.
+    """Scrape a single URL: shaped-TLS HTTP fetch first, stealth browser
+    (Camoufox) for anything that needs JS or trips a WAF challenge.
 
     Bypasses Cloudflare, DataDome, PerimeterX, Akamai, and other bot detection.
     Returns clean markdown (extract mode) or raw HTML + text (fetch mode).
@@ -443,9 +477,9 @@ async def scrape(req: ScrapeRequest) -> dict[str, Any]:
     if cached is not None:
         return {**cached, "cached": True}
     try:
-        content = await browser_scrape(req.url, mode=req.mode, session=req.session)
+        content = await _scrape_with_transports(req.url, mode=req.mode, session=req.session)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Browser scrape error: {exc}")
+        raise HTTPException(status_code=502, detail=f"Scrape error: {exc}")
     if _cacheable(content):
         _cache_set(req.url, req.mode, content, req.session)
     return content
@@ -457,8 +491,8 @@ async def scrape(req: ScrapeRequest) -> dict[str, Any]:
 
 @app.post("/search_and_scrape")
 async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
-    """Search via SearXNG (with fallbacks), then scrape each result URL through
-    the stealth browser.
+    """Search (with fallbacks), then scrape each result URL through the
+    cheapest transport that serves it (HTTP fast path → stealth browser).
 
     This is the primary "Exa-like" endpoint: get search results with full page content.
     Results are scraped concurrently for speed.
@@ -492,7 +526,7 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
         if cached is not None:
             return {**result, "content": cached, "cached": True}
         try:
-            content = await browser_scrape(url, mode=req.scrape_mode, session=req.session)
+            content = await _scrape_with_transports(url, mode=req.scrape_mode, session=req.session)
             if _cacheable(content):
                 _cache_set(url, req.scrape_mode, content, req.session)
             return {**result, "content": content}

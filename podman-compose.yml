@@ -165,6 +165,15 @@ services:
       - BRIDGE_CACHE_TTL=${BRIDGE_CACHE_TTL:-300}
       - BRIDGE_CACHE_MAX=${BRIDGE_CACHE_MAX:-100}
       - BRIDGE_CACHE_MAX_BYTES=${BRIDGE_CACHE_MAX_BYTES:-26214400}
+      # HTTP fast path: static pages are fetched directly with a Chrome-shaped
+      # TLS stack (curl_cffi) — WAF challenges / JS shells / HTTP errors
+      # escalate to the browser. Named sessions always use the browser (login
+      # persistence needs its cookie contexts); the proxy is separate from
+      # CAMOUFOX_PROXY_* so both transports can share one egress (empty=direct)
+      - HTTP_FASTPATH=${HTTP_FASTPATH:-true}
+      - HTTP_FASTPATH_TIMEOUT=${HTTP_FASTPATH_TIMEOUT:-15}
+      - HTTP_FASTPATH_IMPERSONATE=${HTTP_FASTPATH_IMPERSONATE:-chrome}
+      - HTTP_FASTPATH_PROXY=${HTTP_FASTPATH_PROXY:-}
       # Search chain: SEARCH_PRIMARY picks the first transport ("searxng" or
       # "browser"); the other serves as fallback. Browser SERP engine order
       # via BROWSER_SEARCH_ENGINES; SEARCH_FALLBACK_BING inserts a forced
