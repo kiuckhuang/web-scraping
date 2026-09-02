@@ -169,7 +169,7 @@ services:
       # "browser"); the other serves as fallback. Browser SERP engine order
       # via BROWSER_SEARCH_ENGINES; SEARCH_FALLBACK_BING inserts a forced
       # "!bing" stage (default off — bing result quality proved useless)
-      - SEARCH_PRIMARY=${SEARCH_PRIMARY:-searxng}
+      - SEARCH_PRIMARY=${SEARCH_PRIMARY:-browser}
       - SEARCH_FALLBACK_BING=${SEARCH_FALLBACK_BING:-false}
       - SEARCH_FALLBACK_BROWSER=${SEARCH_FALLBACK_BROWSER:-true}
       - BROWSER_SEARCH_ENGINES=${BROWSER_SEARCH_ENGINES:-google,duckduckgo,duckduckgo lite}
