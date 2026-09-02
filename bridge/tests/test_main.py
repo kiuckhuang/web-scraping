@@ -53,6 +53,23 @@ def _pin_searxng_primary(monkeypatch):
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BROWSER", False)
 
 
+@pytest.fixture(autouse=True)
+def _disable_http_fastpath(monkeypatch):
+    """The HTTP fast path (curl_cffi) would otherwise attempt real network
+    fetches in every test that exercises /scrape or search_and_scrape.
+    Escalate unconditionally so tests here drive the browser path; fast-path
+    behavior is covered in test_http_client.py and the transports tests below,
+    which override this stub explicitly.
+    """
+    import bridge.main as main_mod
+    from bridge.http_client import Escalation
+
+    async def _escalate(url, *, mode):
+        raise Escalation("disabled in unit tests")
+
+    monkeypatch.setattr(main_mod, "http_scrape", _escalate)
+
+
 def _public_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
     """Fake resolver: everything resolves to a public IP."""
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
@@ -557,5 +574,153 @@ def test_scrape_with_session_passes_through_and_caches_separately(monkeypatch):
             # Distinct cache keys: session a, session b, and sessionless.
             assert len(calls) == 3
             assert calls[0][2] == "a" and calls[1][2] == "b" and calls[2][2] is None
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+#  Scrape transports (HTTP fast path → stealth browser)
+# ---------------------------------------------------------------------------
+
+def test_scrape_endpoint_serves_from_fast_path(monkeypatch):
+    import bridge.main as main_mod
+    import httpx
+
+    async def fake_http_scrape(url, *, mode):
+        return {"url": url, "title": "t", "markdown": "static md", "tables": [], "status": 200}
+
+    async def fail_browser(*args, **kwargs):
+        raise AssertionError("browser must not run when the fast path serves")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    monkeypatch.setattr(main_mod, "http_scrape", fake_http_scrape)
+    monkeypatch.setattr(main_mod, "browser_scrape", fail_browser)
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/scrape", json={"url": "https://example.com/fast", "mode": "extract"})
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["markdown"] == "static md"
+            assert body["transport"] == "http"
+
+    asyncio.run(run())
+
+
+def test_scrape_fast_path_escalation_falls_back_to_browser(monkeypatch):
+    import bridge.main as main_mod
+    import httpx
+    from bridge.http_client import Escalation
+
+    async def escalating(url, *, mode):
+        raise Escalation("WAF challenge")
+
+    captured = {}
+
+    async def fake_browser(url, *, mode, session=None):
+        captured["call"] = (url, mode, session)
+        return {"url": url, "title": "t", "markdown": "browser md", "tables": []}
+
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    monkeypatch.setattr(main_mod, "http_scrape", escalating)
+    monkeypatch.setattr(main_mod, "browser_scrape", fake_browser)
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/scrape", json={"url": "https://example.com/waf", "mode": "extract"})
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["markdown"] == "browser md"
+            assert "transport" not in body  # browser results are unchanged
+
+    asyncio.run(run())
+    assert captured["call"] == ("https://example.com/waf", "extract", None)
+
+
+def test_scrape_with_session_skips_fast_path(monkeypatch):
+    import bridge.main as main_mod
+    import httpx
+
+    async def fail_http(url, *, mode):
+        raise AssertionError("named sessions must not use the cookieless fast path")
+
+    captured = {}
+
+    async def fake_browser(url, *, mode, session=None):
+        captured["session"] = session
+        return {"url": url, "title": "t", "markdown": "md", "tables": []}
+
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    monkeypatch.setattr(main_mod, "http_scrape", fail_http)
+    monkeypatch.setattr(main_mod, "browser_scrape", fake_browser)
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/scrape", json={"url": "https://example.com/x", "mode": "extract", "session": "work"}
+            )
+            assert resp.status_code == 200
+            assert "transport" not in resp.json()
+
+    asyncio.run(run())
+    assert captured["session"] == "work"
+
+
+def test_http_fastpath_disabled_goes_straight_to_browser(monkeypatch):
+    import bridge.main as main_mod
+    import httpx
+
+    async def fail_http(url, *, mode):
+        raise AssertionError("fast path must not run when HTTP_FASTPATH is off")
+
+    async def fake_browser(url, *, mode, session=None):
+        return {"url": url, "title": "t", "markdown": "md", "tables": []}
+
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    monkeypatch.setattr(main_mod, "HTTP_FASTPATH_ENABLED", False)
+    monkeypatch.setattr(main_mod, "http_scrape", fail_http)
+    monkeypatch.setattr(main_mod, "browser_scrape", fake_browser)
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/scrape", json={"url": "https://example.com/x", "mode": "extract"})
+            assert resp.status_code == 200
+
+    asyncio.run(run())
+
+
+def test_search_and_scrape_serves_static_results_via_fast_path(monkeypatch):
+    import bridge.main as main_mod
+    import httpx
+
+    async def fake_search(*args, **kwargs):
+        return {
+            "number_of_results": 1,
+            "results": [{"url": "https://example.com/article", "title": "static"}],
+        }
+
+    async def fake_http_scrape(url, *, mode):
+        return {"url": url, "title": "t", "markdown": "fast md", "tables": [], "status": 200}
+
+    async def fail_browser(*args, **kwargs):
+        raise AssertionError("browser must not run when the fast path serves")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    monkeypatch.setattr(main_mod, "searxng_search", fake_search)
+    monkeypatch.setattr(main_mod, "http_scrape", fake_http_scrape)
+    monkeypatch.setattr(main_mod, "browser_scrape", fail_browser)
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/search_and_scrape", json={"query": "q", "max_results": 3})
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["results"][0]["content"]["markdown"] == "fast md"
+            assert body["results"][0]["content"]["transport"] == "http"
 
     asyncio.run(run())

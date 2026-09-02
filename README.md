@@ -120,7 +120,7 @@ Search the web via the configured [SearXNG](https://github.com/searxng/searxng) 
 
 ### `POST /scrape`
 
-Scrape a single URL through the [Camoufox](https://github.com/daijro/camoufox) stealth browser. Bypasses [Cloudflare](https://www.cloudflare.com/), [DataDome](https://datadome.co/), [PerimeterX](https://www.perimeterx.com/), and [Akamai](https://www.akamai.com/).
+Scrape a single URL. Static pages are served by an HTTP fast path — [curl_cffi](https://curl-cffi.readthedocs.io/) with a Chrome-shaped TLS (JA3/JA4) fingerprint, no browser — and anything that needs JavaScript or trips a WAF challenge escalates to the [Camoufox](https://github.com/daijro/camoufox) stealth browser, which bypasses [Cloudflare](https://www.cloudflare.com/), [DataDome](https://datadome.co/), [PerimeterX](https://www.perimeterx.com/), and [Akamai](https://www.akamai.com/). Fast-path results carry `"transport": "http"`; named sessions always use the browser (login persistence needs its cookie contexts).
 
 ```json
 {"url": "https://protected-site.com", "mode": "extract"}
@@ -131,7 +131,7 @@ Scrape a single URL through the [Camoufox](https://github.com/daijro/camoufox) s
 
 ### `POST /search_and_scrape`
 
-Search via [SearXNG](https://github.com/searxng/searxng), then scrape each result URL through the stealth browser concurrently. This is the primary Exa-style endpoint.
+Search via [SearXNG](https://github.com/searxng/searxng), then scrape each result URL concurrently through the cheapest transport that serves it (HTTP fast path → stealth browser). This is the primary Exa-style endpoint.
 
 ```json
 {"query": "best practices for kubernetes security", "max_results": 5, "scrape_mode": "extract"}
@@ -314,6 +314,10 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `BRIDGE_CACHE_TTL`      | `300`                    | Scrape cache TTL (s) — repeat scrapes of the same URL skip the browser |
 | `BRIDGE_CACHE_MAX`      | `100`                    | Max pages held in the scrape cache |
 | `BRIDGE_CACHE_MAX_BYTES` | `26214400`              | Max serialized scrape-cache size (25 MiB) |
+| `HTTP_FASTPATH` | `true`                   | Fetch static pages directly with a Chrome-shaped TLS stack (curl_cffi) before the browser; WAF challenges, JS-rendered shells and HTTP errors escalate to Camoufox. Named sessions always use the browser (cookieless fast path) |
+| `HTTP_FASTPATH_TIMEOUT` | `15`                     | Fast-path HTTP timeout (s) |
+| `HTTP_FASTPATH_IMPERSONATE` | `chrome`             | curl_cffi impersonation target (TLS/JA3 + HTTP/2 fingerprint shape) |
+| `HTTP_FASTPATH_PROXY` | (unset)                    | Egress proxy for the HTTP fast path only; unset = direct. Separate from `CAMOUFOX_PROXY_*` so both transports can share one exit |
 | `SEARCH_PRIMARY` | `browser`                | First search transport: `browser` (Camoufox SERPs → SearXNG merge) or `searxng` (merge → bing → browser SERPs). Browser-first is robust against engine bot-walls; `searxng` is lower-latency where your IP isn't challenged |
 | `SEARCH_FALLBACK_BING` | `false`                  | Insert a forced `!bing` SearXNG stage between the two transports (default off — bing result quality proved useless) |
 | `SEARCH_FALLBACK_BROWSER` | `true`                | Allow the stealth-browser SERP stage at all (as primary or fallback) |

@@ -21,6 +21,9 @@ dependencies = [
     "playwright==1.60.0",
     "pydantic==2.13.5",
     "markdownify==1.2.3",
+    # HTTP fast path: Chrome-shaped TLS (JA3/JA4) + HTTP/2 fingerprinting for
+    # static pages, escalating to the stealth browser for JS/WAF targets.
+    "curl_cffi==0.16.2",
 ]
 
 [project.optional-dependencies]
