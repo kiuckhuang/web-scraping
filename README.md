@@ -301,7 +301,8 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `SEARXNG_BAN_TIME_ON_FAIL` | `5`                   | Engine ban duration (s) after a failed request |
 | `SEARXNG_MAX_BAN_TIME_ON_FAIL` | `120`            | Upper cap on the engine ban (s)     |
 | `SEARXNG_SUSPEND_TOO_MANY` | `180`                | How long an engine is suspended (s) after a 429 / rate-limit |
-| `SEARXNG_OUTGOING_PROXY` | (unset)               | Outbound proxy for all engine requests (e.g. `http://10.8.8.1:8088`); unset = direct egress — set it when engines bot-challenge your IP |
+| `EGRESS_PROXY` | (unset)                   | Stack-wide egress proxy — SearXNG engines + Camoufox browser + HTTP fast path all route through it; the per-component knobs below override it per transport |
+| `SEARXNG_OUTGOING_PROXY` | (unset)               | Outbound proxy for engine requests; overrides `EGRESS_PROXY` for SearXNG (unset = inherit it, else direct) |
 | `SEARXNG_FORCE_OWNERSHIP` | `true`                | Force SearXNG file ownership on start |
 | `SEARXNG_UWSGI_THREADS` | `4`                    | SearXNG worker thread count          |
 | `CAMOUFOX_WS_URL`       | `ws://camoufox:9222/browser` | Playwright websocket endpoint (container-internal) |
@@ -317,7 +318,7 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `HTTP_FASTPATH` | `true`                   | Fetch static pages directly with a Chrome-shaped TLS stack (curl_cffi) before the browser; WAF challenges, JS-rendered shells and HTTP errors escalate to Camoufox. Named sessions always use the browser (cookieless fast path) |
 | `HTTP_FASTPATH_TIMEOUT` | `15`                     | Fast-path HTTP timeout (s) |
 | `HTTP_FASTPATH_IMPERSONATE` | `chrome`             | curl_cffi impersonation target (TLS/JA3 + HTTP/2 fingerprint shape) |
-| `HTTP_FASTPATH_PROXY` | (unset)                    | Egress proxy for the HTTP fast path only; unset = direct. Separate from `CAMOUFOX_PROXY_*` so both transports can share one exit |
+| `HTTP_FASTPATH_PROXY` | (unset)                    | Egress proxy for the HTTP fast path only; overrides `EGRESS_PROXY` (unset = inherit it, else direct) |
 | `SEARCH_PRIMARY` | `browser`                | First search transport: `browser` (Camoufox SERPs → SearXNG merge) or `searxng` (merge → bing → browser SERPs). Browser-first is robust against engine bot-walls; `searxng` is lower-latency where your IP isn't challenged |
 | `SEARCH_FALLBACK_BING` | `false`                  | Insert a forced `!bing` SearXNG stage between the two transports (default off — bing result quality proved useless) |
 | `SEARCH_FALLBACK_BROWSER` | `true`                | Allow the stealth-browser SERP stage at all (as primary or fallback) |
@@ -328,7 +329,7 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `CAMOUFOX_WAF_WAIT`      | `15`                    | Maximum WAF challenge wait (s) |
 | `CAMOUFOX_ISOLATE_CONTEXTS` | `true`                | Isolate cookies/storage for each request |
 | `CAMOUFOX_MAX_SESSIONS` | `16`                     | Max concurrent named sessions (login persistence) |
-| `CAMOUFOX_PROXY_SERVER` | (unset)                  | Outbound proxy for all browser traffic (`http://`, `https://`, `socks5://`); unset = direct egress |
+| `CAMOUFOX_PROXY_SERVER` | (unset)                  | Outbound proxy for all browser traffic (`http://`, `https://`, `socks5://`); overrides `EGRESS_PROXY` (unset = inherit it, else direct) |
 | `CAMOUFOX_PROXY_USERNAME` / `_PASSWORD` | (unset)  | Proxy credentials (keep in `.env`) |
 | `CAMOUFOX_PROXY_BYPASS` | (unset)                  | Comma-separated hosts that skip the proxy |
 | `CAMOUFOX_GEOIP`        | `auto`                   | GeoIP-consistent fingerprints (timezone/locale/lat-lon matched to the proxy's egress IP); `auto` = on whenever a proxy is set |
@@ -419,11 +420,23 @@ What to know:
 - uBlock Origin ships inside the Camoufox build (fetched with the browser at build time).
 - Camoufox's remote-server mode is officially **experimental** upstream — it is nonetheless actively maintained and tracks current Firefox, which is exactly what Fortress stopped doing. If Camoufox ever stalls the way Fortress did, [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) (patched Playwright driving real Chrome) is the smallest-change fallback, and [curl_cffi](https://github.com/lexiforest/curl_cffi) complements non-JS targets.
 
-### Outbound Proxy (browser traffic)
+### Outbound Proxy
 
-Set `CAMOUFOX_PROXY_SERVER` in `.env` and every page the browser fetches —
-scrapes, crawls, SERP searches, subresources — egresses through your proxy
-(HTTP or SOCKS5, credentials optional):
+One knob routes **all** stack egress — SearXNG engine requests, the Camoufox
+browser, and the HTTP fast path — through a single proxy. Set `EGRESS_PROXY`
+in `.env` and you're done; GeoIP-consistent fingerprints auto-enable on the
+browser:
+
+```bash
+# in .env — the whole stack egresses through this proxy
+EGRESS_PROXY=socks5://proxy-host:1080
+```
+
+For different exits per transport, the per-component knobs override it:
+`SEARXNG_OUTGOING_PROXY` (engines), `CAMOUFOX_PROXY_SERVER` (browser),
+`HTTP_FASTPATH_PROXY` (fast path). Setting `CAMOUFOX_PROXY_SERVER` routes
+every page the browser fetches — scrapes, crawls, SERP searches,
+subresources — through that proxy (HTTP or SOCKS5, credentials optional):
 
 ```bash
 # in .env
@@ -449,8 +462,9 @@ CAMOUFOX_GEOIP=auto                         # default
   `timezone_id` to every new context (override with `CAMOUFOX_TIMEZONE`,
   e.g. `Asia/Hong_Kong`). Verified: with the HKUST proxy the browser runs
   `Asia/Hong_Kong` instead of UTC.
-- The bridge↔browser connection, SearXNG engine traffic, and the SSRF guard
-  are unaffected — only the browser's page requests use the proxy.
+- With `CAMOUFOX_PROXY_SERVER` only the browser's page requests use the
+  proxy; with the stack-wide `EGRESS_PROXY`, SearXNG engine requests and the
+  HTTP fast path egress through it too.
 - Proxy quality is part of stealth: residential/mobile exits fare far better
   against Cloudflare/DataDome than datacenter ranges.
 

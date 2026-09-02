@@ -6,8 +6,9 @@ the config camoufox sends to Playwright's `firefox.launchServer()` (host, port,
 wsPath, maxConnections, proxy are native launchServer options).
 
 Outbound proxy (browser-wide): CAMOUFOX_PROXY_SERVER (+ _USERNAME/_PASSWORD/
-_BYPASS). GeoIP-consistent fingerprints (timezone/locale/lat-lon matched to the
-proxy's egress IP) auto-enable when a proxy is set; CAMOUFOX_GEOIP=true/false
+_BYPASS), falling back to the stack-wide EGRESS_PROXY when unset. GeoIP-
+consistent fingerprints (timezone/locale/lat-lon matched to the proxy's
+egress IP) auto-enable when a proxy is set; CAMOUFOX_GEOIP=true/false
 overrides. The GeoIP database is warmed at image build time — a missing DB
 degrades to a no-geoip launch (logged), never a runtime download.
 
@@ -29,8 +30,15 @@ logger = logging.getLogger("camoufox-launcher")
 
 
 def _proxy() -> dict[str, str] | None:
-    """Build the Playwright proxy dict from CAMOUFOX_PROXY_* env; None if unset."""
-    server = os.environ.get("CAMOUFOX_PROXY_SERVER", "").strip()
+    """Build the Playwright proxy dict from CAMOUFOX_PROXY_* env; None if unset.
+
+    CAMOUFOX_PROXY_SERVER wins; otherwise the stack-wide EGRESS_PROXY applies
+    (one-line proxy setup for the whole stack).
+    """
+    server = (
+        os.environ.get("CAMOUFOX_PROXY_SERVER", "").strip()
+        or os.environ.get("EGRESS_PROXY", "").strip()
+    )
     if not server:
         return None
     proxy = {"server": server}

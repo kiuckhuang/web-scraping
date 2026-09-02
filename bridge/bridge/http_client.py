@@ -39,10 +39,13 @@ HTTP_FASTPATH_TIMEOUT = float(os.environ.get("HTTP_FASTPATH_TIMEOUT", "15"))
 # fingerprint shape. "chrome" tracks the newest Chrome the installed
 # curl_cffi release ships fingerprints for.
 HTTP_FASTPATH_IMPERSONATE = os.environ.get("HTTP_FASTPATH_IMPERSONATE", "chrome").strip()
-# Optional egress proxy for the HTTP path (empty = direct). Deliberately
-# separate from CAMOUFOX_PROXY_* so both transports can be pointed at the
-# same exit from compose without coupling their configs.
-HTTP_FASTPATH_PROXY = os.environ.get("HTTP_FASTPATH_PROXY", "").strip()
+# Optional egress proxy for the HTTP path (empty = direct). Falls back to the
+# stack-wide EGRESS_PROXY; CAMOUFOX_PROXY_* and SEARXNG_OUTGOING_PROXY have
+# the same fallback, so one knob points the whole stack at one exit.
+HTTP_FASTPATH_PROXY = (
+    os.environ.get("HTTP_FASTPATH_PROXY", "").strip()
+    or os.environ.get("EGRESS_PROXY", "").strip()
+)
 
 MAX_REDIRECTS = 5
 # A 200 page whose extracted text is tiny while the HTML is script-heavy is a
