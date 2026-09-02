@@ -291,3 +291,50 @@ def test_context_timezone_skipped_without_proxy(session_playwright, monkeypatch)
     monkeypatch.setattr(bc, "CAMOUFOX_TIMEZONE", "")
     asyncio.run(bc._new_page())
     assert session_playwright["context_kwargs"][-1] == {}
+
+
+# ---------------------------------------------------------------------------
+#  SERP circuit breaker (per-engine empty-results skip)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_serp_breaker():
+    bc._serp_breaker.clear()
+    yield
+    bc._serp_breaker.clear()
+
+
+def test_serp_breaker_opens_after_threshold():
+    bc._serp_breaker_record("google", False)
+    assert not bc._serp_breaker_skip("google")  # one failure: still tried
+    bc._serp_breaker_record("google", False)
+    assert bc._serp_breaker_skip("google")  # threshold reached: skipped
+
+
+def test_serp_breaker_resets_on_success():
+    bc._serp_breaker_record("google", False)
+    bc._serp_breaker_record("google", False)
+    bc._serp_breaker_record("google", True)
+    assert not bc._serp_breaker_skip("google")
+
+
+def test_serp_breaker_cooldown_expires(monkeypatch):
+    bc._serp_breaker_record("google", False)
+    bc._serp_breaker_record("google", False)
+    assert bc._serp_breaker_skip("google")
+    # Cooldowns use time.monotonic(); fake the clock past the expiry.
+    real_monotonic = bc.time.monotonic
+    monkeypatch.setattr(bc.time, "monotonic", lambda: real_monotonic() + bc.SERP_BREAKER_COOLDOWN + 1)
+    assert not bc._serp_breaker_skip("google")
+
+
+def test_serp_breaker_tracks_engines_independently():
+    bc._serp_breaker_record("google", False)
+    bc._serp_breaker_record("google", False)
+    assert bc._serp_breaker_skip("google")
+    assert not bc._serp_breaker_skip("duckduckgo")
+
+
+def test_search_web_rejects_unknown_engine():
+    with pytest.raises(ValueError, match="Unknown browser search engine"):
+        asyncio.run(bc.search_web("q", engines=("ask jeeves",)))

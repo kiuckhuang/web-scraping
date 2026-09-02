@@ -18,10 +18,11 @@ import asyncio
 import logging
 import os
 import socket
+import time
 import urllib.request
 from collections import deque
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from markdownify import markdownify
 from playwright.async_api import Browser, Error as PlaywrightError, async_playwright
@@ -583,12 +584,38 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50, session: str
     return {"pages": pages, "sitemap": sitemap, "count": len(pages)}
 
 
+# Per-engine circuit breaker for browser SERPs: after this many consecutive
+# empty results an engine is skipped for the cooldown (Google serves its
+# "enable JavaScript" shell to challenged clients — retrying on every query
+# would just add its wait time to every search).
+SERP_BREAKER_THRESHOLD = 2
+SERP_BREAKER_COOLDOWN = 600.0
+_serp_breaker: dict[str, tuple[int, float]] = {}  # engine -> (consecutive fails, skip-until monotonic)
+
+
+def _serp_breaker_skip(engine: str) -> bool:
+    """True if the engine recently produced empty SERPs too often."""
+    _, skip_until = _serp_breaker.get(engine, (0, 0.0))
+    return time.monotonic() < skip_until
+
+
+def _serp_breaker_record(engine: str, ok: bool) -> None:
+    fails, _ = _serp_breaker.get(engine, (0, 0.0))
+    if ok:
+        _serp_breaker.pop(engine, None)
+        return
+    fails += 1
+    skip_until = time.monotonic() + SERP_BREAKER_COOLDOWN if fails >= SERP_BREAKER_THRESHOLD else 0.0
+    _serp_breaker[engine] = (fails, skip_until)
+
+
 async def search_web(query: str, count: int = 10, engines: tuple[str, ...] | None = None) -> dict[str, Any]:
     """Web search through the stealth browser (real SERP, no API).
 
     Tries the given engines in order (default: DuckDuckGo only) and returns
     the first engine that yields results. Each engine gets a fresh page so
     one engine's challenge/consent page cannot poison the next attempt.
+    Engines tripping the empty-results circuit breaker are skipped.
 
     Returns {"engine": <used>, "query": ..., "results": [{title,url,snippet}]}.
     On total failure the shape is kept, with the last engine's (empty) results
@@ -596,7 +623,7 @@ async def search_web(query: str, count: int = 10, engines: tuple[str, ...] | Non
     """
     if engines is None:
         engines = ("duckduckgo",)
-    parsers = {"google": _serp_google, "duckduckgo": _serp_ddg}
+    parsers = {"google": _serp_google, "duckduckgo": _serp_ddg, "duckduckgo lite": _serp_ddg_lite}
     last: dict[str, Any] = {}
     tried: list[str] = []
     async with _page_slots:
@@ -604,6 +631,9 @@ async def search_web(query: str, count: int = 10, engines: tuple[str, ...] | Non
             parser = parsers.get(engine)
             if parser is None:
                 raise ValueError(f"Unknown browser search engine: {engine}")
+            if _serp_breaker_skip(engine):
+                logger.info("Browser SERP %s skipped — circuit breaker open (recent empty results)", engine)
+                continue
             tried.append(engine)
             page = await _new_page()
             try:
@@ -613,6 +643,7 @@ async def search_web(query: str, count: int = 10, engines: tuple[str, ...] | Non
                 results = []
             finally:
                 await _close_page(page)
+            _serp_breaker_record(engine, bool(results))
             if results:
                 return {"engine": engine, "query": query, "results": results[:count]}
             last = {"engine": engine, "query": query, "results": []}
@@ -627,10 +658,18 @@ async def search_web(query: str, count: int = 10, engines: tuple[str, ...] | Non
 
 
 async def _serp_google(page, query: str, count: int) -> list[dict[str, str]]:
-    """Parse the Google SERP from a Camoufox page (JS-heavy page — the stealth
-    browser handles it; zero results usually means a consent/CAPTCHA page)."""
+    """Parse the Google SERP from a Camoufox page.
+
+    Google renders results with JS after domcontentloaded (and serves an
+    'enable JavaScript' retry shell to challenged clients), so wait for the
+    first result heading to actually appear before parsing.
+    """
     search_url = f"https://www.google.com/search?q={quote(query)}&num={count}&hl=en"
     await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
+    try:
+        await page.wait_for_selector("a h3", timeout=8_000)
+    except Exception:
+        pass  # shell/challenge page — the evaluate below returns []
     await page.wait_for_timeout(int(NAV_DELAY))
     return await page.evaluate(
         """
@@ -692,6 +731,44 @@ async def _serp_ddg(page, query: str, count: int) -> list[dict[str, str]]:
         """,
         count,
     )
+
+
+async def _serp_ddg_lite(page, query: str, count: int) -> list[dict[str, str]]:
+    """Parse the DuckDuckGo Lite SERP (lite.duckduckgo.com) — a minimal,
+    JS-free table layout that is rarely challenged and trivial to parse."""
+    search_url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
+    await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
+    await page.wait_for_timeout(int(NAV_DELAY))
+    rows = await page.evaluate(
+        """
+        (count) => {
+            const results = [];
+            for (const a of document.querySelectorAll('a.result-link')) {
+                if (results.length >= count) break;
+                const tr = a.closest('tr');
+                const snippetEl = tr && tr.nextElementSibling
+                    && tr.nextElementSibling.querySelector('.result-snippet');
+                results.push({
+                    title: a.innerText.trim(),
+                    url: a.href,
+                    snippet: snippetEl ? snippetEl.innerText.trim() : '',
+                });
+            }
+            return results;
+        }
+        """,
+        count,
+    )
+    # Lite wraps some URLs in /l/?uddg=<encoded> redirects — unwrap them.
+    return [{**r, "url": _unwrap_ddg_redirect(r["url"])} for r in rows]
+
+
+def _unwrap_ddg_redirect(url: str) -> str:
+    """Extract the real target from a DuckDuckGo /l/?uddg= redirect link."""
+    if "duckduckgo.com/l/" not in url:
+        return url
+    target = parse_qs(urlparse(url).query).get("uddg", [None])[0]
+    return target or url
 
 
 async def health() -> bool:

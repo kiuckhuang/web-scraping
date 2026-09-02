@@ -56,17 +56,28 @@ BRIDGE_CACHE_TTL = float(os.environ.get("BRIDGE_CACHE_TTL", "300"))
 BRIDGE_CACHE_MAX = int(os.environ.get("BRIDGE_CACHE_MAX", "100"))
 BRIDGE_CACHE_MAX_BYTES = int(os.environ.get("BRIDGE_CACHE_MAX_BYTES", str(25 * 1024 * 1024)))
 
-# Search fallbacks — SearXNG's google/duckduckgo can be bot-challenged into
-# returning zero results. When the merged search comes back empty, retry with
-# SearXNG's (disabled-by-default) bing engine, then with the stealth browser
-# scraping real SERPs (google, then duckduckgo). Each stage is env-gated.
+# Search chain — SearXNG's httpx-based engine scraping is routinely
+# bot-challenged into returning zero results, while the stealth browser's
+# real-SERP scraping gets through. SEARCH_PRIMARY picks which transport is
+# queried first:
+#   "searxng" (default) — SearXNG merge, then bing, then browser SERPs
+#   "browser"           — browser SERPs (google → ddg → ddg-lite) first, then SearXNG
+# Bing was dropped from the chain: its result quality proved useless.
 def _env_flag(name: str, default: str = "true") -> bool:
     return os.environ.get(name, default).strip().lower() not in ("", "0", "false", "no", "off")
 
 
-SEARCH_FALLBACK_BING = _env_flag("SEARCH_FALLBACK_BING")
+def _env_engines(name: str, default: str) -> tuple[str, ...]:
+    """Comma-separated browser SERP engine order ("google,duckduckgo,...")."""
+    raw = os.environ.get(name, default)
+    engines = tuple(e.strip() for e in raw.split(",") if e.strip())
+    return engines or tuple(default.split(","))
+
+
+SEARCH_PRIMARY = os.environ.get("SEARCH_PRIMARY", "searxng").strip().lower()
+SEARCH_FALLBACK_BING = _env_flag("SEARCH_FALLBACK_BING", "false")
 SEARCH_FALLBACK_BROWSER = _env_flag("SEARCH_FALLBACK_BROWSER")
-BROWSER_SEARCH_ENGINES: tuple[str, ...] = ("google", "duckduckgo")
+BROWSER_SEARCH_ENGINES: tuple[str, ...] = _env_engines("BROWSER_SEARCH_ENGINES", "google,duckduckgo,duckduckgo lite")
 
 
 @asynccontextmanager
@@ -233,15 +244,16 @@ async def health_check() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-#  Search (SearXNG, with bing + stealth-browser fallbacks)
+#  Search (SearXNG merge and/or stealth-browser SERPs — order via SEARCH_PRIMARY)
 # ---------------------------------------------------------------------------
 
 def _fallback_allowed(categories: str | None, pageno: int, query: str) -> bool:
-    """Fallbacks apply to plain first-page general web searches only.
+    """The browser-SERP / bing stages apply to plain first-page general
+    web searches only.
 
     - categories must be unset or include "general" (browser SERPs are web
       searches — they cannot serve images/news/it categories).
-    - only page 1 (SERP fallbacks fetch page 1; deeper pages stay SearXNG-only).
+    - only page 1 (browser SERPs fetch page 1; deeper pages stay SearXNG-only).
     - an explicit "!bang" in the query means the caller is directing engines
       themselves — never second-guess that.
     """
@@ -250,6 +262,84 @@ def _fallback_allowed(categories: str | None, pageno: int, query: str) -> bool:
     if not categories:
         return True
     return "general" in [c.strip().lower() for c in categories.split(",")]
+
+
+async def _stage_searxng(
+    q: str, *, categories: str | None, language: str, pageno: int,
+    time_range: str | None, safesearch: int, max_results: int,
+) -> dict[str, Any] | None:
+    """SearXNG merged search. Returns the response — possibly with zero
+    results (so its unresponsive_engines stay available to later stages);
+    None only when SearXNG itself failed."""
+    try:
+        return await searxng_search(
+            q,
+            categories=categories,
+            language=language,
+            pageno=pageno,
+            time_range=time_range,
+            safesearch=safesearch,
+            max_results=max_results,
+        )
+    except Exception as exc:
+        logger.warning("SearXNG search failed for %r: %s", q, exc)
+        return None
+
+
+async def _stage_bing(
+    q: str, *, categories: str | None, language: str, safesearch: int, max_results: int,
+    unresponsive: list,
+) -> dict[str, Any] | None:
+    """SearXNG bing stage: the engine is not registered anymore, so force it
+    with an inline "!bing" bang for this query only. None on error/empty."""
+    try:
+        bing = await searxng_search(
+            f"!bing {q}",
+            categories=categories,
+            language=language,
+            safesearch=safesearch,
+            max_results=max_results,
+        )
+        if bing.get("results"):
+            bing["query"] = q
+            bing["fallback"] = "bing"
+            # Surface the *primary* merge's unresponsive engines — that is
+            # the gap the client needs to know about, not the bing query's.
+            bing["unresponsive_engines"] = unresponsive
+            logger.info("Search fallback served %d results via bing for %r", len(bing["results"]), q)
+            return bing
+    except Exception as exc:
+        logger.warning("Bing fallback failed for %r: %s", q, exc)
+    return None
+
+
+async def _stage_browser(q: str, *, max_results: int, unresponsive: list) -> dict[str, Any] | None:
+    """Stealth-browser stage: scrape real SERPs (engine order via
+    BROWSER_SEARCH_ENGINES). Results are normalized to the SearXNG shape."""
+    try:
+        web = await browser_web_search(q, count=max_results, engines=BROWSER_SEARCH_ENGINES)
+        results = [
+            {
+                "title": r.get("title", "Untitled"),
+                "url": r.get("url", ""),
+                "content": (r.get("snippet") or "").strip(),
+                "engine": web.get("engine", "browser"),
+            }
+            for r in web.get("results", [])
+            if r.get("url")
+        ]
+        if results:
+            logger.info("Search fallback served %d results via browser:%s for %r", len(results), web.get("engine"), q)
+            return {
+                "query": q,
+                "number_of_results": len(results),
+                "results": results[:max_results],
+                "unresponsive_engines": unresponsive,
+                "fallback": f"browser:{web.get('engine')}",
+            }
+    except Exception as exc:
+        logger.warning("Browser search fallback failed for %r: %s", q, exc)
+    return None
 
 
 async def _search_with_fallbacks(
@@ -262,92 +352,55 @@ async def _search_with_fallbacks(
     safesearch: int,
     max_results: int,
 ) -> dict[str, Any]:
-    """SearXNG merged search, degrading gracefully when it yields nothing.
+    """Search with graceful degradation across transports.
 
-    Chain: SearXNG (google w=1.2 → duckduckgo → …) → SearXNG "!bing" forced
-    query → Camoufox SERP (google, then duckduckgo). Each stage runs only if
-    the previous one returned zero results; stage errors are logged and
-    skipped. A response served by a fallback carries a "fallback" field
-    ("bing" / "browser:google" / "browser:duckduckgo").
+    Stage order (SEARCH_PRIMARY):
+      "searxng" — SearXNG merge → SearXNG "!bing" → Camoufox SERPs → SearXNG
+      "browser" — Camoufox SERPs → SearXNG merge
+    Each stage runs only if the previous one returned zero results; stage
+    errors are logged and skipped. A response served by a non-primary stage
+    carries a "fallback" field ("bing" / "browser:google" / ...).
     """
-    primary_error: Exception | None = None
-    primary: dict[str, Any] | None = None
-    try:
-        primary = await searxng_search(
-            q,
-            categories=categories,
-            language=language,
-            pageno=pageno,
-            time_range=time_range,
-            safesearch=safesearch,
-            max_results=max_results,
+    if SEARCH_PRIMARY == "browser":
+        stage_names = (["browser"] if SEARCH_FALLBACK_BROWSER else []) + ["searxng"]
+    else:
+        stage_names = (
+            ["searxng"]
+            + (["bing"] if SEARCH_FALLBACK_BING else [])
+            + (["browser"] if SEARCH_FALLBACK_BROWSER else [])
         )
-        if primary.get("results"):
-            return primary
-    except Exception as exc:
-        primary_error = exc
-        logger.warning("SearXNG search failed for %r: %s", q, exc)
 
-    # Gated off (or already past page 1) → no fallback: return the empty
-    # primary as-is, or surface the failure if SearXNG itself errored.
-    if not _fallback_allowed(categories, pageno, q):
-        if primary is not None:
-            return primary
-        raise HTTPException(status_code=502, detail=f"SearXNG error: {primary_error}")
-
-    unresponsive = (primary or {}).get("unresponsive_engines", [])
-
-    # Stage 2 — SearXNG bing (registered but disabled; the bang activates it
-    # for this query only, so normal searches never see bing results).
-    if SEARCH_FALLBACK_BING:
-        try:
-            bing = await searxng_search(
-                f"!bing {q}",
-                categories=categories,
-                language=language,
-                safesearch=safesearch,
-                max_results=max_results,
+    searxng_result: dict[str, Any] | None = None
+    for stage in stage_names:
+        if stage == "searxng":
+            searxng_result = await _stage_searxng(
+                q, categories=categories, language=language, pageno=pageno,
+                time_range=time_range, safesearch=safesearch, max_results=max_results,
             )
-            if bing.get("results"):
-                bing["query"] = q
-                bing["fallback"] = "bing"
-                # Surface the *primary* merge's unresponsive engines — that is
-                # the gap the client needs to know about, not the bing query's.
-                bing["unresponsive_engines"] = unresponsive
-                logger.info("Search fallback served %d results via bing for %r", len(bing["results"]), q)
-                return bing
-        except Exception as exc:
-            logger.warning("Bing fallback failed for %r: %s", q, exc)
+            if searxng_result is not None and searxng_result.get("results"):
+                return searxng_result
+        elif stage in ("bing", "browser"):
+            # Both fallback stages are page-1 general-web searches — gated.
+            if not _fallback_allowed(categories, pageno, q):
+                continue
+            # In searxng-primary mode the merge ran first; surface its gap.
+            unresponsive = (searxng_result or {}).get("unresponsive_engines", [])
+            if stage == "bing":
+                served = await _stage_bing(
+                    q, categories=categories, language=language, safesearch=safesearch,
+                    max_results=max_results, unresponsive=unresponsive,
+                )
+            else:
+                served = await _stage_browser(q, max_results=max_results, unresponsive=unresponsive)
+            if served is not None:
+                return served
 
-    # Stage 3 — stealth browser scraping real SERPs (google, then ddg).
-    if SEARCH_FALLBACK_BROWSER:
-        try:
-            web = await browser_web_search(q, count=max_results, engines=BROWSER_SEARCH_ENGINES)
-            results = [
-                {
-                    "title": r.get("title", "Untitled"),
-                    "url": r.get("url", ""),
-                    "content": (r.get("snippet") or "").strip(),
-                    "engine": web.get("engine", "browser"),
-                }
-                for r in web.get("results", [])
-                if r.get("url")
-            ]
-            if results:
-                logger.info("Search fallback served %d results via browser:%s for %r", len(results), web.get("engine"), q)
-                return {
-                    "query": q,
-                    "number_of_results": len(results),
-                    "results": results[:max_results],
-                    "unresponsive_engines": unresponsive,
-                    "fallback": f"browser:{web.get('engine')}",
-                }
-        except Exception as exc:
-            logger.warning("Browser search fallback failed for %r: %s", q, exc)
-
-    if primary is not None:
-        return primary
-    raise HTTPException(status_code=502, detail=f"All search backends failed; last error: {primary_error}")
+    if searxng_result is not None:
+        return searxng_result
+    raise HTTPException(
+        status_code=502,
+        detail=f"All search stages failed (stages tried: {', '.join(stage_names) or 'none enabled'})",
+    )
 
 
 @app.get("/search")
@@ -360,8 +413,9 @@ async def search(
     safesearch: int = Query(0, ge=0, le=2),
     max_results: int = Query(10, ge=1, le=50),
 ) -> dict[str, Any]:
-    """Search the web via SearXNG, falling back to bing and then to stealth-
-    browser SERPs (google/duckduckgo) when the merged search returns nothing."""
+    """Search the web, degrading across transports (SEARCH_PRIMARY): SearXNG
+    merge and stealth-browser SERPs (google/duckduckgo/duckduckgo lite) in the
+    configured order; the non-primary transport serves as the fallback."""
     return await _search_with_fallbacks(
         q,
         categories=categories,
@@ -519,9 +573,12 @@ async def web_search(
     q: str = Query(..., min_length=1, max_length=1000, description="Search query"),
     count: int = Query(10, ge=1, le=30),
 ) -> dict[str, Any]:
-    """Web search through the stealth browser (real browser, no SERP API)."""
+    """Web search through the stealth browser (real browser, no SERP API).
+
+    Tries BROWSER_SEARCH_ENGINES in order (google → duckduckgo → duckduckgo
+    lite by default), returning the first engine that yields results."""
     try:
-        return await browser_web_search(q, count=count)
+        return await browser_web_search(q, count=count, engines=BROWSER_SEARCH_ENGINES)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Browser search error: {exc}")
 
