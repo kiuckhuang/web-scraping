@@ -82,6 +82,15 @@ covers the conventions and non-obvious decisions you must not regress.
     the Dockerfile) — never download it at container start. `CAMOUFOX_GEOIP`
     auto-enables with a proxy; the launcher retries once without geoip if the
     launch-time IP lookup fails, so a flaky lookup cannot crash-loop.
+11. **Jina AI is opt-in and last-resort** — `JINA_ENABLED=false` by default;
+    when enabled, `s.jina.ai` (search) only fires after SearXNG *and* browser
+    SERPs return nothing, and `r.jina.ai` (scrape) only after the Camoufox
+    browser fails (WAF/anti-bot hard blocks — never for named sessions). It
+    is a paid third-party API (key in `.env`, ≥10k tokens per search):
+    do not flip the default, reorder the chains to put Jina earlier, or add
+    automatic retries — 429s surface Jina's `retryAfter` instead. The client
+    is `bridge/bridge/jina_client.py`; `/jina_search` and `/jina_scrape` are
+    the explicit endpoints (SSRF-validated like every URL-fetching endpoint).
 
 ## Style
 

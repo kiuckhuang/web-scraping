@@ -56,6 +56,11 @@ MCP_SNIPPET_CHARS = int(os.environ.get("MCP_SNIPPET_CHARS", "300"))
 MCP_CONTENT_CHARS = int(os.environ.get("MCP_CONTENT_CHARS", "5000"))
 MCP_COMBINED_CHARS = int(os.environ.get("MCP_COMBINED_CHARS", "1200"))
 
+# Optional Jina AI integration — the tools are only advertised when the bridge
+# has the integration enabled (same .env flag, passed through compose). Off by
+# default: a paid third-party API must not surface in the tool list silently.
+JINA_ENABLED = os.environ.get("JINA_ENABLED", "false").strip().lower() not in ("", "0", "false", "no", "off")
+
 # Security knobs
 MCP_SESSION_TTL = float(os.environ.get("MCP_SESSION_TTL", "1800"))  # idle session lifetime (s)
 MCP_RATE_LIMIT = int(os.environ.get("MCP_RATE_LIMIT", "120"))  # requests/minute/IP, 0 = unlimited
@@ -233,6 +238,38 @@ TOOLS: list[Tool] = [
     ),
 ]
 
+# Optional Jina AI tools — appended only when the integration is enabled
+# (JINA_ENABLED in .env, mirrored into the mcp container by compose). When
+# disabled the tools stay out of tools/list; calling them anyway still fails
+# cleanly (the bridge answers 503 with an explanatory message).
+if JINA_ENABLED:
+    TOOLS += [
+        Tool(
+            name="jina_search",
+            description="Search via the Jina AI Search API (s.jina.ai) — optional transport (JINA_ENABLED), also applied automatically as the last-resort search fallback. Requires JINA_API_KEY; each request bills >=10k tokens server-side.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "max_results": {"type": "integer", "description": "Max results (1-20, default 5)", "default": 5},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="jina_scrape",
+            description="Scrape a URL via the Jina AI Reader API (r.jina.ai) — cloud-rendered markdown (extract) or raw HTML+text (fetch). Optional transport (JINA_ENABLED); useful when the stealth browser cannot serve a WAF-protected page.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to scrape"},
+                    "mode": {"type": "string", "enum": ["extract", "fetch"], "description": "'extract' = clean markdown, 'fetch' = raw HTML+text", "default": "extract"},
+                },
+                "required": ["url"],
+            },
+        ),
+    ]
+
 
 async def _list_tools_handler(_ctx, _params):
     return ListToolsResult(tools=TOOLS)
@@ -305,6 +342,21 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
                 count=arguments.get("count", 10),
             )
             return CallToolResult(content=[TextContent(type="text", text=_format_search_results(result))])
+
+        elif name == "jina_search":
+            result = await _api_get(
+                "/jina_search",
+                q=arguments["query"],
+                max_results=arguments.get("max_results", 5),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=_format_search_results(result))])
+
+        elif name == "jina_scrape":
+            result = await _api_post("/jina_scrape", {
+                "url": arguments["url"],
+                "mode": arguments.get("mode", "extract"),
+            })
+            return CallToolResult(content=[TextContent(type="text", text=_format_scrape_result(result))])
 
         elif name == "create_session":
             result = await _api_post("/sessions", {"name": arguments["name"]})

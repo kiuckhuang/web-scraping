@@ -151,6 +151,17 @@ Crawl a whole website via the stealth browser (auto-handles SPA/JS + lazy-load).
 
 Web search through the stealth browser (real browser search, not SearXNG). Useful when SearXNG engines are rate-limited.
 
+### `GET /jina_search` and `POST /jina_scrape` (optional)
+
+Explicit access to the optional [Jina AI](https://github.com/jina-ai/reader) transports (disabled unless `JINA_ENABLED=true` in `.env`). `POST /jina_scrape` validates the URL against the same SSRF guard as `/scrape`; named sessions are rejected (the reader is a cookieless cloud fetch).
+
+```bash
+curl 'http://localhost:8000/jina_search?q=podman+tutorial&max_results=5'
+curl -X POST http://localhost:8000/jina_scrape \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://example.com", "mode": "extract"}'
+```
+
 ### `GET /health`
 
 Check status of SearXNG and the Camoufox browser.
@@ -230,6 +241,8 @@ For a **remote** connection, include the token:
 | `search_and_scrape`  | Search + scrape top results (Exa-style combined)         |
 | `crawl_site`         | Crawl a whole site via the stealth browser |
 | `browser_search`     | Web search via the stealth browser (not SearXNG) |
+| `jina_search`        | Search via the Jina AI Search API (only listed when `JINA_ENABLED=true`) |
+| `jina_scrape`        | Scrape via the Jina AI Reader API (only listed when `JINA_ENABLED=true`) |
 | `create_session`     | Create a named long-lived session (login persistence) |
 | `delete_session`     | Close and forget a named session (drops its cookies) |
 | `list_sessions`      | List live session names |
@@ -336,6 +349,14 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `CAMOUFOX_TIMEZONE`     | (auto-derived)           | Browser context timezone; unset = derived from the proxy's egress IP via ip-api.com (through the proxy, once) |
 | `CRAWL_MAX_SECONDS`     | `1800`                   | Wall-clock budget per `/crawl` call (s); `0` = unlimited. Returns partial results when exhausted |
 | `SSRF_DNS_CACHE_TTL`    | `60`                     | TTL (s) for cached SSRF DNS verdicts (`0` disables caching) |
+| `JINA_ENABLED` | `false` | Optional [Jina AI](https://github.com/jina-ai/reader) last-resort fallbacks — when `true`, `s.jina.ai` (search) and `r.jina.ai` (scrape) only fire **after** SearXNG/browser search and the Camoufox browser have failed (WAF/anti-bot blocks) |
+| `JINA_API_KEY` | (unset) | Bearer key from [jina.ai](https://jina.ai/?sui=apikey) — required for `s.jina.ai` (bills ≥10k tokens/request); raises `r.jina.ai` from 20 to 500 RPM |
+| `JINA_SEARCH_FALLBACK` | `true` | Append the Jina search stage after every self-hosted search transport (implies `JINA_ENABLED`) |
+| `JINA_SCRAPE_FALLBACK` | `true` | Use the Jina reader when the stealth browser cannot scrape a URL (implies `JINA_ENABLED`; never for named sessions) |
+| `JINA_TIMEOUT` | `60` | Jina API timeout (s) — a search fetches ~5 full pages server-side |
+| `JINA_PROXY` | (unset) | Egress proxy for Jina API calls; overrides `EGRESS_PROXY` (unset = inherit it, else direct) |
+| `JINA_READER_URL` | `https://r.jina.ai` | Reader endpoint — `https://eu.r.jina.ai` for EU residency, or a self-hosted OSS reader |
+| `JINA_SEARCH_URL` | `https://s.jina.ai` | Search endpoint — `https://eu.s.jina.ai` for EU residency |
 | `LOG_LEVEL`             | `INFO`                   | Log level for the bridge and MCP services (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 | `PORT_CAMOUFOX`         | `9223`                   | Host (loopback) port for direct access to the ws-camoufox container |
 | `BRIDGE_URL`            | `http://bridge:8000`     | Bridge URL used by MCP (container-internal) |
@@ -468,6 +489,24 @@ CAMOUFOX_GEOIP=auto                         # default
 - Proxy quality is part of stealth: residential/mobile exits fare far better
   against Cloudflare/DataDome than datacenter ranges.
 
+### Optional Jina AI last-resort fallbacks
+
+The stack is self-hosted by design; [Jina AI](https://github.com/jina-ai/reader)'s hosted Reader/Search APIs are integrated as an **opt-in, last-resort** safety net for pages that defeat it:
+
+- **Search** (`s.jina.ai`) — consulted only when SearXNG **and** the stealth-browser SERPs both returned nothing (and only for plain first-page general web searches, like the other fallbacks).
+- **Scrape** (`r.jina.ai`) — consulted only when the Camoufox browser **cannot serve a page at all** (typically WAF / anti-bot hard blocks); rendering happens in Jina's cloud, which survives blocks that defeat both your IP and your browser. Never used for named sessions (login cookies must not touch a third-party fetch).
+
+Enable it in `.env`:
+
+```bash
+JINA_ENABLED=true
+JINA_API_KEY=jina_xxx        # from https://jina.ai/?sui=apikey
+```
+
+Cost model (verified 2026-09): the free key grants 10M tokens; `s.jina.ai` **requires** the key and bills a fixed ≥10k tokens per request, while `r.jina.ai` works keyless at 20 RPM/IP (500 RPM with the key). Failed Jina calls degrade back to the normal error paths — requests are never retried automatically, and 429s surface Jina's own `retryAfter`. Granular kill switches (`JINA_SEARCH_FALLBACK` / `JINA_SCRAPE_FALLBACK`), the timeout, an egress proxy, and self-host/EU endpoint overrides are in the env table above. `/health` reports the configured state under `services.jina` (`off` / `anonymous` / `ready`) without affecting the overall status.
+
+The client (`bridge/bridge/jina_client.py`) implements just the two endpoints it needs; the full request/response surface lives upstream — see the [jina-ai/reader](https://github.com/jina-ai/reader) repo and the live specs at `r.jina.ai/openapi.json` / `s.jina.ai/openapi.json` (no API documents are vendored in this repo).
+
 ## Security
 
 ### Network segmentation
@@ -534,6 +573,8 @@ web-scraping/
 │       ├── main.py             # FastAPI REST API
 │       ├── searxng_client.py   # SearXNG JSON API client
 │       ├── browser_client.py   # Camoufox client (Playwright websocket)
+│       ├── http_client.py      # HTTP fast path (curl_cffi, shaped TLS)
+│       ├── jina_client.py      # optional Jina AI last-resort transports
 │       └── ssrf.py             # shared SSRF guard (edge + browser-side)
 └── mcp/
     ├── Dockerfile              # Python 3.12 + mcp + httpx (lightweight)

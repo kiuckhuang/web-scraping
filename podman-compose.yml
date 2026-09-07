@@ -208,6 +208,17 @@ services:
       - CRAWL_MAX_SECONDS=${CRAWL_MAX_SECONDS:-1800}
       # TTL (s) for cached SSRF DNS verdicts (0 disables caching)
       - SSRF_DNS_CACHE_TTL=${SSRF_DNS_CACHE_TTL:-60}
+      # Optional Jina AI last-resort fallbacks (default off — see .env.example).
+      # When enabled, s.jina.ai/r.jina.ai only fire after SearXNG search and
+      # the Camoufox browser both failed (WAF/anti-bot hard blocks).
+      - JINA_ENABLED=${JINA_ENABLED:-false}
+      - JINA_API_KEY=${JINA_API_KEY:-}
+      - JINA_SEARCH_FALLBACK=${JINA_SEARCH_FALLBACK:-true}
+      - JINA_SCRAPE_FALLBACK=${JINA_SCRAPE_FALLBACK:-true}
+      - JINA_TIMEOUT=${JINA_TIMEOUT:-60}
+      - JINA_PROXY=${JINA_PROXY:-}
+      - JINA_READER_URL=${JINA_READER_URL:-https://r.jina.ai}
+      - JINA_SEARCH_URL=${JINA_SEARCH_URL:-https://s.jina.ai}
       - CAMOUFOX_WS_URL=${CAMOUFOX_WS_URL:-ws://camoufox:9222/browser}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
@@ -267,6 +278,9 @@ services:
       - MCP_SNIPPET_CHARS=${MCP_SNIPPET_CHARS:-300}
       - MCP_CONTENT_CHARS=${MCP_CONTENT_CHARS:-5000}
       - MCP_COMBINED_CHARS=${MCP_COMBINED_CHARS:-1200}
+      # Mirrors the bridge's Jina flag: the jina_search/jina_scrape tools are
+      # only advertised when the integration is enabled (default off)
+      - JINA_ENABLED=${JINA_ENABLED:-false}
     depends_on:
       bridge:
         condition: service_healthy
