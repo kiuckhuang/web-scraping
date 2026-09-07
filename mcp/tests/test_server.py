@@ -579,3 +579,31 @@ def test_format_search_results_no_fallback_note_on_primary_results():
     result = {"number_of_results": 1, "results": [{"title": "A", "url": "https://a.com"}]}
     out = server_mod._format_search_results(result)
     assert "fallback" not in out
+
+
+# ---------------------------------------------------------------------------
+#  Optional Jina tools — advertised only when JINA_ENABLED reaches the module
+# ---------------------------------------------------------------------------
+
+def _tool_names_with_jina_env(monkeypatch, value: str) -> set[str]:
+    """TOOLS is built at import time — reload under a controlled env value.
+
+    The final reload (value="false") leaves the module in the same state the
+    default environment produces, so other tests are unaffected.
+    """
+    import importlib
+
+    monkeypatch.setenv("JINA_ENABLED", value)
+    reloaded = importlib.reload(server_mod)
+    return {tool.name for tool in reloaded.TOOLS}
+
+
+def test_jina_tools_listed_when_enabled(monkeypatch):
+    names = _tool_names_with_jina_env(monkeypatch, "true")
+    assert {"jina_search", "jina_scrape"} <= names
+
+
+def test_jina_tools_absent_by_default(monkeypatch):
+    names = _tool_names_with_jina_env(monkeypatch, "false")
+    assert "jina_search" not in names
+    assert "jina_scrape" not in names
