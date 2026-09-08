@@ -230,7 +230,7 @@ For a **remote** connection, include the token:
 }
 ```
 
-> **Auth model:** Localhost (and podman-forwarded host connections) bypass auth automatically based on the container's trusted subnet. Remote clients must send `Authorization: Bearer <MCP_API_KEY>`. Set the key in `.env` (`MCP_API_KEY`) — `make init` generates one automatically.
+> **Auth model:** Localhost (and podman-forwarded host connections) bypass auth automatically based on the container's trusted subnet. Remote clients must send `Authorization: Bearer <MCP_API_KEY>`. Set the key in `.env` (`MCP_API_KEY`) — `make init` generates one automatically and preserves it across re-runs.
 
 ### MCP Tools
 
@@ -409,8 +409,13 @@ scrape calls, use **named sessions** (see the bridge `POST /sessions` API and th
 uBlock Origin ships inside the Camoufox browser build — no extension init
 machinery needed.
 
-`make up`, `make rebuild`, and `make update` run `make init` automatically. A
-complete fresh setup is therefore:
+`make up`, `make rebuild`, and `make update` run `make init` automatically.
+`make init` **merges**: it re-renders `.env` from the current `.env.example`
+(picking up new keys and refreshed comments) while preserving every value you
+already have — including `MCP_API_KEY`, so remote clients keep working across
+stack updates. You normally never need to delete `.env`; only delete it when
+you want a full secret rotation, which invalidates the configured MCP bearer
+token:
 
 ```bash
 rm -f .env
@@ -588,7 +593,7 @@ web-scraping/
 ### Makefile (recommended)
 
 ```bash
-make init      # Create .env with UID/GID and secret key
+make init      # Create/refresh .env (preserves existing values incl. MCP_API_KEY)
 make up        # Start all services
 make build     # Build images
 make test      # Unit + integration tests

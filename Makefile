@@ -2,7 +2,7 @@
 #  Makefile — automated build, run, test for web-scraping stack
 #
 #  Quick start:
-#    make init      # first run only — creates .env with your UID/GID
+#    make init      # create or refresh .env (existing values preserved)
 #    make up        # start all services
 #    make           # show this help
 # =============================================================================
@@ -17,7 +17,7 @@ help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Targets:"
-	@echo "  init      — Create .env from .env.example with your host UID/GID"
+	@echo "  init      — Create/refresh .env from .env.example (existing values, incl. MCP_API_KEY, are preserved; delete .env to rotate all secrets)"
 	@echo "  build     — Build bridge and mcp images"
 	@echo "  up        — Start all services (podman compose up -d)"
 	@echo "  down      — Stop all services"
