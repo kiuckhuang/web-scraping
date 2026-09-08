@@ -9,10 +9,10 @@ services:
   #  Network: internal only. No host ports.
   # ---------------------------------------------------------------------------
   valkey:
-    # Pinned to 9.1.1: current stable major; includes the 2026 security fixes
-    # (CVE-2025-67733, CVE-2026-21863/21864, CVE-2026-23479/23631/25243,
+    # Pinned to 9.1.2: current stable patch on the 9.1 major; includes the 2026
+    # security fixes (CVE-2025-67733, CVE-2026-21863/21864, CVE-2026-23479/23631/25243,
     # CVE-2026-56684/63639).
-    image: docker.io/valkey/valkey:9.1.1-alpine
+    image: docker.io/valkey/valkey:9.1.2-alpine
     container_name: ws-valkey
     restart: unless-stopped
     mem_limit: 256m
@@ -42,7 +42,7 @@ services:
   #  Network: internal only
   # ---------------------------------------------------------------------------
   searxng:
-    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.8.28-a30b2d474}
+    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.9.8-3fdc6d753}
     container_name: ws-searxng
     restart: unless-stopped
     mem_limit: 1g

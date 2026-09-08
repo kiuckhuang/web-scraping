@@ -63,7 +63,7 @@ MAX_SESSIONS = int(os.environ.get("CAMOUFOX_MAX_SESSIONS", "16"))
 CRAWL_MAX_SECONDS = float(os.environ.get("CRAWL_MAX_SECONDS", "1800"))
 # Playwright's remote protocol enforces client/server minor-version parity
 # (the server answers 428 on mismatch); the camoufox image pins playwright
-# 1.60.x (camoufox 0.5.5 requires <1.61) — keep bridge/pyproject.toml on the
+# 1.62.x (camoufox 0.5.6 requires <1.63) — keep bridge/pyproject.toml on the
 # same line and bump both pins together (see AGENTS.md).
 WAF_MARKERS = (
     "just a moment",
