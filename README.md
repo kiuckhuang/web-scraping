@@ -249,7 +249,7 @@ For a **remote** connection, include the token:
 
 ## Using Camoufox Directly (Playwright WS)
 
-The `ws-camoufox` container exposes a Playwright websocket endpoint on host port 9223. You can connect your own [Playwright](https://playwright.dev/) automation directly — **your Playwright client must be the same minor version as the server (1.60.x)**, since Playwright's remote protocol rejects mismatched clients:
+The `ws-camoufox` container exposes a Playwright websocket endpoint on host port 9223. You can connect your own [Playwright](https://playwright.dev/) automation directly — **your Playwright client must be the same minor version as the server (1.62.x)**, since Playwright's remote protocol rejects mismatched clients:
 
 ```python
 from playwright.sync_api import sync_playwright
@@ -307,7 +307,7 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | Variable                | Default                  | Description                          |
 |-------------------------|--------------------------|--------------------------------------|
 | `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
-| `SEARXNG_CHANNEL`       | `2026.8.28-a30b2d474`   | SearXNG image tag (change deliberately when updating) |
+| `SEARXNG_CHANNEL`       | `2026.9.8-3fdc6d753`    | SearXNG image tag (change deliberately when updating) |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
 | `SEARXNG_REQUEST_TIMEOUT` | `10`                   | Outgoing request timeout (s) per engine |
 | `SEARXNG_MAX_REQUEST_TIMEOUT` | `15`              | Max allowed request timeout (s)     |
@@ -433,8 +433,8 @@ podman volume rm web-scraping_fortress-profile
 
 What to know:
 
-- The `ws-camoufox` container pins the Camoufox package (0.5.5) **and** the browser build (`152.0.4-beta.29`) at image build time — nothing is downloaded at container start.
-- **Playwright version parity is mandatory**: the bridge and the Camoufox image must run the same Playwright *minor* (the server rejects mismatched clients with HTTP 428). Both are pinned to 1.60.x because Camoufox 0.5.5 requires `playwright<1.61`. When Camoufox ships support for a newer Playwright, bump both pins together (see AGENTS.md).
+- The `ws-camoufox` container pins the Camoufox package (0.5.6) **and** the browser build (`152.0.4-beta.30`) at image build time — nothing is downloaded at container start.
+- **Playwright version parity is mandatory**: the bridge and the Camoufox image must run the same Playwright *minor* (the server rejects mismatched clients with HTTP 428). Both are pinned to 1.62.x because Camoufox 0.5.6 requires `playwright<1.63`. When Camoufox ships support for a newer Playwright, bump both pins together (see AGENTS.md).
 - The browser is plain headless (`headless='virtual'`/Xvfb is not wired through Camoufox's server mode yet) and serves a **single browser instance with a fixed fingerprint**, with per-request context isolation.
 - **No persistent profile in server mode**: Playwright's `launchServer` cannot serve a persistent context over a websocket, so cookies/storage do not survive a container restart. Use **named sessions** for login persistence across scrape calls.
 - The websocket endpoint has no built-in token auth; it stays on the `internal` network and is published to `127.0.0.1:9223` only (loopback).
@@ -562,7 +562,7 @@ web-scraping/
 │   └── limiter.toml            # rate limiter config
 ├── searxng-entrypoint.sh       # renders settings, then runs upstream entrypoint
 ├── camoufox/
-│   ├── Dockerfile              # Python 3.12 + camoufox 0.5.5 + browser build (pinned)
+│   ├── Dockerfile              # Python 3.12 + camoufox 0.5.6 + browser build (pinned)
 │   └── launcher.py             # launches the Playwright websocket server
 ├── bridge/
 │   ├── Dockerfile              # Python 3.12 + FastAPI + Playwright
@@ -682,7 +682,7 @@ Remaining blocks are commonly caused by target-site policy or IP reputation. The
 
 ### Bridge can't connect to Camoufox
 
-Check the container is healthy: `podman ps` (ws-camoufox should be `healthy`) and `podman logs ws-camoufox` (expect `Websocket endpoint: ws://0.0.0.0:9222/browser`). The bridge health probe is a plain TCP connect to the websocket port; `curl http://localhost:8000/health` shows the browser status. Also confirm your Playwright client minor version matches the server's (1.60.x) — mismatched clients are rejected with HTTP 428.
+Check the container is healthy: `podman ps` (ws-camoufox should be `healthy`) and `podman logs ws-camoufox` (expect `Websocket endpoint: ws://0.0.0.0:9222/browser`). The bridge health probe is a plain TCP connect to the websocket port; `curl http://localhost:8000/health` shows the browser status. Also confirm your Playwright client minor version matches the server's (1.62.x) — mismatched clients are rejected with HTTP 428.
 
 ### Port conflicts
 

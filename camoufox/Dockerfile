@@ -20,9 +20,9 @@ RUN pip install --no-cache-dir -U pip
 # from the project's GitHub releases at build time — never at container start.
 # playwright is pinned to the same minor as bridge/pyproject.toml: Playwright's
 # remote protocol enforces client/server minor-version parity (HTTP 428 on
-# mismatch), and camoufox 0.5.5 requires playwright <1.61.
-ARG CAMOUFOX_PKG_VERSION=0.5.5
-ARG CAMOUFOX_BROWSER_VERSION=152.0.4-beta.29
+# mismatch), and camoufox 0.5.6 requires playwright <1.63.
+ARG CAMOUFOX_PKG_VERSION=0.5.6
+ARG CAMOUFOX_BROWSER_VERSION=152.0.4-beta.30
 # camoufox installs the browser under XDG_CACHE_HOME (platformdirs) — a fixed
 # shared path so the build-time fetch as root is visible to appuser at runtime.
 ENV XDG_CACHE_HOME=/opt/camoufox-cache
@@ -31,7 +31,7 @@ ENV XDG_CACHE_HOME=/opt/camoufox-cache
 # is warmed here at build time — never downloaded at container start.
 RUN pip install --no-cache-dir \
         "camoufox[geoip]==${CAMOUFOX_PKG_VERSION}" \
-        "playwright==1.60.0" \
+        "playwright==1.62.0" \
     && python -m camoufox set "official/stable/${CAMOUFOX_BROWSER_VERSION}" \
     && python -m camoufox fetch \
     && python -c "from camoufox.geolocation import download_mmdb; download_mmdb()" \

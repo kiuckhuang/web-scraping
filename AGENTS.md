@@ -51,8 +51,8 @@ covers the conventions and non-obvious decisions you must not regress.
 4. **Playwright client/server version parity (Camoufox)** — Playwright's
    remote protocol enforces *minor*-version parity (the server rejects
    mismatched clients with HTTP 428), and the camoufox image's driver is
-   pinned by camoufox 0.5.5 to playwright 1.60.x. `bridge/pyproject.toml`
-   therefore pins `playwright==1.60.0`. Bump the bridge pin and the camoufox
+   pinned by camoufox 0.5.6 to playwright 1.62.x. `bridge/pyproject.toml`
+   therefore pins `playwright==1.62.0`. Bump the bridge pin and the camoufox
    Dockerfile pin **together**, and only once Camoufox upstream supports the
    new minor.
 5. **SSRF defense in depth** — URLs are validated at the bridge edge
