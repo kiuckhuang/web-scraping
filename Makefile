@@ -9,7 +9,7 @@
 
 CONTAINER := podman
 
-.PHONY: all init build up down logs test test-unit test-unit-host test-scrape doctor rebuild clean update help
+.PHONY: all init ensure-env build up down logs test test-unit test-unit-host test-scrape doctor rebuild clean update help
 
 all: help
 
@@ -17,7 +17,7 @@ help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Targets:"
-	@echo "  init      — Create/refresh .env from .env.example (existing values, incl. MCP_API_KEY, are preserved; delete .env to rotate all secrets)"
+	@echo "  init      — Create/refresh .env from .env.example (merge: preserves existing values incl. MCP_API_KEY; delete .env to rotate all secrets)"
 	@echo "  build     — Build bridge and mcp images"
 	@echo "  up        — Start all services (podman compose up -d)"
 	@echo "  down      — Stop all services"
@@ -37,10 +37,16 @@ init:
 	@python3 scripts/init.py
 	@echo "environment ready"
 
+# Dependency-safe variant used by up/rebuild/update: creates .env when
+# missing, never touches an existing one. Explicit `make init` is what
+# merges .env.example updates into an existing file.
+ensure-env:
+	@python3 scripts/init.py --ensure
+
 build:
 	$(CONTAINER) compose build
 
-up: init
+up: ensure-env
 	$(CONTAINER) compose up -d
 
 down:
@@ -140,11 +146,11 @@ doctor:
 	@./scripts/doctor.sh
 
 
-rebuild: init down
+rebuild: ensure-env down
 	rm -rf bridge/__pycache__ mcp/__pycache__ scripts/__pycache__
 	$(MAKE) build up
 
-update: init down
+update: ensure-env down
 	$(CONTAINER) compose pull
 	$(MAKE) build up
 

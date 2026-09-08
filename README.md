@@ -409,13 +409,14 @@ scrape calls, use **named sessions** (see the bridge `POST /sessions` API and th
 uBlock Origin ships inside the Camoufox browser build — no extension init
 machinery needed.
 
-`make up`, `make rebuild`, and `make update` run `make init` automatically.
-`make init` **merges**: it re-renders `.env` from the current `.env.example`
-(picking up new keys and refreshed comments) while preserving every value you
-already have — including `MCP_API_KEY`, so remote clients keep working across
-stack updates. You normally never need to delete `.env`; only delete it when
-you want a full secret rotation, which invalidates the configured MCP bearer
-token:
+`make up`, `make rebuild`, and `make update` only create `.env` if it is
+missing — they never modify an existing one. Refreshing is explicit: `make
+init` **merges** the current `.env.example` into your `.env` (picking up new
+keys and refreshed comments while preserving every value you already have,
+including `MCP_API_KEY`, so remote clients keep working across stack
+updates). Run it after pulling stack changes if the template gained keys.
+Delete `.env` only when you want a full secret rotation, which invalidates
+the configured MCP bearer token:
 
 ```bash
 rm -f .env
