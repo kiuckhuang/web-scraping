@@ -42,7 +42,7 @@ services:
   #  Network: internal only
   # ---------------------------------------------------------------------------
   searxng:
-    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.9.8-3fdc6d753}
+    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.9.15-ca4965040}
     container_name: ws-searxng
     restart: unless-stopped
     mem_limit: 1g
