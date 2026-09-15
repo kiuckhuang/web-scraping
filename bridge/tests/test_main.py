@@ -122,9 +122,19 @@ def test_rejects_non_http_schemes():
     assert exc.value.status_code == 400
 
 
-def test_rejects_unresolvable_host():
+def test_rejects_unresolvable_host(monkeypatch):
     # .invalid is a reserved TLD that must never resolve — the validator
-    # rejects it rather than letting the browser re-resolve later.
+    # rejects it rather than letting the browser re-resolve later. DNS is
+    # mocked like every network touch in this suite: a real lookup would
+    # make the test depend on the resolver answering NXDOMAIN, and hosts
+    # behind wildcard/NXDOMAIN-hijacking resolvers (campus networks,
+    # sinkholes, some VPNs) answer even for .invalid, skipping the 403.
+    def unresolvable_getaddrinfo(host, *args, **kwargs):
+        if host.endswith(".invalid"):
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return _public_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", unresolvable_getaddrinfo)
     with pytest.raises(HTTPException) as exc:
         _validate_public_url("http://definitely-not-a-real-host.invalid/")
     assert exc.value.status_code == 403
