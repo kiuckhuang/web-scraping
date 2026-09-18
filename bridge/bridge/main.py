@@ -9,10 +9,14 @@ Endpoints:
   GET  /web_search          — web search via the stealth browser (not SearXNG)
   GET  /jina_search         — search via Jina AI (optional, requires JINA_ENABLED)
   POST /jina_scrape         — scrape via Jina AI reader (optional, requires JINA_ENABLED)
+  GET  /exa_search          — search via Exa (optional, requires EXA_ENABLED + EXA_API_KEY)
+  POST /exa_scrape          — scrape via Exa contents (optional, requires EXA_ENABLED)
 
 Optional Jina AI (s.jina.ai / r.jina.ai) transports act as LAST resorts when
 enabled (JINA_ENABLED): search only after SearXNG/browser SERPs fail, scrape
 only after the Camoufox browser cannot serve a page (WAF/anti-bot blocks).
+Optional Exa (api.exa.ai) behaves the same when enabled (EXA_ENABLED) and
+stages strictly AFTER the Jina fallbacks.
 """
 
 from __future__ import annotations
@@ -43,6 +47,16 @@ from .browser_client import (
     scrape as browser_scrape,
     search_web as browser_web_search,
     shutdown as browser_shutdown,
+)
+from .exa_client import (
+    EXA_API_KEY,
+    EXA_SCRAPE_FALLBACK,
+    EXA_SEARCH_FALLBACK,
+    ExaError,
+    scrape as exa_scrape,
+    search as exa_search,
+    shutdown as exa_shutdown,
+    status as exa_status,
 )
 from .http_client import (
     Escalation as HttpFastpathEscalation,
@@ -116,11 +130,19 @@ async def lifespan(app: FastAPI):
             JINA_SEARCH_FALLBACK,
             JINA_SCRAPE_FALLBACK,
         )
+    if EXA_SEARCH_FALLBACK or EXA_SCRAPE_FALLBACK:
+        logger.info(
+            "Exa last-resort fallbacks enabled (key: %s) — search: %s, scrape: %s (stage after Jina)",
+            "set" if EXA_API_KEY else "UNSET (every call fails 401 — set EXA_API_KEY)",
+            EXA_SEARCH_FALLBACK,
+            EXA_SCRAPE_FALLBACK,
+        )
     yield
-    logger.info("Bridge shutting down — closing SearXNG/browser/Jina sessions")
+    logger.info("Bridge shutting down — closing SearXNG/browser/Jina/Exa sessions")
     await searxng_shutdown()
     await browser_shutdown()
     await jina_shutdown()
+    await exa_shutdown()
 
 
 app = FastAPI(
@@ -276,6 +298,8 @@ async def health_check() -> dict[str, Any]:
             # Informational only — the optional Jina fallback never degrades
             # the stack ("off" | "anonymous" | "ready").
             "jina": jina_status(),
+            # Same for the optional Exa fallback ("off" | "unconfigured" | "ready").
+            "exa": exa_status(),
         },
     }
 
@@ -398,6 +422,26 @@ async def _stage_jina(q: str, *, max_results: int, unresponsive: list) -> dict[s
     return None
 
 
+async def _stage_exa(q: str, *, max_results: int, unresponsive: list) -> dict[str, Any] | None:
+    """Exa stage (api.exa.ai /search) — fires only after every self-hosted
+    stage AND the Jina fallback returned nothing (or Jina is disabled).
+    Results are normalized to the SearXNG shape; the page texts Exa fetched
+    server-side ride along under "exa_pages" for /search_and_scrape to reuse
+    (stripped by /search).
+    """
+    try:
+        served = await exa_search(q, max_results=max_results)
+    except Exception as exc:
+        logger.warning("Exa search fallback failed for %r: %s", q, exc)
+        return None
+    if served.get("results"):
+        served["fallback"] = "exa"
+        served["unresponsive_engines"] = unresponsive
+        logger.info("Search fallback served %d results via exa for %r", len(served["results"]), q)
+        return served
+    return None
+
+
 async def _search_with_fallbacks(
     q: str,
     *,
@@ -411,13 +455,15 @@ async def _search_with_fallbacks(
     """Search with graceful degradation across transports.
 
     Stage order (SEARCH_PRIMARY):
-      "searxng" — SearXNG merge → SearXNG "!bing" → Camoufox SERPs → Jina
-      "browser" — Camoufox SERPs → SearXNG merge → Jina
+      "searxng" — SearXNG merge → SearXNG "!bing" → Camoufox SERPs → Jina → Exa
+      "browser" — Camoufox SERPs → SearXNG merge → Jina → Exa
     Each stage runs only if the previous one returned zero results; stage
     errors are logged and skipped. A response served by a non-primary stage
-    carries a "fallback" field ("bing" / "browser:google" / "jina"). Jina
-    (s.jina.ai) is the paid cloud LAST resort — JINA_SEARCH_FALLBACK appends
-    it after every self-hosted stage, never before.
+    carries a "fallback" field ("bing" / "browser:google" / "jina" / "exa").
+    Jina (s.jina.ai) is the paid cloud LAST resort — JINA_SEARCH_FALLBACK
+    appends it after every self-hosted stage, never before. Exa (api.exa.ai)
+    is the same kind of opt-in fallback and stages strictly after Jina
+    (EXA_SEARCH_FALLBACK).
     """
     if SEARCH_PRIMARY == "browser":
         stage_names = (["browser"] if SEARCH_FALLBACK_BROWSER else []) + ["searxng"]
@@ -429,6 +475,8 @@ async def _search_with_fallbacks(
         )
     if JINA_SEARCH_FALLBACK:
         stage_names.append("jina")
+    if EXA_SEARCH_FALLBACK:
+        stage_names.append("exa")
 
     searxng_result: dict[str, Any] | None = None
     for stage in stage_names:
@@ -439,7 +487,7 @@ async def _search_with_fallbacks(
             )
             if searxng_result is not None and searxng_result.get("results"):
                 return searxng_result
-        elif stage in ("bing", "browser", "jina"):
+        elif stage in ("bing", "browser", "jina", "exa"):
             # All fallback stages are page-1 general-web searches — gated.
             if not _fallback_allowed(categories, pageno, q):
                 continue
@@ -452,8 +500,10 @@ async def _search_with_fallbacks(
                 )
             elif stage == "browser":
                 served = await _stage_browser(q, max_results=max_results, unresponsive=unresponsive)
-            else:
+            elif stage == "jina":
                 served = await _stage_jina(q, max_results=max_results, unresponsive=unresponsive)
+            else:
+                served = await _stage_exa(q, max_results=max_results, unresponsive=unresponsive)
             if served is not None:
                 return served
 
@@ -477,8 +527,9 @@ async def search(
 ) -> dict[str, Any]:
     """Search the web, degrading across transports (SEARCH_PRIMARY): SearXNG
     merge and stealth-browser SERPs (google/duckduckgo/duckduckgo lite) in the
-    configured order; the non-primary transport serves as the fallback, and
-    Jina AI (s.jina.ai) is the optional last resort."""
+    configured order; the non-primary transport serves as the fallback, Jina
+    AI (s.jina.ai) is the optional last resort, and Exa (api.exa.ai) the
+    optional fallback after it."""
     result = await _search_with_fallbacks(
         q,
         categories=categories,
@@ -488,10 +539,11 @@ async def search(
         safesearch=safesearch,
         max_results=max_results,
     )
-    # Internal channel: the full page reads Jina performed server-side are
+    # Internal channel: the full page reads Jina/Exa performed server-side are
     # meant for /search_and_scrape's reuse — a plain search response must not
     # carry several pages of markdown per result.
     result.pop("jina_pages", None)
+    result.pop("exa_pages", None)
     return result
 
 
@@ -509,9 +561,11 @@ async def _scrape_with_transports(url: str, *, mode: str, session: str | None) -
     in the browser's long-lived cookie contexts — the HTTP path is cookieless.
     When the browser itself cannot serve the page (WAF/anti-bot hard block)
     and JINA_SCRAPE_FALLBACK is on, the Jina reader (r.jina.ai, cloud-side
-    rendering) is the FINAL resort. Fast-path results carry
-    "transport": "http"; Jina results "transport": "jina" (browser results
-    are unchanged).
+    rendering) is the FINAL resort; when that fails too and
+    EXA_SCRAPE_FALLBACK is on, the Exa contents API (cloud-fetched page text)
+    is consulted after it. Fast-path results carry "transport": "http"; Jina
+    results "transport": "jina"; Exa results "transport": "exa" (browser
+    results are unchanged).
     """
     if session is None and HTTP_FASTPATH_ENABLED:
         try:
@@ -537,6 +591,17 @@ async def _scrape_with_transports(url: str, *, mode: str, session: str | None) -
                 return {**content, "transport": "jina"}
             except Exception as jina_exc:
                 logger.warning("Jina reader failed for %s: %s", url, jina_exc)
+        # Even further last resort: the Exa contents API — paid, key-gated,
+        # and only reached after the browser AND the Jina reader both failed.
+        # Same session rule as Jina: never for named sessions.
+        if session is None and EXA_SCRAPE_FALLBACK:
+            logger.warning("Scrape failed for %s (%s) — Exa contents as final resort", url, exc)
+            try:
+                content = await exa_scrape(url, mode=mode)
+                logger.info("Exa contents served %s (mode=%s)", url, mode)
+                return {**content, "transport": "exa"}
+            except Exception as exa_exc:
+                logger.warning("Exa contents failed for %s: %s", url, exa_exc)
         raise
 
 
@@ -590,12 +655,13 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
     if not url_results:
         return {"query": req.query, "results": [], "scraped": [], "fallback": results.get("fallback")}
 
-    # If the Jina stage served the search, Jina already fetched every result
-    # page server-side — reuse those reads instead of paying a second scrape
-    # (and the results only reached Jina after every self-hosted search
-    # transport failed). Markdown-only, so extract mode reuses it; fetch mode
-    # still goes through the local transports.
+    # If the Jina or Exa stage served the search, the page texts were already
+    # fetched server-side — reuse those reads instead of paying a second
+    # scrape (and the results only reached Jina/Exa after every self-hosted
+    # search transport failed). Markdown-only, so extract mode reuses them;
+    # fetch mode still goes through the local transports.
     jina_pages: dict[str, dict[str, str]] = results.pop("jina_pages", None) or {}
+    exa_pages: dict[str, dict[str, str]] = results.pop("exa_pages", None) or {}
 
     async def scrape_one(result: dict) -> dict:
         url = result.get("url", "")
@@ -609,6 +675,10 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
         if cached is not None:
             return {**result, "content": cached, "cached": True}
         page = jina_pages.get(url)
+        transport = "jina"
+        if page is None:
+            page = exa_pages.get(url)
+            transport = "exa"
         if page and req.scrape_mode == "extract":
             content = {
                 "url": url,
@@ -616,7 +686,7 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
                 "markdown": page.get("markdown") or "",
                 "tables": [],
                 "status": 200,
-                "transport": "jina",
+                "transport": transport,
             }
             if _cacheable(content):
                 _cache_set(url, req.scrape_mode, content, req.session)
@@ -767,6 +837,64 @@ async def jina_scrape_endpoint(req: ScrapeRequest) -> dict[str, Any]:
     if _cacheable(content):
         _cache_set(req.url, req.mode, content)
     return {**content, "transport": "jina"}
+
+
+# ---------------------------------------------------------------------------
+#  Exa (optional) — explicit access to the last-resort cloud transports
+# ---------------------------------------------------------------------------
+
+def _exa_http_exception(exc: ExaError) -> HTTPException:
+    """Map an ExaError onto the bridge's HTTP surface (429 carries Retry-After)."""
+    headers = {"Retry-After": str(int(exc.retry_after))} if exc.retry_after else None
+    return HTTPException(status_code=exc.bridge_status, detail=str(exc), headers=headers)
+
+
+@app.get("/exa_search")
+async def exa_search_endpoint(
+    q: str = Query(..., min_length=1, max_length=1000, description="Search query"),
+    max_results: int = Query(5, ge=1, le=20, description="Max results (1-20)"),
+) -> dict[str, Any]:
+    """Search via the Exa API (api.exa.ai /search) — optional transport.
+
+    Requires EXA_ENABLED=true and an EXA_API_KEY (the REST API has no
+    anonymous tier). Returns clean results with page text; the same transport
+    is applied automatically as the final search fallback (after Jina) when
+    enabled.
+    """
+    try:
+        return await exa_search(q, max_results=max_results)
+    except ExaError as exc:
+        raise _exa_http_exception(exc)
+
+
+@app.post("/exa_scrape")
+async def exa_scrape_endpoint(req: ScrapeRequest) -> dict[str, Any]:
+    """Scrape a URL via the Exa Contents API (api.exa.ai /contents) — optional transport.
+
+    Requires EXA_ENABLED=true and an EXA_API_KEY. The page text is fetched in
+    Exa's cloud, so pages whose WAF defeats the local stack can still come
+    through; Exa returns cleaned text, never raw HTML (fetch mode degrades to
+    the cleaned text). Named sessions are rejected — a cookieless third-party
+    fetch must not see login cookies.
+    """
+    await asyncio.to_thread(_validate_public_url, req.url)
+    if req.session:
+        raise HTTPException(
+            status_code=400,
+            detail="Named sessions apply to the stealth browser only — the Exa contents API is a cookieless cloud fetch",
+        )
+    cached = await _cache_get(req.url, req.mode)
+    if cached is not None:
+        return {**cached, "cached": True}
+    try:
+        content = await exa_scrape(req.url, mode=req.mode)
+    except ExaError as exc:
+        raise _exa_http_exception(exc)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Exa scrape error: {exc}")
+    if _cacheable(content):
+        _cache_set(req.url, req.mode, content)
+    return {**content, "transport": "exa"}
 
 
 # ---------------------------------------------------------------------------

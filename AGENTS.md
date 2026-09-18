@@ -91,6 +91,17 @@ covers the conventions and non-obvious decisions you must not regress.
     automatic retries — 429s surface Jina's `retryAfter` instead. The client
     is `bridge/bridge/jina_client.py`; `/jina_search` and `/jina_scrape` are
     the explicit endpoints (SSRF-validated like every URL-fetching endpoint).
+12. **Exa is opt-in and stages strictly after Jina** — `EXA_ENABLED=false` by
+    default; when enabled, `api.exa.ai` (search + contents) fires only after
+    the Jina fallbacks directly above it in both chains (search:
+    SearXNG/browser → Jina → Exa; scrape: browser → Jina → Exa). It is a paid
+    third-party API whose REST surface requires a key (no anonymous tier —
+    `/health` reports `unconfigured` when `EXA_API_KEY` is missing): do not
+    flip the default, reorder the chains to put Exa before Jina, or add
+    automatic retries. Exa returns cleaned page text only (never raw HTML).
+    The client is `bridge/bridge/exa_client.py`; `/exa_search` and
+    `/exa_scrape` are the explicit endpoints (SSRF-validated like every
+    URL-fetching endpoint).
 
 ## Style
 

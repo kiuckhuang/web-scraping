@@ -152,6 +152,10 @@ services:
       args:
         APP_UID: ${APP_UID:-1000}
         APP_GID: ${APP_GID:-1000}
+    # Explicit tag so `compose build` and `compose up` resolve the same image
+    # (same pattern as ws-camoufox; without it podman-compose's
+    # --force-recreate can restart containers from a stale dangling image).
+    image: localhost/web-scraping_bridge:latest
     container_name: ws-bridge
     restart: unless-stopped
     mem_limit: 1g
@@ -219,6 +223,17 @@ services:
       - JINA_PROXY=${JINA_PROXY:-}
       - JINA_READER_URL=${JINA_READER_URL:-https://r.jina.ai}
       - JINA_SEARCH_URL=${JINA_SEARCH_URL:-https://s.jina.ai}
+      # Optional Exa (exa.ai) last-resort fallbacks (default off — see
+      # .env.example). When enabled, api.exa.ai search/contents only fire
+      # after the Jina fallbacks also failed (or Jina is disabled).
+      - EXA_ENABLED=${EXA_ENABLED:-false}
+      - EXA_API_KEY=${EXA_API_KEY:-}
+      - EXA_SEARCH_FALLBACK=${EXA_SEARCH_FALLBACK:-true}
+      - EXA_SCRAPE_FALLBACK=${EXA_SCRAPE_FALLBACK:-true}
+      - EXA_TIMEOUT=${EXA_TIMEOUT:-60}
+      - EXA_PROXY=${EXA_PROXY:-}
+      - EXA_BASE_URL=${EXA_BASE_URL:-https://api.exa.ai}
+      - EXA_MAX_CHARACTERS=${EXA_MAX_CHARACTERS:-10000}
       - CAMOUFOX_WS_URL=${CAMOUFOX_WS_URL:-ws://camoufox:9222/browser}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
@@ -250,6 +265,9 @@ services:
       args:
         APP_UID: ${APP_UID:-1000}
         APP_GID: ${APP_GID:-1000}
+    # Explicit tag so `compose build` and `compose up` resolve the same image
+    # (see the bridge service note above).
+    image: localhost/web-scraping_mcp:latest
     container_name: ws-mcp
     restart: unless-stopped
     mem_limit: 512m
@@ -281,6 +299,9 @@ services:
       # Mirrors the bridge's Jina flag: the jina_search/jina_scrape tools are
       # only advertised when the integration is enabled (default off)
       - JINA_ENABLED=${JINA_ENABLED:-false}
+      # Mirrors the bridge's Exa flag: the exa_search/exa_scrape tools are
+      # only advertised when the integration is enabled (default off)
+      - EXA_ENABLED=${EXA_ENABLED:-false}
     depends_on:
       bridge:
         condition: service_healthy
