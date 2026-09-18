@@ -607,3 +607,44 @@ def test_jina_tools_absent_by_default(monkeypatch):
     names = _tool_names_with_jina_env(monkeypatch, "false")
     assert "jina_search" not in names
     assert "jina_scrape" not in names
+
+
+# ---------------------------------------------------------------------------
+#  Optional Exa tools — advertised only when EXA_ENABLED reaches the module
+# ---------------------------------------------------------------------------
+
+def _tool_names_with_exa_env(monkeypatch, value: str) -> set[str]:
+    """TOOLS is built at import time — reload under a controlled env value.
+
+    Both optional-integration flags are pinned so the final reload
+    (value="false") leaves the module in the default-tools state, exactly as
+    the default environment produces — other tests are unaffected.
+    """
+    import importlib
+
+    monkeypatch.setenv("EXA_ENABLED", value)
+    monkeypatch.setenv("JINA_ENABLED", "false")
+    reloaded = importlib.reload(server_mod)
+    return {tool.name for tool in reloaded.TOOLS}
+
+
+def test_exa_tools_listed_when_enabled(monkeypatch):
+    names = _tool_names_with_exa_env(monkeypatch, "true")
+    assert {"exa_search", "exa_scrape"} <= names
+
+
+def test_exa_tool_schemas_when_enabled(monkeypatch):
+    """exa_search takes query + max_results; exa_scrape takes url + mode."""
+    names = _tool_names_with_exa_env(monkeypatch, "true")
+    assert {"exa_search", "exa_scrape"} <= names
+    tools = {t.name: t for t in server_mod.TOOLS if t.name in ("exa_search", "exa_scrape")}
+    assert set(tools["exa_search"].input_schema["properties"]) == {"query", "max_results"}
+    assert set(tools["exa_scrape"].input_schema["properties"]) == {"url", "mode"}
+
+
+def test_exa_tools_absent_by_default(monkeypatch):
+    # Last in file: the "false" reload leaves the module in the default-tools
+    # state, exactly as the default environment produces.
+    names = _tool_names_with_exa_env(monkeypatch, "false")
+    assert "exa_search" not in names
+    assert "exa_scrape" not in names

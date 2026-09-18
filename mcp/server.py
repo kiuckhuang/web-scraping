@@ -61,6 +61,10 @@ MCP_COMBINED_CHARS = int(os.environ.get("MCP_COMBINED_CHARS", "1200"))
 # default: a paid third-party API must not surface in the tool list silently.
 JINA_ENABLED = os.environ.get("JINA_ENABLED", "false").strip().lower() not in ("", "0", "false", "no", "off")
 
+# Optional Exa (exa.ai) integration — same pattern as Jina: advertised only
+# when the bridge has it enabled (same .env flag, passed through compose).
+EXA_ENABLED = os.environ.get("EXA_ENABLED", "false").strip().lower() not in ("", "0", "false", "no", "off")
+
 # Security knobs
 MCP_SESSION_TTL = float(os.environ.get("MCP_SESSION_TTL", "1800"))  # idle session lifetime (s)
 MCP_RATE_LIMIT = int(os.environ.get("MCP_RATE_LIMIT", "120"))  # requests/minute/IP, 0 = unlimited
@@ -270,6 +274,39 @@ if JINA_ENABLED:
         ),
     ]
 
+# Optional Exa tools — appended only when the integration is enabled
+# (EXA_ENABLED in .env, mirrored into the mcp container by compose). When
+# disabled they stay out of tools/list; calling them anyway still fails
+# cleanly (the bridge answers 503 with an explanatory message). api.exa.ai
+# has no anonymous tier — every call fails 401 without EXA_API_KEY.
+if EXA_ENABLED:
+    TOOLS += [
+        Tool(
+            name="exa_search",
+            description="Search via the Exa API (exa.ai neural/keyword web search with clean page content) — optional transport (EXA_ENABLED), also applied automatically as a last-resort search fallback after Jina. Requires EXA_API_KEY.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural-language search query — describe the ideal page, not keywords"},
+                    "max_results": {"type": "integer", "description": "Max results (1-20, default 5)", "default": 5},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="exa_scrape",
+            description="Fetch a URL's cleaned page text via the Exa Contents API — cloud-fetched content when the stealth browser (and the Jina reader) cannot serve a page. Optional transport (EXA_ENABLED); requires EXA_API_KEY. Exa never returns raw HTML — fetch mode degrades to the cleaned text.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to fetch"},
+                    "mode": {"type": "string", "enum": ["extract", "fetch"], "description": "'extract' = clean markdown, 'fetch' = cleaned text (no raw HTML)", "default": "extract"},
+                },
+                "required": ["url"],
+            },
+        ),
+    ]
+
 
 async def _list_tools_handler(_ctx, _params):
     return ListToolsResult(tools=TOOLS)
@@ -353,6 +390,21 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
 
         elif name == "jina_scrape":
             result = await _api_post("/jina_scrape", {
+                "url": arguments["url"],
+                "mode": arguments.get("mode", "extract"),
+            })
+            return CallToolResult(content=[TextContent(type="text", text=_format_scrape_result(result))])
+
+        elif name == "exa_search":
+            result = await _api_get(
+                "/exa_search",
+                q=arguments["query"],
+                max_results=arguments.get("max_results", 5),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=_format_search_results(result))])
+
+        elif name == "exa_scrape":
+            result = await _api_post("/exa_scrape", {
                 "url": arguments["url"],
                 "mode": arguments.get("mode", "extract"),
             })

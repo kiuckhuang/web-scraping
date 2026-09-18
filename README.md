@@ -162,6 +162,17 @@ curl -X POST http://localhost:8000/jina_scrape \
   -d '{"url": "https://example.com", "mode": "extract"}'
 ```
 
+### `GET /exa_search` and `POST /exa_scrape` (optional)
+
+Explicit access to the optional [Exa](https://exa.ai/) transports (disabled unless `EXA_ENABLED=true` in `.env`). The REST API requires an `EXA_API_KEY` — there is no anonymous tier. `POST /exa_scrape` validates the URL against the same SSRF guard as `/scrape`; named sessions are rejected (the contents API is a cookieless cloud fetch, and Exa never returns raw HTML — fetch mode degrades to cleaned text).
+
+```bash
+curl 'http://localhost:8000/exa_search?q=neural+web+search&max_results=5'
+curl -X POST http://localhost:8000/exa_scrape \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://example.com", "mode": "extract"}'
+```
+
 ### `GET /health`
 
 Check status of SearXNG and the Camoufox browser.
@@ -243,6 +254,8 @@ For a **remote** connection, include the token:
 | `browser_search`     | Web search via the stealth browser (not SearXNG) |
 | `jina_search`        | Search via the Jina AI Search API (only listed when `JINA_ENABLED=true`) |
 | `jina_scrape`        | Scrape via the Jina AI Reader API (only listed when `JINA_ENABLED=true`) |
+| `exa_search`         | Search via the Exa API with clean page content (only listed when `EXA_ENABLED=true`) |
+| `exa_scrape`         | Fetch a URL's cleaned page text via the Exa Contents API (only listed when `EXA_ENABLED=true`) |
 | `create_session`     | Create a named long-lived session (login persistence) |
 | `delete_session`     | Close and forget a named session (drops its cookies) |
 | `list_sessions`      | List live session names |
@@ -357,6 +370,14 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `JINA_PROXY` | (unset) | Egress proxy for Jina API calls; overrides `EGRESS_PROXY` (unset = inherit it, else direct) |
 | `JINA_READER_URL` | `https://r.jina.ai` | Reader endpoint — `https://eu.r.jina.ai` for EU residency, or a self-hosted OSS reader |
 | `JINA_SEARCH_URL` | `https://s.jina.ai` | Search endpoint — `https://eu.s.jina.ai` for EU residency |
+| `EXA_ENABLED` | `false` | Optional [Exa](https://exa.ai/) last-resort fallbacks — when `true`, api.exa.ai search/contents fire only **after** the Jina fallbacks (and every self-hosted transport) failed |
+| `EXA_API_KEY` | (unset) | Key from [dashboard.exa.ai](https://dashboard.exa.ai/api-keys) — required (the Exa REST API has no anonymous tier) |
+| `EXA_SEARCH_FALLBACK` | `true` | Append the Exa search stage after Jina (implies `EXA_ENABLED`) |
+| `EXA_SCRAPE_FALLBACK` | `true` | Use the Exa contents API when the stealth browser *and* the Jina reader cannot scrape a URL (implies `EXA_ENABLED`; never for named sessions) |
+| `EXA_TIMEOUT` | `60` | Exa API timeout (s) |
+| `EXA_PROXY` | (unset) | Egress proxy for Exa API calls; overrides `EGRESS_PROXY` (unset = inherit it, else direct) |
+| `EXA_BASE_URL` | `https://api.exa.ai` | Exa API base URL override (corporate gateway / API mirror) |
+| `EXA_MAX_CHARACTERS` | `10000` | Page-text characters per result requested from the API (search contents + `/contents`) |
 | `LOG_LEVEL`             | `INFO`                   | Log level for the bridge and MCP services (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 | `PORT_CAMOUFOX`         | `9223`                   | Host (loopback) port for direct access to the ws-camoufox container |
 | `BRIDGE_URL`            | `http://bridge:8000`     | Bridge URL used by MCP (container-internal) |
@@ -513,6 +534,24 @@ Cost model (verified 2026-09): the free key grants 10M tokens; `s.jina.ai` **req
 
 The client (`bridge/bridge/jina_client.py`) implements just the two endpoints it needs; the full request/response surface lives upstream — see the [jina-ai/reader](https://github.com/jina-ai/reader) repo and the live specs at `r.jina.ai/openapi.json` / `s.jina.ai/openapi.json` (no API documents are vendored in this repo).
 
+### Optional Exa (exa.ai) last-resort fallbacks
+
+[Exa](https://exa.ai/)'s hosted search API (`api.exa.ai`) is integrated the same way as Jina — **opt-in, and even further down the chain**: when `EXA_ENABLED=true`, it fires only after the Jina fallbacks above (and every self-hosted transport) returned nothing:
+
+- **Search** (`POST /search`) — neural/keyword web search whose results arrive with cleaned page text in the same call; the text is reused by `/search_and_scrape` instead of re-scraping, exactly like Jina's server-side reads.
+- **Scrape** (`POST /contents`) — consulted only when the Camoufox browser **and** the Jina reader could not serve a URL; the page text is fetched in Exa's cloud. Never used for named sessions (login cookies must not touch a third-party fetch), and Exa never returns raw HTML — fetch mode degrades to the cleaned text.
+
+Enable it in `.env`:
+
+```bash
+EXA_ENABLED=true
+EXA_API_KEY=xxx              # from https://dashboard.exa.ai/api-keys
+```
+
+The REST API has **no anonymous tier**: without a key every call fails 401 before spending anything (`/health` reports the configured state under `services.exa` — `off` / `unconfigured` / `ready`), while `s.jina.ai`'s search would burn ≥10k tokens. Failed Exa calls degrade back to the normal error paths — requests are never retried automatically. Granular kill switches (`EXA_SEARCH_FALLBACK` / `EXA_SCRAPE_FALLBACK`), the timeout, an egress proxy, and a base-URL override are in the env table above.
+
+The client (`bridge/bridge/exa_client.py`) implements just the two calls it needs (search with page text, contents for one URL) — the full surface lives upstream in the official SDK ([exa-labs/exa-js](https://github.com/exa-labs/exa-js)) and [docs.exa.ai](https://docs.exa.ai/) (nothing is vendored in this repo). The MCP server mirrors the same tools as `exa_search` / `exa_scrape` when enabled, comparable to [exa-mcp-server](https://github.com/exa-labs/exa-mcp-server)'s `web_search_exa` / `web_fetch_exa`.
+
 ## Security
 
 ### Network segmentation
@@ -581,6 +620,7 @@ web-scraping/
 │       ├── browser_client.py   # Camoufox client (Playwright websocket)
 │       ├── http_client.py      # HTTP fast path (curl_cffi, shaped TLS)
 │       ├── jina_client.py      # optional Jina AI last-resort transports
+│       ├── exa_client.py       # optional Exa (exa.ai) last-resort transports
 │       └── ssrf.py             # shared SSRF guard (edge + browser-side)
 └── mcp/
     ├── Dockerfile              # Python 3.12 + mcp + httpx (lightweight)
