@@ -21,6 +21,13 @@ def _pin_classic_chain(monkeypatch):
     monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "searxng")
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BING", True)
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BROWSER", True)
+    # Keep the optional cloud fallbacks (Jina/Exa) out of these tests
+    # regardless of the deployment .env — with EXA_ENABLED=true in a deployed
+    # stack, an all-stages-empty test would otherwise hit the real API.
+    monkeypatch.setattr(main_mod, "JINA_SEARCH_FALLBACK", False)
+    monkeypatch.setattr(main_mod, "JINA_SCRAPE_FALLBACK", False)
+    monkeypatch.setattr(main_mod, "EXA_SEARCH_FALLBACK", False)
+    monkeypatch.setattr(main_mod, "EXA_SCRAPE_FALLBACK", False)
 
 
 def _hit(title: str = "Example") -> dict:
