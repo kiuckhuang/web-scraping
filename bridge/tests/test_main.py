@@ -51,6 +51,13 @@ def _pin_searxng_primary(monkeypatch):
     monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "searxng")
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BING", False)
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BROWSER", False)
+    # Same reasoning for the optional cloud fallback stages: a deployment
+    # .env with JINA_ENABLED/EXA_ENABLED=true would otherwise let the jina/exa
+    # stages run live API calls whenever tests leave the primary stage empty.
+    monkeypatch.setattr(main_mod, "JINA_SEARCH_FALLBACK", False)
+    monkeypatch.setattr(main_mod, "JINA_SCRAPE_FALLBACK", False)
+    monkeypatch.setattr(main_mod, "EXA_SEARCH_FALLBACK", False)
+    monkeypatch.setattr(main_mod, "EXA_SCRAPE_FALLBACK", False)
 
 
 @pytest.fixture(autouse=True)

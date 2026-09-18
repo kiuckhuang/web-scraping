@@ -50,6 +50,15 @@ def _pin_chain(monkeypatch):
     monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "searxng")
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BING", True)
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BROWSER", True)
+    # The optional cloud fallbacks must stay out of these tests regardless of
+    # the deployment .env (EXA_ENABLED=true in a deployed stack would otherwise
+    # let the exa stage run — against the real API — whenever these tests
+    # leave every stage empty). Tests for the Exa stages live in test_exa.py
+    # and re-enable them explicitly.
+    monkeypatch.setattr(main_mod, "JINA_SEARCH_FALLBACK", False)
+    monkeypatch.setattr(main_mod, "JINA_SCRAPE_FALLBACK", False)
+    monkeypatch.setattr(main_mod, "EXA_SEARCH_FALLBACK", False)
+    monkeypatch.setattr(main_mod, "EXA_SCRAPE_FALLBACK", False)
 
 
 def _public_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):
