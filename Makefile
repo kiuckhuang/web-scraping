@@ -17,7 +17,7 @@ help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Targets:"
-	@echo "  init      — Create/refresh .env from .env.example (merge: preserves existing values incl. MCP_API_KEY; delete .env to rotate all secrets)"
+	@echo "  init      — Create/refresh .env from .env.example (merge: preserves existing values incl. API keys; updates pinned versions like SEARXNG_CHANNEL; delete .env to rotate all secrets)"
 	@echo "  build     — Build bridge and mcp images"
 	@echo "  up        — Start all services (podman compose up -d)"
 	@echo "  down      — Stop all services"

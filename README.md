@@ -435,9 +435,12 @@ missing — they never modify an existing one. Refreshing is explicit: `make
 init` **merges** the current `.env.example` into your `.env` (picking up new
 keys and refreshed comments while preserving every value you already have,
 including `MCP_API_KEY`, so remote clients keep working across stack
-updates). Run it after pulling stack changes if the template gained keys.
-Delete `.env` only when you want a full secret rotation, which invalidates
-the configured MCP bearer token:
+updates). Pinned component versions are the one exception: a version key
+like `SEARXNG_CHANNEL` always takes the template value, so version bumps
+propagate to existing deployments (`make init` prints the old → new tag).
+Run it after pulling stack changes if the template gained keys or a pinned
+version moved. Delete `.env` only when you want a full secret rotation,
+which invalidates the configured MCP bearer token:
 
 ```bash
 rm -f .env
@@ -634,7 +637,7 @@ web-scraping/
 ### Makefile (recommended)
 
 ```bash
-make init      # Create/refresh .env (preserves existing values incl. MCP_API_KEY)
+make init      # Create/refresh .env (preserves values incl. API keys; updates pinned versions)
 make up        # Start all services
 make build     # Build images
 make test      # Unit + integration tests
