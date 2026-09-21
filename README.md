@@ -320,7 +320,7 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | Variable                | Default                  | Description                          |
 |-------------------------|--------------------------|--------------------------------------|
 | `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
-| `SEARXNG_CHANNEL`       | `2026.9.15-ca4965040`  | SearXNG image tag (change deliberately when updating) |
+| `SEARXNG_CHANNEL`       | `2026.9.21-49064747a`  | SearXNG image tag (change deliberately when updating) |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
 | `SEARXNG_REQUEST_TIMEOUT` | `10`                   | Outgoing request timeout (s) per engine |
 | `SEARXNG_MAX_REQUEST_TIMEOUT` | `15`              | Max allowed request timeout (s)     |
