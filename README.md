@@ -441,6 +441,7 @@ and `make build`/`update` picks up the other tracked build changes.
 | `EXA_BASE_URL` | `https://api.exa.ai` | Exa API base URL override (corporate gateway / API mirror) |
 | `EXA_MAX_CHARACTERS` | `10000` | Page-text characters per result requested from the API (search contents + `/contents`) |
 | `LOG_LEVEL`             | `INFO`                   | Log level for the bridge and MCP services (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
+| `HEALTHCHECK_INTERVAL` | `60s` | Container health probe interval; successful Bridge/MCP probe logs are suppressed, errors remain visible |
 | `PORT_CAMOUFOX`         | `9223`                   | Host (loopback) port for direct access to the ws-camoufox container |
 | `BRIDGE_URL`            | `http://bridge:8000`     | Bridge URL used by MCP (container-internal) |
 | `BRIDGE_TIMEOUT` | `120` | MCP-to-Bridge HTTP timeout (s); keep above search/scrape/combined budgets |
