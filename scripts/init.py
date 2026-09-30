@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
 """Create or refresh the local .env with host IDs and deployment secrets.
 
-`make init` (explicit) re-renders .env from the current .env.example and
-overlays every value already present, so template updates (new keys,
-refreshed comments) are picked up without losing your configuration —
-including MCP_API_KEY, which remote clients hold. Pinned component
-versions (VERSIONED below, e.g. SEARXNG_CHANNEL) are the one exception:
-their template value always wins so version bumps propagate to existing
-deployments. Only keys missing from the existing file are generated. With
---ensure (used by the up/rebuild/update targets) an existing .env is left
-untouched; a missing one is created. Delete .env for a full secret
-rotation (this invalidates the MCP bearer token configured in remote
-clients).
+New files use the compact .env.example. Existing files are updated in place:
+only managed image pins change; missing everyday settings are appended.
+Secrets, flags, custom overrides and comments are preserved. --compact is an
+explicit migration that removes redundant advanced defaults after backing up
+the original file; all feature flags and credential settings are retained.
+--ensure leaves existing files untouched, as used by up/rebuild/update.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import secrets
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"
 TEMPLATE = ROOT / ".env.example"
+ADVANCED_TEMPLATE = ROOT / ".env.advanced.example"
+_ASSIGNMENT = re.compile(r"^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)(\s*=)(.*)$")
 
 # Secrets generated only when absent (first run, or a previous .env lacked them).
 GENERATED = {
@@ -50,14 +49,15 @@ def parse_env_file(path: Path) -> dict[str, str]:
     """Return KEY -> VALUE for a flat .env file; comments and blanks are skipped."""
     values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        key, separator, value = line.partition("=")
-        if separator and not key.lstrip().startswith("#") and key.strip():
-            values[key.strip()] = value
+        match = _ASSIGNMENT.match(line)
+        if match:
+            values[match[2]] = match[4]
     return values
 
 
 def render(
     existing: dict[str, str],
+    *, original: str | None = None,
 ) -> tuple[list[str], list[str], list[str], list[tuple[str, str, str]]]:
     """Render .env lines from the template, overlaying existing values.
 
@@ -66,7 +66,8 @@ def render(
     the existing file, and the version keys updated to the template value
     as (key, old, new) tuples.
     """
-    lines = TEMPLATE.read_text(encoding="utf-8").splitlines(keepends=True)
+    template_text = TEMPLATE.read_text(encoding="utf-8")
+    lines = template_text.splitlines(keepends=True)
     templated: set[str] = set()
     generated: list[str] = []
     added: list[str] = []
@@ -92,6 +93,28 @@ def render(
             else:
                 added.append(key)
 
+    if original is not None:
+        # Preserve user formatting/comments and advanced settings in place.
+        managed = parse_env_file(TEMPLATE)
+        preserved = []
+        for line in original.splitlines(keepends=True):
+            match = _ASSIGNMENT.match(line)
+            if match and match[2] in VERSIONED and match[2] in managed:
+                comment = re.search(r"\s+#.*", match[4])
+                suffix = comment[0] if comment else ""
+                line = f"{match[1]}{match[2]}{match[3]}{managed[match[2]]}{suffix}\n"
+            preserved.append(line)
+        missing = [key for key in templated if key not in existing]
+        if missing:
+            if preserved and not preserved[-1].endswith("\n"):
+                preserved[-1] += "\n"
+            preserved.append("\n# Added by make init (existing settings above are preserved).\n")
+            for line in lines:
+                match = _ASSIGNMENT.match(line)
+                if match and match[2] in missing:
+                    preserved.append(line)
+        return preserved, generated, added, updated
+
     # Keys added by hand that the current template does not carry are kept
     # verbatim instead of being dropped by the re-render.
     extras = [key for key in existing if key not in templated]
@@ -104,6 +127,37 @@ def render(
     return lines, generated, added, updated
 
 
+def compact_values(existing: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """Remove only known redundant tuning defaults; keep explicit choices."""
+    defaults = parse_env_file(ADVANCED_TEMPLATE)
+    everyday = parse_env_file(TEMPLATE)
+    kept = {}
+    removed = []
+    for key, value in existing.items():
+        protected = key in everyday or key.endswith("_ENABLED") or "FALLBACK" in key or any(
+            word in key for word in ("KEY", "SECRET", "TOKEN", "PASSWORD", "USERNAME")
+        ) or key in ("HTTP_FASTPATH", "CAMOUFOX_ISOLATE_CONTEXTS", "CAMOUFOX_GEOIP") or defaults.get(key) in ("true", "false")
+        if not protected and key in defaults and value == defaults[key]:
+            removed.append(key)
+        else:
+            kept[key] = value
+    return kept, removed
+
+
+def write_env(content: str) -> None:
+    """Atomic, private replacement so interrupted init cannot truncate secrets."""
+    fd, name = tempfile.mkstemp(prefix=".env.init-", dir=ENV_FILE.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(name, ENV_FILE)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Create .env from .env.example, preserving existing values.",
@@ -113,34 +167,57 @@ def main() -> None:
         action="store_true",
         help="create .env only if missing; never modify an existing file",
     )
+    parser.add_argument("--compact", action="store_true",
+                        help="back up and simplify existing .env; remove only redundant advanced defaults")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="report changes without writing files or printing secret values")
     args = parser.parse_args()
+    if args.ensure and (args.compact or args.dry_run):
+        parser.error("--ensure cannot be combined with --compact or --dry-run")
 
     if ENV_FILE.exists():
         if args.ensure:
             return  # .env already exists — the caller only needed existence
         existing = parse_env_file(ENV_FILE)
-        lines, generated, added, updated = render(existing)
+        original = ENV_FILE.read_text(encoding="utf-8")
+        removed = []
+        values = existing
+        if args.compact:
+            values, removed = compact_values(existing)
+        lines, generated, added, updated = render(values, original=None if args.compact else original)
         content = "".join(lines)
         if content == ENV_FILE.read_text(encoding="utf-8"):
             print(f"env up to date ({len(existing)} keys, no changes)")
             return
-        ENV_FILE.write_text(content, encoding="utf-8")
-        ENV_FILE.chmod(0o600)
-        note = f"{len(existing)} existing keys preserved"
+        note = f"{len(values) - len(updated)} existing values preserved"
         if updated:
             note += f"; versions updated: {', '.join(key for key, _, _ in updated)}"
         if added:
             note += f"; +{len(added)} new from template"
         if generated:
             note += f"; generated: {', '.join(generated)}"
-        print(f"Updated .env from .env.example ({note})")
+        if removed:
+            note += f"; removed {len(removed)} redundant defaults"
+        if args.dry_run:
+            print(f"Would update .env ({note}); no files written")
+        else:
+            if args.compact:
+                fd, name = tempfile.mkstemp(prefix=".env.backup-", dir=ENV_FILE.parent)
+                backup = Path(name)
+                with os.fdopen(fd, "w", encoding="utf-8") as file:
+                    file.write(original)
+                print(f"Backup saved: {backup.name}")
+            write_env(content)
+            print(f"Updated .env ({note})")
         for key, old, new in updated:
             print(f"  {key}: {old} -> {new}")
         return
 
     lines, _generated, _added, _updated = render({})
-    ENV_FILE.write_text("".join(lines), encoding="utf-8")
-    ENV_FILE.chmod(0o600)
+    if args.dry_run:
+        print(f"Would create compact .env ({len(parse_env_file(TEMPLATE))} settings); no files written")
+        return
+    write_env("".join(lines))
     print(
         "Created .env "
         f"(UID={os.getuid() or 1000}, GID={os.getgid() or 1000}, secrets generated)"

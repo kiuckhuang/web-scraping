@@ -327,6 +327,44 @@ connection — restart `ws-camoufox` and you start logged-out again.
 
 ## Configuration
 
+`.env` is your local configuration, not a copy of every runtime default.
+Fresh `make init` creates just 13 everyday settings: credentials, provider
+switches, search priority, proxy, host binding/IDs, and the managed SearXNG tag.
+Timeouts, caches, ports and browser tuning already have working defaults in
+Compose/code. Copy individual overrides from `.env.advanced.example` when
+needed; the environment-variable table below remains the full reference.
+
+### Keeping .env small and current
+
+```bash
+make init-preview                  # Preview updates; never prints API keys
+make init                          # Preserve local choices; refresh managed image pins
+python3 scripts/init.py --compact --dry-run  # Preview removal of redundant defaults
+make init-compact                  # Back up .env and simplify it
+```
+
+| Setting | Existing `.env` behavior |
+|---------|-------------------------|
+| API keys and generated secrets | Preserved exactly, including explicit empty values; generated only if missing |
+| Enable/disable flags | Preserved, even when equal to the shipped default |
+| Custom overrides / unknown settings | Preserved |
+| Managed image pin (`SEARXNG_CHANNEL`) | Updated from `.env.example` by `make init` |
+| Missing everyday settings | Added with the compact template's defaults |
+| Advanced tuning defaults | Not added automatically |
+
+Regular `make init` preserves your comments and file layout. Explicit
+`make init-compact` regenerates the compact layout, retaining keys/flags and
+custom overrides while removing only known advanced values that exactly
+match the shipped defaults. It first saves an ignored, permission-600
+`.env.backup-*` file, so previous values and comments are recoverable. Values
+that differ from current defaults are retained. All writes are atomic and
+permission-600; `make up`/`rebuild`/`update` still leave existing `.env` untouched.
+
+The SearXNG image pin remains synchronized across both example files,
+Compose and this README. Valkey's tag and Camoufox/Playwright build pins live
+in Compose/Dockerfiles; `make init` updates only declared managed `.env` pins,
+and `make build`/`update` picks up the other tracked build changes.
+
 ### Environment Variables
 
 | Variable                | Default                  | Description                          |
@@ -488,13 +526,13 @@ machinery needed.
 
 `make up`, `make rebuild`, and `make update` only create `.env` if it is
 missing — they never modify an existing one. Refreshing is explicit: `make
-init` **merges** the current `.env.example` into your `.env` (picking up new
-keys and refreshed comments while preserving every value you already have,
+init` adds missing everyday settings from the compact `.env.example` (while
+preserving existing values, comments and overrides,
 including `MCP_API_KEY`, so remote clients keep working across stack
 updates). Pinned component versions are the one exception: a version key
 like `SEARXNG_CHANNEL` always takes the template value, so version bumps
 propagate to existing deployments (`make init` prints the old → new tag).
-Run it after pulling stack changes if the template gained keys or a pinned
+Run it after pulling stack changes if the compact template gained keys or a pinned
 version moved. Delete `.env` only when you want a full secret rotation,
 which invalidates the configured MCP bearer token:
 
@@ -664,6 +702,7 @@ web-scraping/
 ├── Makefile                    # build, run, test targets
 ├── podman-compose.yml          # 6 services: valkey, egress-guard, searxng, camoufox, bridge, mcp
 ├── .env.example                # environment variable template
+├── .env.advanced.example       # optional tuning reference; copy individual overrides
 ├── opencode.jsonc.example      # MCP config template (copy to opencode.jsonc)
 ├── scripts/
 │   ├── doctor.sh               # make doctor — setup diagnostics
@@ -703,6 +742,8 @@ web-scraping/
 
 ```bash
 make init      # Create/refresh .env (preserves values incl. API keys; updates pinned versions)
+make init-preview # Preview changes without writing files or exposing secrets
+make init-compact # Back up and remove redundant advanced defaults from .env
 make up        # Start all services
 make build     # Build images
 make test      # Unit + integration tests
