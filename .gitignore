@@ -1,6 +1,8 @@
 # Local config (may contain credentials/tokens)
 opencode.jsonc
 .env
+.env.backup-*
+.env.init-*
 
 # Python
 __pycache__/

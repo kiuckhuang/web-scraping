@@ -10,7 +10,7 @@
 CONTAINER := podman
 COMPOSE := python3 scripts/compose.py --runtime $(CONTAINER)
 
-.PHONY: all init ensure-env build up down logs test test-unit test-unit-host test-scrape test-search doctor rebuild clean update help
+.PHONY: all init init-preview init-compact ensure-env build up down logs test test-unit test-unit-host test-scrape test-search doctor rebuild clean update help
 
 all: help
 
@@ -18,7 +18,9 @@ help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Targets:"
-	@echo "  init      — Create/refresh .env from .env.example (merge: preserves existing values incl. API keys; updates pinned versions like SEARXNG_CHANNEL; delete .env to rotate all secrets)"
+	@echo "  init      — Create compact .env or refresh image pins; preserve keys, flags, overrides and comments"
+	@echo "  init-preview — Preview init changes without writing files or printing secrets"
+	@echo "  init-compact — Back up and simplify .env; remove redundant tuning defaults, preserve keys/flags/overrides"
 	@echo "  build     — Build bridge and mcp images"
 	@echo "  up        — Start all services (podman compose up -d)"
 	@echo "  down      — Stop all services"
@@ -38,6 +40,12 @@ help:
 init:
 	@python3 scripts/init.py
 	@echo "environment ready"
+
+init-preview:
+	@python3 scripts/init.py --dry-run
+
+init-compact:
+	@python3 scripts/init.py --compact
 
 # Dependency-safe variant used by up/rebuild/update: creates .env when
 # missing, never touches an existing one. Explicit `make init` is what
