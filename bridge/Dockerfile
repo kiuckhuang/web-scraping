@@ -39,7 +39,7 @@ USER appuser
 EXPOSE 8000
 
 # Healthcheck: hit the FastAPI /health endpoint
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
+HEALTHCHECK --interval=60s --timeout=5s --retries=3 --start-period=15s \
     CMD curl -sf http://localhost:8000/health || exit 1
 
 CMD ["uvicorn", "bridge.main:app", "--host", "0.0.0.0", "--port", "8000"]

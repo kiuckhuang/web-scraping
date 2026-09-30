@@ -165,6 +165,7 @@ rebuild: ensure-env down
 
 update: ensure-env down
 	$(COMPOSE) pull
+	$(CONTAINER) pull docker.io/library/python:3.12-slim
 	$(MAKE) build up
 
 clean: down

@@ -74,7 +74,7 @@ services:
   # ---------------------------------------------------------------------------
   searxng:
     profiles: ["searxng"]
-    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.9.21-49064747a}
+    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.9.30-a9d990033}
     container_name: ws-searxng
     restart: unless-stopped
     mem_limit: 1g

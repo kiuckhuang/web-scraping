@@ -49,7 +49,7 @@ def test_existing_keys_flags_blanks_comments_and_overrides_preserved(init, monke
     for line in original.splitlines():
         if not line.startswith("SEARXNG_CHANNEL="):
             assert line in out
-    assert "SEARXNG_CHANNEL=2026.9.21-49064747a" in out
+    assert f"SEARXNG_CHANNEL={init.parse_env_file(init.TEMPLATE)['SEARXNG_CHANNEL']}" in out
     assert "SEARXNG_CHANNEL=old-tag" not in out
 
 
@@ -63,7 +63,8 @@ def test_ensure_does_not_touch_existing_file(init, monkeypatch):
 def test_version_refresh_preserves_inline_comment(init, monkeypatch):
     init.ENV_FILE.write_text('export SEARXNG_CHANNEL="old" # managed pin\n')
     run(init, monkeypatch)
-    assert 'export SEARXNG_CHANNEL=2026.9.21-49064747a # managed pin' in init.ENV_FILE.read_text()
+    expected = init.parse_env_file(init.TEMPLATE)["SEARXNG_CHANNEL"]
+    assert f'export SEARXNG_CHANNEL={expected} # managed pin' in init.ENV_FILE.read_text()
 
 
 def test_compaction_backs_up_and_preserves_explicit_choices(init, monkeypatch):
