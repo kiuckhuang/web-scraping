@@ -61,6 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: docker compose -f podman-compose.yml config --quiet
+      - run: SEARXNG_ENABLED=true docker compose -f podman-compose.yml --profile searxng config --quiet
       - run: docker build --build-arg APP_UID=1000 --build-arg APP_GID=1000 -t web-scrape-bridge bridge
       - run: docker build --build-arg APP_UID=1000 --build-arg APP_GID=1000 -t web-scrape-mcp mcp
       - run: docker build --build-arg APP_UID=1000 --build-arg APP_GID=1000 -t web-scrape-camoufox camoufox

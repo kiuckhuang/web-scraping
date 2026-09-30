@@ -49,6 +49,7 @@ def _pin_searxng_primary(monkeypatch):
     import bridge.main as main_mod
 
     monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "searxng")
+    monkeypatch.setattr(main_mod, "SEARXNG_ENABLED", True)
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BING", False)
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BROWSER", False)
     # Same reasoning for the optional cloud fallback stages: a deployment

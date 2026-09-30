@@ -115,6 +115,7 @@ def _env_engines(name: str, default: str) -> tuple[str, ...]:
 
 
 SEARCH_PRIMARY = os.environ.get("SEARCH_PRIMARY", "browser").strip().lower()
+SEARXNG_ENABLED = _env_flag("SEARXNG_ENABLED", "false")
 SEARCH_FALLBACK_BING = _env_flag("SEARCH_FALLBACK_BING", "false")
 SEARCH_FALLBACK_BROWSER = _env_flag("SEARCH_FALLBACK_BROWSER")
 BROWSER_SEARCH_ENGINES: tuple[str, ...] = _env_engines("BROWSER_SEARCH_ENGINES", "google,duckduckgo,duckduckgo lite")
@@ -347,15 +348,15 @@ def _cacheable(content: dict[str, Any]) -> bool:
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
     """Check the status of SearXNG and the configured browser engine."""
-    searxng_ok, browser_ok = await asyncio.gather(
-        searxng_health(),
-        browser_health(),
-    )
+    if SEARXNG_ENABLED:
+        searxng_ok, browser_ok = await asyncio.gather(searxng_health(), browser_health())
+    else:
+        searxng_ok, browser_ok = True, await browser_health()
     return {
         "status": "ok" if searxng_ok and browser_ok else "degraded",
         "engine": ENGINE,
         "services": {
-            "searxng": "up" if searxng_ok else "down",
+            "searxng": ("up" if searxng_ok else "down") if SEARXNG_ENABLED else "off",
             "browser": "up" if browser_ok else "down",
             # Informational only — the optional Jina fallback never degrades
             # the stack ("off" | "anonymous" | "ready").
@@ -374,7 +375,7 @@ def _fallback_allowed(categories: str | None, pageno: int, query: str) -> bool:
     """The browser-SERP / bing stages apply to plain first-page general
     web searches only.
 
-    - categories must be unset or include "general" (browser SERPs are web
+    - categories must be unset or exclusively "general" (browser SERPs are web
       searches — they cannot serve images/news/it categories).
     - only page 1 (browser SERPs fetch page 1; deeper pages stay SearXNG-only).
     - an explicit "!bang" in the query means the caller is directing engines
@@ -517,7 +518,7 @@ async def _search_with_fallbacks(
     q: str, *, categories: str | None, language: str, pageno: int,
     time_range: str | None, safesearch: int, max_results: int,
 ) -> dict[str, Any]:
-    key = (q, categories, language, pageno, time_range, safesearch, max_results)
+    key = (q, categories, language, pageno, time_range, safesearch, max_results, SEARXNG_ENABLED)
     hit = _search_cache.get(key)
     if hit and time.monotonic() - hit[0] < SEARCH_CACHE_TTL:
         return {**deepcopy(hit[1]), "cached": True}
@@ -559,7 +560,14 @@ async def _run_search_chain(
     is the same kind of opt-in fallback and stages strictly after Jina
     (EXA_SEARCH_FALLBACK).
     """
-    if SEARCH_PRIMARY == "browser":
+    if not SEARXNG_ENABLED and not _fallback_allowed(categories, pageno, q):
+        raise HTTPException(
+            status_code=400,
+            detail="Specialized/mixed categories, pagination and !bang searches require SEARXNG_ENABLED=true",
+        )
+    if not SEARXNG_ENABLED:
+        stage_names = ["browser"] if SEARCH_FALLBACK_BROWSER else []
+    elif SEARCH_PRIMARY == "browser":
         stage_names = (["browser"] if SEARCH_FALLBACK_BROWSER else []) + ["searxng"]
     else:
         stage_names = (

@@ -47,3 +47,32 @@ def test_renderer_rejects_invalid_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["render_settings", str(ROOT / "searxng/settings.template.yml"), str(tmp_path / "out")])
     with pytest.raises(ValueError):
         renderer.main()
+
+
+def test_compose_profile_selected_by_enable_flag(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    compose = load("compose_wrapper", "scripts/compose.py")
+    assert not compose.searxng_enabled({})
+    assert not compose.searxng_enabled({"SEARXNG_ENABLED": "false"})
+    assert compose.searxng_enabled({"SEARXNG_ENABLED": "true"})
+    assert compose.compose_command("podman", ["up", "-d"], False) == ["podman", "compose", "up", "-d"]
+    assert compose.compose_command("podman", ["up", "-d"], True) == ["podman", "compose", "--profile", "searxng", "up", "-d"]
+
+
+def test_compose_disabled_up_stops_old_optional_containers(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    compose = load("compose_wrapper", "scripts/compose.py")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(stdout="ws-bridge\nws-searxng\nws-valkey\n", returncode=0)
+
+    monkeypatch.setenv("SEARXNG_ENABLED", "false")
+    monkeypatch.setattr(compose.subprocess, "run", run)
+    monkeypatch.setattr(sys, "argv", ["compose.py", "up", "-d"])
+    assert compose.main() == 0
+    assert calls[1] == ["podman", "stop", "ws-searxng", "ws-valkey"]
+    assert calls[2] == ["podman", "compose", "up", "-d"]

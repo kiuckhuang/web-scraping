@@ -48,6 +48,7 @@ def _jina_enabled(monkeypatch):
 def _pin_chain(monkeypatch):
     """Pin the classic chain so tests drive stages explicitly."""
     monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "searxng")
+    monkeypatch.setattr(main_mod, "SEARXNG_ENABLED", True)
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BING", True)
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BROWSER", True)
     # The optional cloud fallbacks must stay out of these tests regardless of

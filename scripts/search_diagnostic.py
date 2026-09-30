@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -30,13 +31,19 @@ def main() -> int:
     if env.exists():
         for line in env.read_text().splitlines():
             key, separator, value = line.partition("=")
-            if separator and key in ("PORT_BRIDGE", "PORT_SEARXNG"):
+            if separator and key in ("PORT_BRIDGE", "PORT_SEARXNG", "SEARXNG_ENABLED"):
                 config[key] = value.strip()
+    enabled = os.environ.get("SEARXNG_ENABLED", config.get("SEARXNG_ENABLED", "false")).strip().strip("\"'").lower() not in (
+        "", "0", "false", "no", "off",
+    )
     failed = False
     for query in args.query or ["python asyncio documentation"]:
         print(f"Query: {query}")
         for source, port in (("searxng", config.get("PORT_SEARXNG", "8888")),
                              ("bridge", config.get("PORT_BRIDGE", "8000"))):
+            if source == "searxng" and not enabled:
+                print(json.dumps({"source": source, "status": "off"}))
+                continue
             params = {"q": query, "format": "json"} if source == "searxng" else {"q": query, "max_results": 5}
             url = f"http://127.0.0.1:{port}/search?{urllib.parse.urlencode(params)}"
             start = time.monotonic()

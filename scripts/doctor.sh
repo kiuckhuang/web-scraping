@@ -38,9 +38,16 @@ fi
 
 echo ""
 echo "=== Containers ==="
+SEARXNG_ENABLED=$(sed -n 's/^SEARXNG_ENABLED=//p' .env 2>/dev/null)
+case "${SEARXNG_ENABLED,,}" in
+    true|1|yes|on) SEARXNG_ENABLED=true ;;
+    *) SEARXNG_ENABLED=false ;;
+esac
 
 if [ -n "$CONTAINER_CMD" ]; then
-    for svc in valkey egress-guard searxng camoufox bridge mcp; do
+    SERVICES="egress-guard camoufox bridge mcp"
+    if [ "$SEARXNG_ENABLED" = true ]; then SERVICES="$SERVICES valkey searxng"; fi
+    for svc in $SERVICES; do
         if $CONTAINER_CMD ps --format '{{.Names}}' | grep -q "ws-$svc"; then
             ok "ws-$svc running"
         else
@@ -71,7 +78,9 @@ else
     bad "mcp /health unreachable (check 'podman compose logs mcp')"
 fi
 
-if curl -sf "http://localhost:${SEARXNG_PORT}/healthz" >/dev/null 2>&1; then
+if [ "$SEARXNG_ENABLED" = false ]; then
+    ok "searxng disabled (SEARXNG_ENABLED=false)"
+elif curl -sf "http://localhost:${SEARXNG_PORT}/healthz" >/dev/null 2>&1; then
     ok "searxng /healthz"
 else
     bad "searxng /healthz unreachable (check 'podman compose logs searxng')"
