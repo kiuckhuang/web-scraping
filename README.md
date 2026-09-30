@@ -371,7 +371,7 @@ and `make build`/`update` picks up the other tracked build changes.
 |-------------------------|--------------------------|--------------------------------------|
 | `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
 | `SEARXNG_ENABLED` | `false` | Enable SearXNG searches/health probes; `make up` starts SearXNG and Valkey only when true |
-| `SEARXNG_CHANNEL`       | `2026.9.21-49064747a`  | SearXNG image tag (change deliberately when updating) |
+| `SEARXNG_CHANNEL`       | `2026.9.30-a9d990033`  | SearXNG image tag (change deliberately when updating) |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
 | `SEARXNG_CLIENT_TIMEOUT` | `18` | Bridge-to-SearXNG HTTP timeout (s), with headroom above engine timeout |
 | `SEARXNG_BREAKER_THRESHOLD` | `2` | Failed/blocked general searches before skipping SearXNG (`0` disables) |
@@ -558,7 +558,7 @@ podman volume rm web-scraping_fortress-profile
 
 What to know:
 
-- The `ws-camoufox` container pins the Camoufox package (0.5.6) **and** the browser build (`152.0.4-beta.30`) at image build time — nothing is downloaded at container start.
+- The `ws-camoufox` container pins the Camoufox package (0.5.6) **and** the browser build (`156.0.1-beta.33`, upstream prerelease) at image build time — nothing is downloaded at container start. The build installer syncs release metadata, selects the exact build, explicitly accepts its prerelease status, and rejects installed-version drift even if the upstream CLI exits successfully after an error.
 - **Playwright version parity is mandatory**: the bridge and the Camoufox image must run the same Playwright *minor* (the server rejects mismatched clients with HTTP 428). Both are pinned to 1.62.x because Camoufox 0.5.6 requires `playwright<1.63`. When Camoufox ships support for a newer Playwright, bump both pins together (see AGENTS.md).
 - The browser is plain headless (`headless='virtual'`/Xvfb is not wired through Camoufox's server mode yet) and serves a **single browser instance with a fixed fingerprint**, with per-request context isolation.
 - **No persistent profile in server mode**: Playwright's `launchServer` cannot serve a persistent context over a websocket, so cookies/storage do not survive a container restart. Use **named sessions** for login persistence across scrape calls.
@@ -755,6 +755,7 @@ make doctor    # Diagnose common setup problems
 make logs      # Follow logs
 make rebuild   # Stop, rebuild, start
 make update    # Pull latest images, rebuild custom images, restart
+               # Also refreshes the Python 3.12-slim build base
 make down      # Stop services
 make clean     # Stop, remove volumes, prune images
 make help      # Show all targets (also runs with no argument)
