@@ -31,7 +31,7 @@ services:
       - internal
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',8081),timeout=2).close(); socket.create_connection(('127.0.0.1',8082),timeout=2).close()"]
-      interval: 15s
+      interval: ${HEALTHCHECK_INTERVAL:-60s}
       timeout: 5s
       retries: 3
   # ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ services:
       - internal
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
-      interval: 10s
+      interval: ${HEALTHCHECK_INTERVAL:-60s}
       timeout: 3s
       retries: 5
       start_period: 5s
@@ -121,7 +121,7 @@ services:
       - internal
     healthcheck:
       test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8080/healthz"]
-      interval: 30s
+      interval: ${HEALTHCHECK_INTERVAL:-60s}
       timeout: 5s
       retries: 3
       start_period: 15s
@@ -169,7 +169,7 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 9222), timeout=3).close()"]
-      interval: 15s
+      interval: ${HEALTHCHECK_INTERVAL:-60s}
       timeout: 5s
       retries: 5
       start_period: 20s
@@ -287,7 +287,7 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import json,urllib.request; data=json.load(urllib.request.urlopen(\"http://127.0.0.1:8000/health\")); raise SystemExit(0 if data.get(\"status\") == \"ok\" else 1)'" ]
-      interval: 15s
+      interval: ${HEALTHCHECK_INTERVAL:-60s}
       timeout: 5s
       retries: 5
       start_period: 15s
@@ -355,7 +355,7 @@ services:
       - edge
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/health')"]
-      interval: 15s
+      interval: ${HEALTHCHECK_INTERVAL:-60s}
       timeout: 5s
       retries: 5
       start_period: 10s

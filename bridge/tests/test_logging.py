@@ -29,3 +29,9 @@ def test_access_formatter_keeps_required_argument_tuple():
     output = AccessFormatter('%(client_addr)s "%(request_line)s" %(status_code)s').format(record)
     assert "secret" not in output
     assert "200" in output
+
+
+def test_health_failures_remain_logged():
+    record = logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d',
+                               ("127.0.0.1", "GET", "/health", "1.1", 503), None)
+    assert SafeLogFilter().filter(record)

@@ -15,8 +15,12 @@ def redact(value: str) -> str:
 class SafeLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        if ('"GET /health ' in message or '"GET /healthz ' in message
-                or "GET http://searxng:8080/healthz" in message):
+        if record.name == "uvicorn.access" and isinstance(record.args, tuple) and len(record.args) == 5:
+            _, method, path, _, status = record.args
+            if method == "GET" and path.split("?", 1)[0] in ("/health", "/healthz") and status == 200:
+                return False
+        if (( '"GET /health ' in message or '"GET /healthz ' in message) and ' 200' in message
+                or "GET http://searxng:8080/healthz" in message and '"HTTP/1.1 200 OK"' in message):
             return False
         # Uvicorn's access formatter unpacks the original argument tuple.
         # Preserve its shape while redacting individual string fields.

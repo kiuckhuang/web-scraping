@@ -593,6 +593,24 @@ def test_browser_primary_provenance_and_snippet():
     assert "fallback" not in out
 
 
+def test_health_log_filter_keeps_failures_and_regular_requests():
+    import logging
+
+    log_filter = server_mod.HealthLogFilter()
+    def access(path, status):
+        return logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d',
+                                 ("127.0.0.1", "GET", path, "1.1", status), None)
+    assert not log_filter.filter(access("/health", 200))
+    assert log_filter.filter(access("/health", 503))
+    assert log_filter.filter(access("/mcp", 200))
+    healthy = logging.LogRecord("httpx", logging.INFO, "", 0,
+                                f'HTTP Request: GET {server_mod.BRIDGE_URL}/health "HTTP/1.1 200 OK"', (), None)
+    assert not log_filter.filter(healthy)
+    failed = logging.LogRecord("httpx", logging.INFO, "", 0,
+                               f'HTTP Request: GET {server_mod.BRIDGE_URL}/health "HTTP/1.1 503 Unavailable"', (), None)
+    assert log_filter.filter(failed)
+
+
 # ---------------------------------------------------------------------------
 #  Optional Jina tools — advertised only when JINA_ENABLED reaches the module
 # ---------------------------------------------------------------------------

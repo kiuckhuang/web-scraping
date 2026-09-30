@@ -44,7 +44,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+class HealthLogFilter(logging.Filter):
+    """Suppress successful routine probes; retain degraded/error responses."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "uvicorn.access" and isinstance(record.args, tuple) and len(record.args) == 5:
+            _, method, path, _, status = record.args
+            if method == "GET" and path.split("?", 1)[0] == "/health" and status == 200:
+                return False
+        message = record.getMessage()
+        return not (record.name == "httpx" and f"GET {BRIDGE_URL}/health " in message
+                    and '"HTTP/1.1 200 OK"' in message)
+
+
+def _configure_health_logging() -> None:
+    for name in ("", "uvicorn.access"):
+        for handler in logging.getLogger(name).handlers:
+            if not any(isinstance(item, HealthLogFilter) for item in handler.filters):
+                handler.addFilter(HealthLogFilter())
+
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://bridge:8000")
+_configure_health_logging()
 HTTP_TIMEOUT = float(os.environ.get("BRIDGE_TIMEOUT", "120"))
 CRAWL_TIMEOUT = float(os.environ.get("MCP_CRAWL_TIMEOUT", "1810"))
 MCP_PORT = int(os.environ.get("MCP_PORT", "9100"))
