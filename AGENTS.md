@@ -83,7 +83,7 @@ covers the conventions and non-obvious decisions you must not regress.
     auto-enables with a proxy; the launcher retries once without geoip if the
     launch-time IP lookup fails, so a flaky lookup cannot crash-loop.
 11. **Jina AI is opt-in and last-resort** — `JINA_ENABLED=false` by default;
-    when enabled, `s.jina.ai` (search) only fires after SearXNG *and* browser
+    when enabled, `s.jina.ai` (search) only fires after the enabled SearXNG/browser
     SERPs return nothing, and `r.jina.ai` (scrape) only after the Camoufox
     browser fails (WAF/anti-bot hard blocks — never for named sessions). It
     is a paid third-party API (key in `.env`, ≥10k tokens per search):
@@ -107,6 +107,12 @@ covers the conventions and non-obvious decisions you must not regress.
     destinations, rejects non-global IPs, and connects/passes validated IPs to
     upstream proxies. Keep proxy bypasses disabled in Compose; URL validation
     alone (especially cached DNS verdicts) does not prevent DNS rebinding.
+14. **SearXNG is optional and off by default** — `SEARXNG_ENABLED=false` removes
+    both SearXNG and its Bing stage from search routing and health probes.
+    SearXNG/Valkey use the `searxng` Compose profile; `scripts/compose.py`
+    selects it for Make targets from `.env`. Do not restore mandatory Bridge
+    dependencies on these services. Specialized categories, pagination and
+    bang queries fail explicitly when disabled instead of dropping semantics.
 
 ## Style
 

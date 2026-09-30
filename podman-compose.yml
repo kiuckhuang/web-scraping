@@ -39,6 +39,7 @@ services:
   #  Network: internal only. No host ports.
   # ---------------------------------------------------------------------------
   valkey:
+    profiles: ["searxng"]
     # Pinned to 9.1.2: current stable patch on the 9.1 major; includes the 2026
     # security fixes (CVE-2025-67733, CVE-2026-21863/21864, CVE-2026-23479/23631/25243,
     # CVE-2026-56684/63639).
@@ -72,6 +73,7 @@ services:
   #  Network: internal only
   # ---------------------------------------------------------------------------
   searxng:
+    profiles: ["searxng"]
     image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.9.21-49064747a}
     container_name: ws-searxng
     restart: unless-stopped
@@ -199,6 +201,7 @@ services:
       - "127.0.0.1:${PORT_BRIDGE:-8000}:8000"
     environment:
       - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
+      - SEARXNG_ENABLED=${SEARXNG_ENABLED:-false}
       - SEARXNG_CLIENT_TIMEOUT=${SEARXNG_CLIENT_TIMEOUT:-18}
       - SEARXNG_BREAKER_THRESHOLD=${SEARXNG_BREAKER_THRESHOLD:-2}
       - SEARXNG_BREAKER_COOLDOWN=${SEARXNG_BREAKER_COOLDOWN:-60}
@@ -280,8 +283,6 @@ services:
       - CAMOUFOX_WS_URL=${CAMOUFOX_WS_URL:-ws://camoufox:9222/browser}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
-      searxng:
-        condition: service_healthy
       camoufox:
         condition: service_healthy
     healthcheck:

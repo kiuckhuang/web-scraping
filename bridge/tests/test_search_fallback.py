@@ -19,6 +19,7 @@ def _pin_classic_chain(monkeypatch):
     import time and defaults changed over time — tests must not depend on
     deployment config. Individual tests override via monkeypatch."""
     monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "searxng")
+    monkeypatch.setattr(main_mod, "SEARXNG_ENABLED", True)
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BING", True)
     monkeypatch.setattr(main_mod, "SEARCH_FALLBACK_BROWSER", True)
     # Keep the optional cloud fallbacks (Jina/Exa) out of these tests

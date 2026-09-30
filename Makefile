@@ -8,6 +8,7 @@
 # =============================================================================
 
 CONTAINER := podman
+COMPOSE := python3 scripts/compose.py --runtime $(CONTAINER)
 
 .PHONY: all init ensure-env build up down logs test test-unit test-unit-host test-scrape test-search doctor rebuild clean update help
 
@@ -45,16 +46,16 @@ ensure-env:
 	@python3 scripts/init.py --ensure
 
 build:
-	$(CONTAINER) compose build
+	$(COMPOSE) build
 
 up: ensure-env
-	$(CONTAINER) compose up -d
+	$(COMPOSE) up -d
 
 down:
-	$(CONTAINER) compose down
+	$(COMPOSE) down
 
 logs:
-	$(CONTAINER) compose logs -f
+	$(COMPOSE) logs -f
 
 test: test-unit
 	@BRIDGE_PORT=$$(sed -n 's/^PORT_BRIDGE=//p' .env); \
@@ -155,10 +156,10 @@ rebuild: ensure-env down
 	$(MAKE) build up
 
 update: ensure-env down
-	$(CONTAINER) compose pull
+	$(COMPOSE) pull
 	$(MAKE) build up
 
 clean: down
-	$(CONTAINER) compose down -v
+	$(COMPOSE) down -v
 	$(CONTAINER) system prune -f
 	rm -rf .venv

@@ -2,7 +2,7 @@
 
 A self-hosted, Podman-based search-and-scrape stack that combines:
 
-- **[SearXNG](https://github.com/searxng/searxng)** — privacy metasearch engine configured with a focused set of search engines, including Google, Bing, DuckDuckGo, Wikipedia, GitHub, Stack Overflow, Reddit, and news sources
+- **[SearXNG](https://github.com/searxng/searxng)** — optional privacy metasearch engine, disabled by default (`SEARXNG_ENABLED=false`) because upstream engines can block automated requests
 - **[Camoufox](https://github.com/daijro/camoufox)** — anti-detect [Firefox](https://www.mozilla.org/firefox/) fork whose fingerprint patches live at the C++ level (not JS injection), serving stealth scraping over Playwright's websocket protocol
 - **Bridge** — a [FastAPI](https://fastapi.tiangolo.com/) + [Model Context Protocol](https://modelcontextprotocol.io/) service that orchestrates both into a unified API (like [Exa](https://exa.ai/), but self-hosted and free)
 
@@ -18,7 +18,7 @@ A self-hosted, Podman-based search-and-scrape stack that combines:
 make init && make up && make test
 ```
 
-That's it — generates secrets, starts all services, and verifies everything works. Then point your AI agent at the MCP server (see [MCP Server](#mcp-server-for-ai-agents) below).
+That's it — generates secrets, starts the enabled services, and verifies everything works. Search uses the browser by default, followed by enabled Jina/Exa fallbacks. Then point your AI agent at the MCP server (see [MCP Server](#mcp-server-for-ai-agents) below).
 
 ### Architecture
 
@@ -92,7 +92,7 @@ Interactive API docs at `http://localhost:8000/docs`.
 # Check all services
 curl http://localhost:8000/health
 
-# Search the web (SearXNG)
+# Search the web (configured provider chain)
 curl 'http://localhost:8000/search?q=podman+tutorial&max_results=3'
 
 # Scrape a bot-protected page (stealth browser)
@@ -106,7 +106,7 @@ curl -X POST http://localhost:8000/search_and_scrape \
   -d '{"query": "rust async programming", "max_results": 3}'
 ```
 
-`make test-search` probes SearXNG and the Bridge separately and reports usable
+`make test-search` probes the Bridge and, when enabled, SearXNG separately and reports usable
 result counts, latency, provider, and engine failure reasons. For an opt-in
 multi-query benchmark:
 
@@ -332,6 +332,7 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | Variable                | Default                  | Description                          |
 |-------------------------|--------------------------|--------------------------------------|
 | `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
+| `SEARXNG_ENABLED` | `false` | Enable SearXNG searches/health probes; `make up` starts SearXNG and Valkey only when true |
 | `SEARXNG_CHANNEL`       | `2026.9.21-49064747a`  | SearXNG image tag (change deliberately when updating) |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
 | `SEARXNG_CLIENT_TIMEOUT` | `18` | Bridge-to-SearXNG HTTP timeout (s), with headroom above engine timeout |
@@ -423,6 +424,25 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `APP_GID`               | `1000`                   | Host user GID for bridge/mcp containers |
 
 ### [SearXNG](https://docs.searxng.org/) Configuration
+
+SearXNG is **disabled by default**. Normal searches use the browser, then
+enabled Jina/Exa fallbacks, without any SearXNG requests. `/health` reports
+`services.searxng: "off"` and its absence does not degrade stack health.
+The SearXNG-backed Bing stage is disabled with it, even if its flag is true.
+
+To enable it, set `SEARXNG_ENABLED=true` in `.env` and run:
+
+```bash
+make build && make up
+```
+
+`make up` selects the `searxng` Compose profile from `.env`; setting the flag
+back to false and running `make up` stops existing SearXNG/Valkey containers
+without deleting their data. `make down` handles both profiles. For direct
+Compose commands, `.env` does not activate profiles automatically: use
+`podman compose --profile searxng up -d` when enabling the provider.
+Specialized/mixed categories, pagination, and `!bang` searches require
+SearXNG and return a clear 400 error while it is disabled.
 
 Search responses include `provider`, `fallback_used`, `attempts`, and
 `filters_applied`. Browser searches with language/date/safe-search filters
