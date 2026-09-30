@@ -10,7 +10,7 @@ RUN test "${APP_UID}" -ne 0 && test "${APP_GID}" -ne 0 && \
 WORKDIR /app
 
 # System deps: ca-certificates + curl for healthchecks, plus
-# libs that Playwright's CDP client may need at runtime
+# the remote Playwright client needs no local browser runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -26,7 +26,7 @@ COPY pyproject.toml .
 RUN pip install --no-cache-dir -e ".[dev]"
 
 # NOTE: We do NOT run `playwright install` — the bridge connects to the
-# Fortress container over CDP (http://fortress:9222), so it only needs
+# Camoufox container over Playwright websocket, so it only needs
 # the Playwright Python client, not local browser binaries.
 
 # Copy the bridge application

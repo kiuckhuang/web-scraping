@@ -7,8 +7,13 @@ searxng-entrypoint.sh, so a missing value falls back to a sane default.
 
 Usage: render_settings.py <template> <output>
 """
+from __future__ import annotations
+
+import json
+import math
 import os
 import sys
+from urllib.parse import urlsplit
 
 DEFAULTS = {
     "SEARXNG_BASE_URL": "http://localhost:8888/",
@@ -39,11 +44,14 @@ def _outgoing_proxy_block() -> str:
             "  # directly. Set one (e.g. http://10.8.8.1:8088) to route engine\n"
             "  # requests through an outbound proxy.\n"
         )
+    parsed = urlsplit(proxy)
+    if parsed.scheme not in ("http", "https", "socks5", "socks5h") or not parsed.hostname:
+        raise ValueError("SEARXNG_OUTGOING_PROXY must be an HTTP(S) or SOCKS5 URL")
     return (
         "  # Engine requests routed through SEARXNG_OUTGOING_PROXY\n"
         "  proxies:\n"
         "    all://:\n"
-        f"      - {proxy}\n"
+        f"      - {json.dumps(proxy)}\n"
     )
 
 
@@ -55,6 +63,13 @@ def main() -> None:
     os.environ["SEARXNG_OUTGOING_PROXY_BLOCK"] = _outgoing_proxy_block()
     for token, default in DEFAULTS.items():
         val = os.environ.get(token, default) or default
+        if token != "SEARXNG_BASE_URL":
+            number = float(val)
+            if not math.isfinite(number) or number < 0:
+                raise ValueError(f"{token} must be non-negative")
+            val = str(int(number)) if number.is_integer() else str(number)
+        else:
+            val = json.dumps(val)[1:-1]
         data = data.replace(f"${{{token}}}", val)
     data = data.replace("${SEARXNG_OUTGOING_PROXY_BLOCK}", os.environ["SEARXNG_OUTGOING_PROXY_BLOCK"])
     with open(dst, "w", encoding="utf-8") as fh:

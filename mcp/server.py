@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://bridge:8000")
 HTTP_TIMEOUT = float(os.environ.get("BRIDGE_TIMEOUT", "120"))
+CRAWL_TIMEOUT = float(os.environ.get("MCP_CRAWL_TIMEOUT", "1810"))
 MCP_PORT = int(os.environ.get("MCP_PORT", "9100"))
 MCP_LISTEN_HOST = os.environ.get("MCP_LISTEN_HOST", "0.0.0.0").strip()
 MCP_PUBLIC_BIND_HOST = os.environ.get("MCP_PUBLIC_BIND_HOST", "127.0.0.1").strip()
@@ -107,7 +108,8 @@ _client = httpx.AsyncClient(timeout=HTTP_TIMEOUT)
 async def _api_get(path: str, **params) -> dict:
     # Drop empty-string/None params so FastAPI's pattern validators don't reject them
     clean = {k: v for k, v in params.items() if v not in (None, "")}
-    resp = await _client.get(f"{BRIDGE_URL}{path}", params=clean, headers=_request_headers(path))
+    resp = await _client.get(f"{BRIDGE_URL}{path}", params=clean, headers=_request_headers(path),
+                             timeout=CRAWL_TIMEOUT if path == "/crawl" else HTTP_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
@@ -145,7 +147,7 @@ def _request_headers(path: str) -> dict[str, str]:
 TOOLS: list[Tool] = [
     Tool(
         name="search_web",
-        description="Search the web via the configured SearXNG engines. Returns titles, URLs, and snippets.",
+            description="Search the web via the configured browser/SearXNG provider chain. Returns titles, URLs, snippets and provider/failure metadata.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -173,7 +175,7 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="search_and_scrape",
-        description="Search via SearXNG, then scrape the top results for full page markdown (Exa-style combined endpoint).",
+            description="Search via the configured provider chain, then scrape top results for full page markdown (Exa-style combined endpoint).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -570,7 +572,7 @@ def _format_search_results(result: dict) -> str:
     for i, r in enumerate(results, 1):
         title = r.get("title", "Untitled")
         url = r.get("url", "")
-        snippet = (r.get("content") or "").strip()
+        snippet = (r.get("content") or r.get("snippet") or "").strip()
         if snippet:
             snippet = snippet[:MCP_SNIPPET_CHARS]
         line = f"{i}. [{title}]({url})"
@@ -585,12 +587,18 @@ def _format_search_results(result: dict) -> str:
         # failed so agents know the list may be incomplete.
         lines.append("")
         lines.append(f"Note: some engines were unresponsive and their results are missing: {unresponsive}")
-    fallback = result.get("fallback")
+    provider = result.get("provider")
+    if provider:
+        lines.append(f"\nProvider: {provider}")
+    fallback = result.get("fallback") if result.get("fallback_used", True) else None
     if fallback:
         # The result list came from a fallback path (bing / stealth-browser
         # SERP), not the normal SearXNG merge — say so explicitly.
         lines.append("")
-        lines.append(f"Note: primary SearXNG engines returned nothing; these results were served by the {fallback} fallback.")
+        lines.append(f"Note: these results were served by the {fallback} fallback.")
+    skipped = [a["provider"] for a in result.get("attempts", []) if a.get("reason") == "unsupported filters"]
+    if skipped:
+        lines.append(f"Note: providers skipped because they cannot enforce the requested filters: {', '.join(skipped)}")
     return "\n".join(lines)
 
 
@@ -603,7 +611,7 @@ def _unresponsive_engines(result: dict) -> str:
     names = []
     for entry in entries[:5]:
         if isinstance(entry, (list, tuple)) and entry:
-            names.append(str(entry[0]))
+            names.append(": ".join(str(part) for part in entry[:2]))
         else:
             names.append(str(entry))
     return "; ".join(names)
@@ -625,6 +633,10 @@ def _render_table(rows: list, max_rows: int = 8, max_chars: int = 1500) -> str:
 
 def _format_scrape_result(result: dict) -> str:
     lines = [f"## Scraped: {result.get('url', '')}", ""]
+    if result.get("waf_challenge"):
+        lines.append("**Scrape failed: unresolved WAF/CAPTCHA challenge.**")
+    if isinstance(result.get("status"), int) and result["status"] >= 400:
+        lines.append(f"**Target HTTP status: {result['status']}**")
     if result.get("title"):
         lines.append(f"**Title:** {result['title']}")
         lines.append("")

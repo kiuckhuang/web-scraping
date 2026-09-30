@@ -60,20 +60,35 @@ def _resolve_verdict(host: str) -> str:
         infos = socket.getaddrinfo(host, None)
     except OSError:
         return "unresolvable"
+    if not infos:
+        return "unresolvable"
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
             ip = ip.ipv4_mapped
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_reserved
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
+        if not ip.is_global or ip.is_multicast:
             return "private"
     return "public"
+
+
+def resolve_public_addresses(host: str, port: int) -> list[str]:
+    """Fresh resolution for a pinned connection, never a cached DNS verdict."""
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise UrlBlockedError(403, "Could not resolve host; access blocked") from exc
+    addresses = []
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        if not address.is_global or address.is_multicast:
+            raise UrlBlockedError(403, "Access to non-global addresses is blocked")
+        if str(address) not in addresses:
+            addresses.append(str(address))
+    if not addresses:
+        raise UrlBlockedError(403, "Could not resolve host; access blocked")
+    return addresses
 
 
 def _prune_dns_cache() -> None:

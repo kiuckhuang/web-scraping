@@ -341,8 +341,9 @@ def test_cache_skips_waf_challenge_pages(monkeypatch):
     monkeypatch.setattr(main_mod, "browser_scrape", fake_scrape)
 
     req = ScrapeRequest(url="https://example.com/challenge", mode="extract")
-    asyncio.run(main_mod.scrape(req))
-    asyncio.run(main_mod.scrape(req))
+    for _ in range(2):
+        with pytest.raises(HTTPException, match="challenge"):
+            asyncio.run(main_mod.scrape(req))
     assert calls["n"] == 2  # a cached challenge would have made this 1
 
 
@@ -360,8 +361,9 @@ def test_cache_skips_http_error_pages(monkeypatch):
     monkeypatch.setattr(main_mod, "browser_scrape", fake_scrape)
 
     req = ScrapeRequest(url="https://example.com/flaky", mode="fetch")
-    asyncio.run(main_mod.scrape(req))
-    asyncio.run(main_mod.scrape(req))
+    for _ in range(2):
+        with pytest.raises(HTTPException, match="503"):
+            asyncio.run(main_mod.scrape(req))
     assert calls["n"] == 2
 
 

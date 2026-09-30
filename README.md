@@ -35,6 +35,7 @@ flowchart TB
         searx["SearXNG\nJSON search API\n127.0.0.1:8888"]
         camoufox["Camoufox\nanti-detect Firefox over Playwright WS\n127.0.0.1:9223"]
         valkey["Valkey\ncache and limiter"]
+        guard["Egress guard\nDNS-pinned connections"]
     end
 
     client --> mcp
@@ -42,6 +43,8 @@ flowchart TB
     bridge -->|search| searx
     bridge -->|scrape, crawl, browser search| camoufox
     searx --> valkey
+    camoufox --> guard
+    bridge -->|HTTP fast path| guard
 ```
 
 > **Security model:** Core services and MCP bind to `127.0.0.1` on the host by default. Set `MCP_BIND_HOST` to a non-loopback address only when remote access is intentional; a non-empty `MCP_API_KEY` is required in that mode. MCP is on the `edge` network only; it can talk to Bridge but cannot reach SearXNG, Camoufox, or Valkey directly.
@@ -79,6 +82,7 @@ sequenceDiagram
 | [Camoufox](https://github.com/daijro/camoufox) | 9223 (127.0.0.1) | Anti-detect Firefox (Playwright WS endpoint) |
 | Bridge     | 8000 (127.0.0.1) | Unified REST API ([FastAPI](https://fastapi.tiangolo.com/)) |
 | MCP        | 9100 (127.0.0.1 by default) | Streamable HTTP server for AI agents ([MCP](https://modelcontextprotocol.io/)) |
+| Egress guard | 8081/8082 (internal only) | DNS-pinned browser/HTTP connections; optional upstream proxy chaining |
 
 Interactive API docs at `http://localhost:8000/docs`.
 
@@ -102,11 +106,19 @@ curl -X POST http://localhost:8000/search_and_scrape \
   -d '{"query": "rust async programming", "max_results": 3}'
 ```
 
+`make test-search` probes SearXNG and the Bridge separately and reports usable
+result counts, latency, provider, and engine failure reasons. For an opt-in
+multi-query benchmark:
+
+```bash
+python3 scripts/search_diagnostic.py --query "python asyncio documentation" --query "Hong Kong weather"
+```
+
 ## REST API
 
 ### `GET /search`
 
-Search the web via the configured [SearXNG](https://github.com/searxng/searxng) engines.
+Search the web through the configured browser/SearXNG provider chain.
 
 | Parameter     | Type   | Default | Description                          |
 |---------------|--------|---------|--------------------------------------|
@@ -247,7 +259,7 @@ For a **remote** connection, include the token:
 
 | Tool                 | Description                                              |
 |----------------------|----------------------------------------------------------|
-| `search_web`         | Search via the configured [SearXNG](https://github.com/searxng/searxng) engines |
+| `search_web`         | Search via the configured browser/SearXNG chain, with provider metadata |
 | `scrape_url`         | Scrape a URL via the [Camoufox](https://github.com/daijro/camoufox) stealth browser |
 | `search_and_scrape`  | Search + scrape top results (Exa-style combined)         |
 | `crawl_site`         | Crawl a whole site via the stealth browser |
@@ -322,6 +334,9 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
 | `SEARXNG_CHANNEL`       | `2026.9.21-49064747a`  | SearXNG image tag (change deliberately when updating) |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
+| `SEARXNG_CLIENT_TIMEOUT` | `18` | Bridge-to-SearXNG HTTP timeout (s), with headroom above engine timeout |
+| `SEARXNG_BREAKER_THRESHOLD` | `2` | Failed/blocked general searches before skipping SearXNG (`0` disables) |
+| `SEARXNG_BREAKER_COOLDOWN` | `60` | SearXNG transport breaker cooldown (s); specialized categories/bangs remain available |
 | `SEARXNG_REQUEST_TIMEOUT` | `10`                   | Outgoing request timeout (s) per engine |
 | `SEARXNG_MAX_REQUEST_TIMEOUT` | `15`              | Max allowed request timeout (s)     |
 | `SEARXNG_BAN_TIME_ON_FAIL` | `5`                   | Engine ban duration (s) after a failed request |
@@ -346,6 +361,14 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `HTTP_FASTPATH_IMPERSONATE` | `chrome`             | curl_cffi impersonation target (TLS/JA3 + HTTP/2 fingerprint shape) |
 | `HTTP_FASTPATH_PROXY` | (unset)                    | Egress proxy for the HTTP fast path only; overrides `EGRESS_PROXY` (unset = inherit it, else direct) |
 | `SEARCH_PRIMARY` | `browser`                | First search transport: `browser` (Camoufox SERPs → SearXNG merge) or `searxng` (merge → bing → browser SERPs). Browser-first is robust against engine bot-walls; `searxng` is lower-latency where your IP isn't challenged |
+| `SEARCH_MAX_SECONDS` | `75` | Overall search deadline, including browser queue waits (s) |
+| `SEARCH_STAGE_SECONDS` | `20` | Per-provider search stage budget (s), within the overall deadline |
+| `SERP_ENGINE_SECONDS` | `12` | Per-browser-engine search budget (s) |
+| `SCRAPE_MAX_SECONDS` | `90` | Overall scrape deadline including transport fallbacks and slot waits (s) |
+| `COMBINED_MAX_SECONDS` | `110` | Overall search-and-scrape HTTP deadline (s) |
+| `SEARCH_CACHE_TTL` | `60` | Non-empty search-result cache lifetime (s), scoped to all query filters; `0` disables |
+| `SEARCH_CACHE_MAX` | `100` | Maximum cached searches; full cloud page texts are excluded |
+| `EGRESS_GUARD_TIMEOUT` | `30` | DNS-pinned proxy connection/idle timeout (s) |
 | `SEARCH_FALLBACK_BING` | `false`                  | Insert a forced `!bing` SearXNG stage between the two transports (default off — bing result quality proved useless) |
 | `SEARCH_FALLBACK_BROWSER` | `true`                | Allow the stealth-browser SERP stage at all (as primary or fallback) |
 | `BROWSER_SEARCH_ENGINES` | `google,duckduckgo,duckduckgo lite` | Browser SERP engine order (first non-empty wins; engines tripping the empty-results circuit breaker are skipped for 10 min) |
@@ -357,7 +380,7 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `CAMOUFOX_MAX_SESSIONS` | `16`                     | Max concurrent named sessions (login persistence) |
 | `CAMOUFOX_PROXY_SERVER` | (unset)                  | Outbound proxy for all browser traffic (`http://`, `https://`, `socks5://`); overrides `EGRESS_PROXY` (unset = inherit it, else direct) |
 | `CAMOUFOX_PROXY_USERNAME` / `_PASSWORD` | (unset)  | Proxy credentials (keep in `.env`) |
-| `CAMOUFOX_PROXY_BYPASS` | (unset)                  | Comma-separated hosts that skip the proxy |
+| `CAMOUFOX_PROXY_BYPASS` | (unset)                  | Standalone launcher only; Compose disables bypasses so browser traffic traverses the egress guard |
 | `CAMOUFOX_GEOIP`        | `auto`                   | GeoIP-consistent fingerprints (timezone/locale/lat-lon matched to the proxy's egress IP); `auto` = on whenever a proxy is set |
 | `CAMOUFOX_TIMEZONE`     | (auto-derived)           | Browser context timezone; unset = derived from the proxy's egress IP via ip-api.com (through the proxy, once) |
 | `CRAWL_MAX_SECONDS`     | `1800`                   | Wall-clock budget per `/crawl` call (s); `0` = unlimited. Returns partial results when exhausted |
@@ -381,6 +404,8 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `LOG_LEVEL`             | `INFO`                   | Log level for the bridge and MCP services (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 | `PORT_CAMOUFOX`         | `9223`                   | Host (loopback) port for direct access to the ws-camoufox container |
 | `BRIDGE_URL`            | `http://bridge:8000`     | Bridge URL used by MCP (container-internal) |
+| `BRIDGE_TIMEOUT` | `120` | MCP-to-Bridge HTTP timeout (s); keep above search/scrape/combined budgets |
+| `MCP_CRAWL_TIMEOUT` | `1810` | MCP crawl timeout (s); keep above `CRAWL_MAX_SECONDS` |
 | `PORT_SEARXNG`          | `8888`                   | Host port for SearXNG                |
 | `PORT_BRIDGE`           | `8000`                   | Host port for Bridge REST API        |
 | `PORT_MCP`              | `9100`                   | Host port for MCP server             |
@@ -398,6 +423,17 @@ connection — restart `ws-camoufox` and you start logged-out again.
 | `APP_GID`               | `1000`                   | Host user GID for bridge/mcp containers |
 
 ### [SearXNG](https://docs.searxng.org/) Configuration
+
+Search responses include `provider`, `fallback_used`, `attempts`, and
+`filters_applied`. Browser searches with language/date/safe-search filters
+use Google; DDG HTML/Lite are skipped because they cannot reliably enforce
+those filters. Cloud search stages are likewise skipped when filters cannot
+be enforced. Empty dated SearXNG searches never silently drop the date filter.
+Mixed/specialized categories and paginated searches remain SearXNG-only.
+
+SearXNG `/healthz` indicates process liveness, not usable engine results.
+CAPTCHA, suspension, and timeout reasons are shown separately in search
+diagnostics; shortening the 429 suspension does not fix CAPTCHA blocking.
 
 Settings are rendered from `searxng/settings.template.yml` at container start,
 pulling the engine-tuning values above from `.env`. Edit the template to:
@@ -494,7 +530,7 @@ subresources — through that proxy (HTTP or SOCKS5, credentials optional):
 CAMOUFOX_PROXY_SERVER=socks5://proxy-host:1080
 CAMOUFOX_PROXY_USERNAME=
 CAMOUFOX_PROXY_PASSWORD=
-CAMOUFOX_PROXY_BYPASS=localhost,127.0.0.1   # optional
+# Compose enforces guarded egress; proxy bypasses are disabled.
 CAMOUFOX_GEOIP=auto                         # default
 ```
 
@@ -592,12 +628,21 @@ The stack is split into two bridge networks:
 
 The bridge validates all URLs passed to `/scrape`, `/crawl`, and `/search_and_scrape` — requests to private/internal networks are rejected with `403`, and hosts that cannot be resolved at validation time are rejected outright. Browser redirects and subresource requests are checked again, while crawls remain same-origin and public-only.
 
+Compose routes browser and HTTP-fast-path connections through `ws-egress-guard`
+(internal ports 8081 and 8082). It freshly resolves every destination, rejects
+non-global addresses (including CGNAT), and connects to validated IPs. Optional
+upstream proxies receive the validated IP in CONNECT/SOCKS requests, avoiding
+target-host re-resolution. TLS remains end-to-end. Browser proxy bypasses are
+disabled. Direct standalone HTTP fast-path requests pin DNS with curl's
+`RESOLVE`; standalone deployments using other proxies must provide equivalent
+connection-time enforcement.
+
 ### Project Structure
 
 ```
 web-scraping/
 ├── Makefile                    # build, run, test targets
-├── podman-compose.yml          # 5 services: valkey, searxng, camoufox, bridge, mcp
+├── podman-compose.yml          # 6 services: valkey, egress-guard, searxng, camoufox, bridge, mcp
 ├── .env.example                # environment variable template
 ├── opencode.jsonc.example      # MCP config template (copy to opencode.jsonc)
 ├── scripts/
@@ -643,6 +688,7 @@ make build     # Build images
 make test      # Unit + integration tests
 make test-unit # Unit tests only (pytest inside bridge/mcp containers)
 make test-scrape # Scrape smoke test through the bridge (example.com)
+make test-search # Live engine/provider diagnostic; empty Bridge results fail
 make doctor    # Diagnose common setup problems
 make logs      # Follow logs
 make rebuild   # Stop, rebuild, start

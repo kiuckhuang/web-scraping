@@ -4,6 +4,36 @@
 # =============================================================================
 
 services:
+  # DNS-pinned browser/HTTP egress. Only this service resolves destinations
+  # for outbound connections; upstream proxies receive validated IPs.
+  egress-guard:
+    build:
+      context: ./bridge
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    image: localhost/web-scraping_bridge:latest
+    container_name: ws-egress-guard
+    command: ["python", "-m", "bridge.egress_guard"]
+    restart: unless-stopped
+    mem_limit: 256m
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - EGRESS_PROXY=${EGRESS_PROXY:-}
+      - CAMOUFOX_PROXY_SERVER=${CAMOUFOX_PROXY_SERVER:-}
+      - CAMOUFOX_PROXY_USERNAME=${CAMOUFOX_PROXY_USERNAME:-}
+      - CAMOUFOX_PROXY_PASSWORD=${CAMOUFOX_PROXY_PASSWORD:-}
+      - HTTP_FASTPATH_PROXY=${HTTP_FASTPATH_PROXY:-}
+      - EGRESS_GUARD_TIMEOUT=${EGRESS_GUARD_TIMEOUT:-30}
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',8081),timeout=2).close(); socket.create_connection(('127.0.0.1',8082),timeout=2).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
   # ---------------------------------------------------------------------------
   #  Valkey — Redis-compatible cache for SearXNG rate limiting & bot detection
   #  Network: internal only. No host ports.
@@ -124,14 +154,17 @@ services:
       # Outbound proxy for all browser traffic — CAMOUFOX_PROXY_SERVER wins,
       # else the stack-wide EGRESS_PROXY applies (see .env.example)
       - EGRESS_PROXY=${EGRESS_PROXY:-}
-      - CAMOUFOX_PROXY_SERVER=${CAMOUFOX_PROXY_SERVER:-}
-      - CAMOUFOX_PROXY_USERNAME=${CAMOUFOX_PROXY_USERNAME:-}
-      - CAMOUFOX_PROXY_PASSWORD=${CAMOUFOX_PROXY_PASSWORD:-}
-      - CAMOUFOX_PROXY_BYPASS=${CAMOUFOX_PROXY_BYPASS:-}
+      - CAMOUFOX_PROXY_SERVER=http://egress-guard:8081
+      - CAMOUFOX_PROXY_USERNAME=
+      - CAMOUFOX_PROXY_PASSWORD=
+      - CAMOUFOX_PROXY_BYPASS=
       # GeoIP-consistent fingerprints: auto = on whenever a proxy is set
       - CAMOUFOX_GEOIP=${CAMOUFOX_GEOIP:-auto}
     networks:
       - internal
+    depends_on:
+      egress-guard:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 9222), timeout=3).close()"]
       interval: 15s
@@ -166,6 +199,16 @@ services:
       - "127.0.0.1:${PORT_BRIDGE:-8000}:8000"
     environment:
       - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
+      - SEARXNG_CLIENT_TIMEOUT=${SEARXNG_CLIENT_TIMEOUT:-18}
+      - SEARXNG_BREAKER_THRESHOLD=${SEARXNG_BREAKER_THRESHOLD:-2}
+      - SEARXNG_BREAKER_COOLDOWN=${SEARXNG_BREAKER_COOLDOWN:-60}
+      - SEARCH_MAX_SECONDS=${SEARCH_MAX_SECONDS:-75}
+      - SEARCH_STAGE_SECONDS=${SEARCH_STAGE_SECONDS:-20}
+      - SERP_ENGINE_SECONDS=${SERP_ENGINE_SECONDS:-12}
+      - SCRAPE_MAX_SECONDS=${SCRAPE_MAX_SECONDS:-90}
+      - COMBINED_MAX_SECONDS=${COMBINED_MAX_SECONDS:-110}
+      - SEARCH_CACHE_TTL=${SEARCH_CACHE_TTL:-60}
+      - SEARCH_CACHE_MAX=${SEARCH_CACHE_MAX:-100}
       - BRIDGE_HOST=${BRIDGE_HOST:-0.0.0.0}
       - BRIDGE_PORT=${BRIDGE_PORT:-8000}
       # Scrape cache: repeated scrapes of the same URL within the TTL are
@@ -182,7 +225,7 @@ services:
       - HTTP_FASTPATH=${HTTP_FASTPATH:-true}
       - HTTP_FASTPATH_TIMEOUT=${HTTP_FASTPATH_TIMEOUT:-15}
       - HTTP_FASTPATH_IMPERSONATE=${HTTP_FASTPATH_IMPERSONATE:-chrome}
-      - HTTP_FASTPATH_PROXY=${HTTP_FASTPATH_PROXY:-}
+      - HTTP_FASTPATH_PROXY=http://egress-guard:8082
       # Search chain: SEARCH_PRIMARY picks the first transport ("searxng" or
       # "browser"); the other serves as fallback. Browser SERP engine order
       # via BROWSER_SEARCH_ENGINES; SEARCH_FALLBACK_BING inserts a forced
@@ -278,6 +321,8 @@ services:
       - "${MCP_BIND_HOST:-127.0.0.1}:${PORT_MCP:-9100}:9100"
     environment:
       - BRIDGE_URL=${BRIDGE_URL:-http://bridge:8000}
+      - BRIDGE_TIMEOUT=${BRIDGE_TIMEOUT:-120}
+      - MCP_CRAWL_TIMEOUT=${MCP_CRAWL_TIMEOUT:-1810}
       # The container listens on all interfaces; MCP_BIND_HOST controls the
       # host-side published address below. A non-local host requires a key.
       - MCP_LISTEN_HOST=0.0.0.0

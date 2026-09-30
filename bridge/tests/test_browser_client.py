@@ -11,19 +11,14 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _reset_browser_state():
+def _reset_browser_state(monkeypatch):
     """Keep module-level browser/session state from leaking between tests."""
-    bc._browser = None
-    bc._playwright_ctx = None
-    bc._sessions.clear()
-    bc._timezone_id = None
-    bc._timezone_resolved = False
-    yield
-    bc._browser = None
-    bc._playwright_ctx = None
-    bc._sessions.clear()
-    bc._timezone_id = None
-    bc._timezone_resolved = False
+    monkeypatch.setattr(bc, "_browser", None)
+    monkeypatch.setattr(bc, "_playwright_ctx", None)
+    monkeypatch.setattr(bc, "_sessions", {})
+    monkeypatch.setattr(bc, "_timezone_id", None)
+    monkeypatch.setattr(bc, "_timezone_resolved", False)
+    monkeypatch.setattr(bc, "_serp_breaker", {})
 
 
 class _FakeBrowser:
@@ -84,6 +79,9 @@ def test_get_browser_reuses_connection(fake_playwright):
 def test_camoufox_health_tcp_probe(monkeypatch):
     """Health is a TCP connect; a closed port must report unhealthy."""
     monkeypatch.setattr(bc, "CAMOUFOX_WS_URL", "ws://127.0.0.1:1/browser")  # nothing listens on port 1
+    def refused(*args, **kwargs):
+        raise OSError("connection refused")
+    monkeypatch.setattr(bc.socket, "create_connection", refused)
     assert asyncio.run(bc.health()) is False
 
 

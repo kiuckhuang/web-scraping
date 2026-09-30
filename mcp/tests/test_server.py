@@ -581,6 +581,18 @@ def test_format_search_results_no_fallback_note_on_primary_results():
     assert "fallback" not in out
 
 
+def test_browser_primary_provenance_and_snippet():
+    out = server_mod._format_search_results({
+        "provider": "browser:google", "fallback_used": False,
+        "results": [{"title": "A", "url": "https://a.com", "snippet": "browser snippet"}],
+        "attempts": [{"provider": "browser", "status": "ok"}],
+    })
+    assert "Provider: browser:google" in out
+    assert "browser snippet" in out
+    assert "SearXNG engines returned nothing" not in out
+    assert "fallback" not in out
+
+
 # ---------------------------------------------------------------------------
 #  Optional Jina tools — advertised only when JINA_ENABLED reaches the module
 # ---------------------------------------------------------------------------

@@ -23,10 +23,10 @@ import asyncio
 import logging
 import os
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
-from curl_cffi import requests as curl_requests
+from curl_cffi import CurlOpt, requests as curl_requests
 from markdownify import markdownify
 
 from . import ssrf
@@ -77,6 +77,14 @@ def _request_raw(url: str) -> tuple[int, str, dict[str, str], str]:
         proxy=HTTP_FASTPATH_PROXY or None,
         timeout=HTTP_FASTPATH_TIMEOUT,
     ) as session:
+        parsed = urlsplit(url)
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        addresses = ssrf.resolve_public_addresses(host, port)
+        if not HTTP_FASTPATH_PROXY:
+            address = addresses[0]
+            address = f"[{address}]" if ":" in address else address
+            session.curl_options[CurlOpt.RESOLVE] = [f"{host}:{port}:{address}".encode()]
         resp = session.get(url, allow_redirects=False)
         return resp.status_code, str(resp.url), dict(resp.headers), resp.text
 

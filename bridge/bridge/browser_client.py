@@ -21,6 +21,7 @@ import socket
 import time
 import urllib.request
 from collections import deque
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -28,6 +29,7 @@ from markdownify import markdownify
 from playwright.async_api import Browser, Error as PlaywrightError, async_playwright
 
 from . import ssrf
+from .search_results import normalize_results, parse_serp
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ MAX_SESSIONS = int(os.environ.get("CAMOUFOX_MAX_SESSIONS", "16"))
 # it a 200-page crawl against slow/challenging targets can run for hours while
 # the MCP client has long timed out.
 CRAWL_MAX_SECONDS = float(os.environ.get("CRAWL_MAX_SECONDS", "1800"))
+SERP_ENGINE_SECONDS = float(os.environ.get("SERP_ENGINE_SECONDS", "12"))
 # Playwright's remote protocol enforces client/server minor-version parity
 # (the server answers 428 on mismatch); the camoufox image pins playwright
 # 1.62.x (camoufox 0.5.6 requires <1.63) — keep bridge/pyproject.toml on the
@@ -83,6 +86,17 @@ _page_slots = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
 # (Playwright's launchServer cannot serve a persistent profile).
 _sessions: dict[str, Any] = {}
 _sessions_lock = asyncio.Lock()
+_session_invalidator: Callable[[str | None], None] | None = None
+
+
+def set_session_invalidator(callback: Callable[[str | None], None]) -> None:
+    global _session_invalidator
+    _session_invalidator = callback
+
+
+def invalidate_disconnected_sessions() -> None:
+    if _browser is not None and not _browser.is_connected() and _session_invalidator:
+        _session_invalidator(None)
 
 
 class SessionLimitError(RuntimeError):
@@ -98,6 +112,8 @@ async def _reset_browser() -> None:
     # Contexts die with the browser connection — drop the session registry so
     # callers don't hand out dead contexts after a reconnect.
     _sessions.clear()
+    if _session_invalidator:
+        _session_invalidator(None)
     if browser is not None:
         try:
             await browser.close()
@@ -116,6 +132,8 @@ async def _get_browser() -> Browser:
     if _browser is None or not _browser.is_connected():
         async with _lock:
             if _browser is None or not _browser.is_connected():
+                if _browser is not None:
+                    await _reset_browser()
                 logger.info("Connecting to Camoufox at %s", CAMOUFOX_WS_URL)
                 try:
                     _playwright_ctx = await async_playwright().start()
@@ -143,8 +161,16 @@ async def _new_page(session: str | None = None):
         context = await browser.new_context(**context_kwargs)
     else:
         context = browser.contexts[0] if browser.contexts else await browser.new_context(**context_kwargs)
-    page = await context.new_page()
-    await page.route("**/*", _guard_request)
+    page = None
+    try:
+        page = await context.new_page()
+        await page.route("**/*", _guard_request)
+    except BaseException:
+        if page is not None:
+            await page.close()
+        if ISOLATE_CONTEXTS and session is None:
+            await context.close()
+        raise
     return page
 
 
@@ -177,6 +203,8 @@ async def close_session(name: str) -> bool:
     """Close and forget a named session; returns False if it didn't exist."""
     async with _sessions_lock:
         context = _sessions.pop(name, None)
+    if _session_invalidator:
+        _session_invalidator(name)
     if context is None:
         return False
     try:
@@ -386,7 +414,7 @@ async def extract_page(url: str, session: str | None = None) -> dict[str, Any]:
     """
     page = await _new_page(session)
     try:
-        await page.goto(url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
+        response = await page.goto(url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
         await _wait_for_waf(page)
         # domcontentloaded alone can race SPA hydration — give JS pages the
         # configured settle pause before extraction (same as crawl/SERP paths).
@@ -406,6 +434,7 @@ async def extract_page(url: str, session: str | None = None) -> dict[str, Any]:
             "title": title,
             "markdown": markdown,
             "tables": tables,
+            "status": response.status if response else None,
         }
         if await _is_waf_challenge(page):
             result["waf_challenge"] = True
@@ -544,7 +573,7 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50, session: str
         try:
             # Each page holds a slot so concurrent crawls/scrapes stay within
             # MAX_CONCURRENT_PAGES and cannot overwhelm the browser.
-            async with _page_slots:
+            async with asyncio.timeout_at(deadline), _page_slots:
                 page = await _new_page(session)
                 try:
                     await page.goto(current_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
@@ -613,7 +642,10 @@ def _serp_breaker_record(engine: str, ok: bool) -> None:
     _serp_breaker[engine] = (fails, skip_until)
 
 
-async def search_web(query: str, count: int = 10, engines: tuple[str, ...] | None = None) -> dict[str, Any]:
+async def search_web(
+    query: str, count: int = 10, engines: tuple[str, ...] | None = None, *,
+    language: str = "en", time_range: str | None = None, safesearch: int = 0,
+) -> dict[str, Any]:
     """Web search through the stealth browser (real SERP, no API).
 
     Tries the given engines in order (default: DuckDuckGo only) and returns
@@ -635,18 +667,26 @@ async def search_web(query: str, count: int = 10, engines: tuple[str, ...] | Non
             parser = parsers.get(engine)
             if parser is None:
                 raise ValueError(f"Unknown browser search engine: {engine}")
+            filtered = language != "en" or time_range is not None or safesearch != 0
+            if filtered and engine != "google":
+                continue  # DDG HTML/Lite cannot reliably enforce these filters.
             if _serp_breaker_skip(engine):
                 logger.info("Browser SERP %s skipped — circuit breaker open (recent empty results)", engine)
                 continue
             tried.append(engine)
-            page = await _new_page()
+            page = None
             try:
-                results = await parser(page, query, count)
+                async with asyncio.timeout(SERP_ENGINE_SECONDS):
+                    page = await _new_page()
+                    results = await parser(page, query, count, language=language, time_range=time_range,
+                                           safesearch=safesearch) if filtered else await parser(page, query, count)
             except Exception as exc:
                 logger.warning("Browser SERP %s failed for %r: %s", engine, query, exc)
                 results = []
             finally:
-                await _close_page(page)
+                if page is not None:
+                    await _close_page(page)
+            results = normalize_results(results, count)
             _serp_breaker_record(engine, bool(results))
             if results:
                 return {"engine": engine, "query": query, "results": results[:count]}
@@ -661,48 +701,28 @@ async def search_web(query: str, count: int = 10, engines: tuple[str, ...] | Non
         return {**last, "engines_tried": tried}
 
 
-async def _serp_google(page, query: str, count: int) -> list[dict[str, str]]:
+async def _serp_google(
+    page, query: str, count: int, *, language: str = "en",
+    time_range: str | None = None, safesearch: int = 0,
+) -> list[dict[str, str]]:
     """Parse the Google SERP from a Camoufox page.
 
     Google renders results with JS after domcontentloaded (and serves an
     'enable JavaScript' retry shell to challenged clients), so wait for the
     first result heading to actually appear before parsing.
     """
-    search_url = f"https://www.google.com/search?q={quote(query)}&num={count}&hl=en"
+    search_url = f"https://www.google.com/search?q={quote(query)}&num={count}&hl={quote(language)}&safe={'active' if safesearch else 'off'}"
+    if language != "all":
+        search_url += f"&lr=lang_{quote(language.replace('-', '_'))}"
+    if time_range:
+        search_url += f"&tbs=qdr:{ {'day': 'd', 'week': 'w', 'month': 'm', 'year': 'y'}[time_range]}"
     await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
     try:
         await page.wait_for_selector("a h3", timeout=8_000)
     except Exception:
         pass  # shell/challenge page — the evaluate below returns []
     await page.wait_for_timeout(int(NAV_DELAY))
-    return await page.evaluate(
-        """
-        (count) => {
-            const seen = new Set();
-            const results = [];
-            // h3 nodes inside result anchors; closest('a') carries the URL.
-            for (const h3 of document.querySelectorAll('#search a h3, #rso a h3, a > h3')) {
-                if (results.length >= count) break;
-                const anchor = h3.closest('a');
-                if (!anchor || !anchor.href) continue;
-                const url = anchor.href;
-                // Skip Google-internal links (search params, accounts, consent).
-                if (!/^https?:\\/\\//.test(url) || url.includes('google.com/search')
-                    || url.includes('google.com/url') || seen.has(url)) continue;
-                seen.add(url);
-                const block = h3.closest('div.g, div[data-hveid], li');
-                const snippetEl = block && block.querySelector('div.VwiC3b, span.aCOpRe');
-                results.push({
-                    title: h3.innerText.trim(),
-                    url,
-                    snippet: snippetEl ? snippetEl.innerText.trim() : '',
-                });
-            }
-            return results;
-        }
-        """,
-        count,
-    )
+    return await asyncio.to_thread(parse_serp, await page.content(), "google", count)
 
 
 async def _serp_ddg(page, query: str, count: int) -> list[dict[str, str]]:
@@ -710,31 +730,7 @@ async def _serp_ddg(page, query: str, count: int) -> list[dict[str, str]]:
     search_url = f"https://duckduckgo.com/html/?q={quote(query)}"
     await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
     await page.wait_for_timeout(int(NAV_DELAY))
-    return await page.evaluate(
-        """
-        (count) => {
-            const results = [];
-            const items = document.querySelectorAll(
-                '.result, .web-result, .result--more, ' +
-                '[data-testid="result"], article[data-testid="result"], li.result'
-            );
-            for (const item of items) {
-                if (results.length >= count) break;
-                const titleEl = item.querySelector('h2 a, .result__title a, .result__a');
-                const snippetEl = item.querySelector('.result__snippet, .snippet');
-                if (titleEl) {
-                    results.push({
-                        title: titleEl.innerText.trim(),
-                        url: titleEl.href,
-                        snippet: snippetEl ? snippetEl.innerText.trim() : '',
-                    });
-                }
-            }
-            return results;
-        }
-        """,
-        count,
-    )
+    return await asyncio.to_thread(parse_serp, await page.content(), "duckduckgo", count)
 
 
 async def _serp_ddg_lite(page, query: str, count: int) -> list[dict[str, str]]:
@@ -743,28 +739,7 @@ async def _serp_ddg_lite(page, query: str, count: int) -> list[dict[str, str]]:
     search_url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
     await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
     await page.wait_for_timeout(int(NAV_DELAY))
-    rows = await page.evaluate(
-        """
-        (count) => {
-            const results = [];
-            for (const a of document.querySelectorAll('a.result-link')) {
-                if (results.length >= count) break;
-                const tr = a.closest('tr');
-                const snippetEl = tr && tr.nextElementSibling
-                    && tr.nextElementSibling.querySelector('.result-snippet');
-                results.push({
-                    title: a.innerText.trim(),
-                    url: a.href,
-                    snippet: snippetEl ? snippetEl.innerText.trim() : '',
-                });
-            }
-            return results;
-        }
-        """,
-        count,
-    )
-    # Lite wraps some URLs in /l/?uddg=<encoded> redirects — unwrap them.
-    return [{**r, "url": _unwrap_ddg_redirect(r["url"])} for r in rows]
+    return await asyncio.to_thread(parse_serp, await page.content(), "duckduckgo lite", count)
 
 
 def _unwrap_ddg_redirect(url: str) -> str:
@@ -803,6 +778,8 @@ async def shutdown() -> None:
     """Close the Playwright connection and all named sessions."""
     global _browser, _playwright_ctx
     _sessions.clear()
+    if _session_invalidator:
+        _session_invalidator(None)
     if _browser is not None:
         try:
             await _browser.close()

@@ -9,7 +9,7 @@
 
 CONTAINER := podman
 
-.PHONY: all init ensure-env build up down logs test test-unit test-unit-host test-scrape doctor rebuild clean update help
+.PHONY: all init ensure-env build up down logs test test-unit test-unit-host test-scrape test-search doctor rebuild clean update help
 
 all: help
 
@@ -25,6 +25,7 @@ help:
 	@echo "  test      — Unit tests + integration tests (health checks + API smoke tests)"
 	@echo "  test-unit — Unit tests only (in containers if the stack is up, else a host venv like CI)"
 	@echo "  test-scrape — Scrape smoke test through the bridge (example.com)"
+	@echo "  test-search — Live SearXNG/bridge diagnostic (QUERY='your query' optional)"
 	@echo "  doctor    — Diagnose common setup problems"
 	@echo "  rebuild   — Stop, clean caches, rebuild and start"
 	@echo "  update    — Pull latest images, rebuild custom images, restart"
@@ -78,7 +79,7 @@ test: test-unit
 	fi; \
 	echo ""; \
 	echo "[2/4] Bridge search endpoint ..."; \
-	if curl -sf "http://localhost:$$BRIDGE_PORT/search?q=hello+world&max_results=1" | python3 -m json.tool; then \
+	if curl --max-time 120 -sf "http://localhost:$$BRIDGE_PORT/search?q=hello+world&max_results=1" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(json.dumps(data,indent=2)); sys.exit(0 if data.get("results") else 1)'; then \
 		PASS=$$((PASS+1)); echo "  PASS"; \
 	else \
 		FAIL=$$((FAIL+1)); echo "  FAIL"; \
@@ -129,7 +130,7 @@ test-unit:
 test-unit-host:
 	@test -d .venv || python3 -m venv .venv
 	@.venv/bin/pip install --quiet -e "bridge/.[dev]" -r mcp/requirements.txt pytest
-	@.venv/bin/python -m pytest bridge/tests mcp/tests -q
+	@.venv/bin/python -m pytest bridge/tests mcp/tests tests -q
 
 test-scrape:
 	@BRIDGE_PORT=$$(sed -n 's/^PORT_BRIDGE=//p' .env); \
@@ -144,6 +145,9 @@ test-scrape:
 
 doctor:
 	@./scripts/doctor.sh
+
+test-search:
+	@python3 scripts/search_diagnostic.py $(if $(QUERY),--query "$(QUERY)",)
 
 
 rebuild: ensure-env down

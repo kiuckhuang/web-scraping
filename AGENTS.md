@@ -102,6 +102,11 @@ covers the conventions and non-obvious decisions you must not regress.
     The client is `bridge/bridge/exa_client.py`; `/exa_search` and
     `/exa_scrape` are the explicit endpoints (SSRF-validated like every
     URL-fetching endpoint).
+13. **Connection-time egress enforcement** — Compose routes browser and HTTP
+    fast-path traffic through `ws-egress-guard` (8081/8082). It freshly resolves
+    destinations, rejects non-global IPs, and connects/passes validated IPs to
+    upstream proxies. Keep proxy bypasses disabled in Compose; URL validation
+    alone (especially cached DNS verdicts) does not prevent DNS rebinding.
 
 ## Style
 
