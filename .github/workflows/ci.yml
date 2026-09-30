@@ -5,13 +5,11 @@ on:
     paths-ignore:
       - "**.md"
       - ".gitignore"
-      - ".env.example"
       - "opencode.jsonc.example"
   pull_request:
     paths-ignore:
       - "**.md"
       - ".gitignore"
-      - ".env.example"
       - "opencode.jsonc.example"
 
 # Cancel any in-progress CI run on the same branch when a new commit is pushed
@@ -42,7 +40,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e "bridge/.[dev]"
-      - run: python -m pytest bridge/tests -q
+      - run: python -m pytest bridge/tests tests -q
 
   test-mcp:
     name: MCP unit tests
@@ -59,9 +57,10 @@ jobs:
   validate-containers:
     name: Validate Compose and images
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - run: docker compose -f podman-compose.yml config --quiet
       - run: docker build --build-arg APP_UID=1000 --build-arg APP_GID=1000 -t web-scrape-bridge bridge
       - run: docker build --build-arg APP_UID=1000 --build-arg APP_GID=1000 -t web-scrape-mcp mcp
+      - run: docker build --build-arg APP_UID=1000 --build-arg APP_GID=1000 -t web-scrape-camoufox camoufox

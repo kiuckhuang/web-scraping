@@ -29,6 +29,7 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from typing import Any, Literal
 
 import uvicorn
@@ -43,9 +44,11 @@ from .browser_client import (
     crawl_site as browser_crawl,
     create_session as browser_create_session,
     health as browser_health,
+    invalidate_disconnected_sessions,
     list_sessions as browser_list_sessions,
     scrape as browser_scrape,
     search_web as browser_web_search,
+    set_session_invalidator,
     shutdown as browser_shutdown,
 )
 from .exa_client import (
@@ -72,6 +75,8 @@ from .jina_client import (
     shutdown as jina_shutdown,
     status as jina_status,
 )
+from .logging_utils import configure_logging
+from .search_results import normalize_results
 from .searxng_client import (
     health as searxng_health,
     search as searxng_search,
@@ -83,6 +88,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+configure_logging()
 
 # Scrape cache: repeated scrapes of the same URL within the TTL skip the
 # (slow) browser round-trip. Big win for AI agents that re-visit pages.
@@ -118,6 +124,47 @@ BROWSER_SEARCH_ENGINES: tuple[str, ...] = _env_engines("BROWSER_SEARCH_ENGINES",
 # and the shaped JA3/JA4 handshake passes TLS-fingerprint gates. WAF
 # challenges, JS-rendered shells and HTTP errors escalate to the browser.
 HTTP_FASTPATH_ENABLED = _env_flag("HTTP_FASTPATH")
+SEARCH_MAX_SECONDS = float(os.environ.get("SEARCH_MAX_SECONDS", "75"))
+SCRAPE_MAX_SECONDS = float(os.environ.get("SCRAPE_MAX_SECONDS", "90"))
+COMBINED_MAX_SECONDS = float(os.environ.get("COMBINED_MAX_SECONDS", "110"))
+SEARCH_STAGE_SECONDS = float(os.environ.get("SEARCH_STAGE_SECONDS", "20"))
+SEARCH_CACHE_TTL = float(os.environ.get("SEARCH_CACHE_TTL", "60"))
+SEARCH_CACHE_MAX = int(os.environ.get("SEARCH_CACHE_MAX", "100"))
+_search_cache: dict[tuple, tuple[float, dict[str, Any]]] = {}
+
+
+class OperationDeadline:
+    """Pure ASGI deadline: cancellation also stops downstream handler tasks."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        path = scope["path"]
+        budget = COMBINED_MAX_SECONDS if path == "/search_and_scrape" else (
+            SEARCH_MAX_SECONDS if path in ("/search", "/web_search", "/jina_search", "/exa_search")
+            else SCRAPE_MAX_SECONDS
+        )
+        if path == "/crawl":
+            from .browser_client import CRAWL_MAX_SECONDS
+            budget = CRAWL_MAX_SECONDS + 2 if CRAWL_MAX_SECONDS > 0 else None
+        started = False
+
+        async def tracked_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            async with asyncio.timeout(budget):
+                await self.app(scope, receive, tracked_send)
+        except TimeoutError:
+            if not started:
+                from fastapi.responses import JSONResponse
+                await JSONResponse(status_code=504, content={"detail": "Operation deadline exceeded"})(scope, receive, send)
 
 
 @asynccontextmanager
@@ -151,6 +198,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.add_middleware(OperationDeadline)
 
 
 @app.middleware("http")
@@ -234,12 +282,14 @@ def _is_public_url(url: str) -> bool:
 #  Scrape cache — TTL + size-bounded, keyed by (url, mode)
 # ---------------------------------------------------------------------------
 
-_cache: dict[tuple[str, str], tuple[float, dict[str, Any], int]] = {}
+_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any], int]] = {}
 _cache_bytes = 0
 
 
 async def _cache_get(url: str, mode: str, session: str | None = None) -> dict[str, Any] | None:
     global _cache_bytes
+    if session:
+        invalidate_disconnected_sessions()
     key = (url, mode, session or "")
     item = _cache.get(key)
     if item is None:
@@ -255,9 +305,10 @@ async def _cache_get(url: str, mode: str, session: str | None = None) -> dict[st
 def _cache_set(url: str, mode: str, value: dict[str, Any], session: str | None = None) -> None:
     global _cache_bytes
     size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
-    if size > BRIDGE_CACHE_MAX_BYTES:
+    if size > BRIDGE_CACHE_MAX_BYTES or BRIDGE_CACHE_MAX <= 0 or BRIDGE_CACHE_TTL <= 0:
         return
-    existing = _cache.pop((url, mode), None)
+    key = (url, mode, session or "")
+    existing = _cache.pop(key, None)
     if existing is not None:
         _cache_bytes -= existing[2]
     while _cache and (
@@ -265,8 +316,19 @@ def _cache_set(url: str, mode: str, value: dict[str, Any], session: str | None =
     ):
         oldest = min(_cache, key=lambda k: _cache[k][0])
         _cache_bytes -= _cache.pop(oldest)[2]
-    _cache[(url, mode, session or "")] = (time.monotonic(), value, size)
+    _cache[key] = (time.monotonic(), value, size)
     _cache_bytes += size
+
+
+def _cache_invalidate_session(session: str | None) -> None:
+    """None invalidates all named-session entries after a browser reset."""
+    global _cache_bytes
+    for key in list(_cache):
+        if key[2] and (session is None or key[2] == session):
+            _cache_bytes -= _cache.pop(key)[2]
+
+
+set_session_invalidator(_cache_invalidate_session)
 
 
 def _cacheable(content: dict[str, Any]) -> bool:
@@ -322,7 +384,7 @@ def _fallback_allowed(categories: str | None, pageno: int, query: str) -> bool:
         return False
     if not categories:
         return True
-    return "general" in [c.strip().lower() for c in categories.split(",")]
+    return [c.strip().lower() for c in categories.split(",")] == ["general"]
 
 
 async def _stage_searxng(
@@ -333,7 +395,7 @@ async def _stage_searxng(
     results (so its unresponsive_engines stay available to later stages);
     None only when SearXNG itself failed."""
     try:
-        return await searxng_search(
+        return await asyncio.wait_for(searxng_search(
             q,
             categories=categories,
             language=language,
@@ -341,7 +403,7 @@ async def _stage_searxng(
             time_range=time_range,
             safesearch=safesearch,
             max_results=max_results,
-        )
+        ), timeout=SEARCH_STAGE_SECONDS)
     except Exception as exc:
         logger.warning("SearXNG search failed for %r: %s", q, exc)
         return None
@@ -354,13 +416,13 @@ async def _stage_bing(
     """SearXNG bing stage: the engine is not registered anymore, so force it
     with an inline "!bing" bang for this query only. None on error/empty."""
     try:
-        bing = await searxng_search(
+        bing = await asyncio.wait_for(searxng_search(
             f"!bing {q}",
             categories=categories,
             language=language,
             safesearch=safesearch,
             max_results=max_results,
-        )
+        ), timeout=SEARCH_STAGE_SECONDS)
         if bing.get("results"):
             bing["query"] = q
             bing["fallback"] = "bing"
@@ -374,11 +436,20 @@ async def _stage_bing(
     return None
 
 
-async def _stage_browser(q: str, *, max_results: int, unresponsive: list) -> dict[str, Any] | None:
+async def _stage_browser(
+    q: str, *, max_results: int, unresponsive: list, language: str = "en",
+    time_range: str | None = None, safesearch: int = 0,
+) -> dict[str, Any] | None:
     """Stealth-browser stage: scrape real SERPs (engine order via
     BROWSER_SEARCH_ENGINES). Results are normalized to the SearXNG shape."""
     try:
-        web = await browser_web_search(q, count=max_results, engines=BROWSER_SEARCH_ENGINES)
+        filters = {}
+        if language != "en" or time_range or safesearch:
+            filters = {"language": language, "time_range": time_range, "safesearch": safesearch}
+        web = await asyncio.wait_for(
+            browser_web_search(q, count=max_results, engines=BROWSER_SEARCH_ENGINES, **filters),
+            timeout=SEARCH_STAGE_SECONDS,
+        )
         results = [
             {
                 "title": r.get("title", "Untitled"),
@@ -386,7 +457,7 @@ async def _stage_browser(q: str, *, max_results: int, unresponsive: list) -> dic
                 "content": (r.get("snippet") or "").strip(),
                 "engine": web.get("engine", "browser"),
             }
-            for r in web.get("results", [])
+            for r in normalize_results(web.get("results", []), max_results)
             if r.get("url")
         ]
         if results:
@@ -410,7 +481,7 @@ async def _stage_jina(q: str, *, max_results: int, unresponsive: list) -> dict[s
     under "jina_pages" for /search_and_scrape to reuse (stripped by /search).
     """
     try:
-        served = await jina_search(q, max_results=max_results)
+        served = await asyncio.wait_for(jina_search(q, max_results=max_results), timeout=SEARCH_STAGE_SECONDS)
     except Exception as exc:
         logger.warning("Jina search fallback failed for %r: %s", q, exc)
         return None
@@ -430,7 +501,7 @@ async def _stage_exa(q: str, *, max_results: int, unresponsive: list) -> dict[st
     (stripped by /search).
     """
     try:
-        served = await exa_search(q, max_results=max_results)
+        served = await asyncio.wait_for(exa_search(q, max_results=max_results), timeout=SEARCH_STAGE_SECONDS)
     except Exception as exc:
         logger.warning("Exa search fallback failed for %r: %s", q, exc)
         return None
@@ -443,6 +514,29 @@ async def _stage_exa(q: str, *, max_results: int, unresponsive: list) -> dict[st
 
 
 async def _search_with_fallbacks(
+    q: str, *, categories: str | None, language: str, pageno: int,
+    time_range: str | None, safesearch: int, max_results: int,
+) -> dict[str, Any]:
+    key = (q, categories, language, pageno, time_range, safesearch, max_results)
+    hit = _search_cache.get(key)
+    if hit and time.monotonic() - hit[0] < SEARCH_CACHE_TTL:
+        return {**deepcopy(hit[1]), "cached": True}
+    try:
+        async with asyncio.timeout(SEARCH_MAX_SECONDS):
+            result = await _run_search_chain(q, categories=categories, language=language, pageno=pageno,
+                                             time_range=time_range, safesearch=safesearch, max_results=max_results)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="Search deadline exceeded") from None
+    if result.get("results") and SEARCH_CACHE_TTL > 0 and SEARCH_CACHE_MAX > 0:
+        if len(_search_cache) >= SEARCH_CACHE_MAX:
+            _search_cache.pop(min(_search_cache, key=lambda k: _search_cache[k][0]))
+        # Keep full page channels out of the cache: they are large and session-sensitive.
+        cached = {k: v for k, v in result.items() if k not in ("jina_pages", "exa_pages")}
+        _search_cache[key] = (time.monotonic(), deepcopy(cached))
+    return result
+
+
+async def _run_search_chain(
     q: str,
     *,
     categories: str | None,
@@ -479,17 +573,49 @@ async def _search_with_fallbacks(
         stage_names.append("exa")
 
     searxng_result: dict[str, Any] | None = None
+    attempts: list[dict[str, Any]] = []
+
+    def finish(result: dict[str, Any], stage: str) -> dict[str, Any]:
+        provider = result.get("fallback") or stage
+        fallback_used = bool(result.get("results")) and any(
+            a["provider"] != stage and a["status"] != "skipped" for a in attempts
+        )
+        result.update(
+            provider=provider,
+            fallback_used=fallback_used,
+            attempts=attempts,
+            filters_applied={"categories": categories, "language": language, "pageno": pageno,
+                             "time_range": time_range, "safesearch": safesearch},
+        )
+        if fallback_used:
+            result["fallback"] = provider
+        else:
+            result.pop("fallback", None)
+        return result
+
     for stage in stage_names:
+        stage_started = time.monotonic()
         if stage == "searxng":
             searxng_result = await _stage_searxng(
                 q, categories=categories, language=language, pageno=pageno,
                 time_range=time_range, safesearch=safesearch, max_results=max_results,
             )
+            attempts.append({"provider": stage, "status": "ok" if searxng_result and searxng_result.get("results")
+                             else "empty" if searxng_result is not None else "error",
+                             "seconds": round(time.monotonic() - stage_started, 3),
+                             "unresponsive_engines": (searxng_result or {}).get("unresponsive_engines", [])})
             if searxng_result is not None and searxng_result.get("results"):
-                return searxng_result
+                return finish(searxng_result, stage)
         elif stage in ("bing", "browser", "jina", "exa"):
             # All fallback stages are page-1 general-web searches — gated.
             if not _fallback_allowed(categories, pageno, q):
+                attempts.append({"provider": stage, "status": "skipped", "reason": "unsupported category, page or bang"})
+                continue
+            if stage in ("jina", "exa") and (language != "en" or time_range or safesearch):
+                attempts.append({"provider": stage, "status": "skipped", "reason": "unsupported filters"})
+                continue
+            if stage == "bing" and time_range:
+                attempts.append({"provider": stage, "status": "skipped", "reason": "unsupported filters"})
                 continue
             # In searxng-primary mode the merge ran first; surface its gap.
             unresponsive = (searxng_result or {}).get("unresponsive_engines", [])
@@ -499,16 +625,19 @@ async def _search_with_fallbacks(
                     max_results=max_results, unresponsive=unresponsive,
                 )
             elif stage == "browser":
-                served = await _stage_browser(q, max_results=max_results, unresponsive=unresponsive)
+                served = await _stage_browser(q, max_results=max_results, unresponsive=unresponsive,
+                                              language=language, time_range=time_range, safesearch=safesearch)
             elif stage == "jina":
                 served = await _stage_jina(q, max_results=max_results, unresponsive=unresponsive)
             else:
                 served = await _stage_exa(q, max_results=max_results, unresponsive=unresponsive)
+            attempts.append({"provider": stage, "status": "ok" if served is not None else "unavailable",
+                             "seconds": round(time.monotonic() - stage_started, 3)})
             if served is not None:
-                return served
+                return finish(served, stage)
 
     if searxng_result is not None:
-        return searxng_result
+        return finish(searxng_result, "searxng")
     raise HTTPException(
         status_code=502,
         detail=f"All search stages failed (stages tried: {', '.join(stage_names) or 'none enabled'})",
@@ -521,7 +650,7 @@ async def search(
     categories: str | None = Query(None),
     language: str = Query("en"),
     pageno: int = Query(1, ge=1),
-    time_range: str | None = Query(None, description="Time range: day, week, month, year"),
+    time_range: Literal["day", "week", "month", "year"] | None = Query(None, description="Time range: day, week, month, year"),
     safesearch: int = Query(0, ge=0, le=2),
     max_results: int = Query(10, ge=1, le=50),
 ) -> dict[str, Any]:
@@ -552,6 +681,14 @@ async def search(
 # ---------------------------------------------------------------------------
 
 async def _scrape_with_transports(url: str, *, mode: str, session: str | None) -> dict[str, Any]:
+    try:
+        async with asyncio.timeout(SCRAPE_MAX_SECONDS):
+            return await _run_scrape_transports(url, mode=mode, session=session)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="Scrape deadline exceeded") from None
+
+
+async def _run_scrape_transports(url: str, *, mode: str, session: str | None) -> dict[str, Any]:
     """Scrape through the cheapest transport that can serve the page.
 
     The HTTP fast path (curl_cffi, Chrome-shaped TLS) serves static pages in
@@ -577,8 +714,19 @@ async def _scrape_with_transports(url: str, *, mode: str, session: str | None) -
         except Exception as exc:
             logger.warning("HTTP fast path failed for %s (%s) — escalating to browser", url, exc)
     try:
-        return await browser_scrape(url, mode=mode, session=session)
+        content = await browser_scrape(url, mode=mode, session=session)
+        failure = _scrape_failure(content)
+        if failure is None:
+            return content
+        status = content.get("status")
+        if not content.get("waf_challenge") and status not in (401, 403, 408, 429) and not (
+            isinstance(status, int) and status >= 500
+        ):
+            raise HTTPException(status_code=502, detail=failure)
+        raise RuntimeError(failure)
     except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise
         # Last resort: Jina's reader renders the page in Jina's own cloud, so
         # it can serve pages whose WAF defeats both our IP and our browser.
         # Never for named sessions (cookieless third party — login cookies
@@ -588,6 +736,8 @@ async def _scrape_with_transports(url: str, *, mode: str, session: str | None) -
             try:
                 content = await jina_scrape(url, mode=mode)
                 logger.info("Jina reader served %s (mode=%s)", url, mode)
+                if _scrape_failure(content):
+                    raise RuntimeError(_scrape_failure(content))
                 return {**content, "transport": "jina"}
             except Exception as jina_exc:
                 logger.warning("Jina reader failed for %s: %s", url, jina_exc)
@@ -599,10 +749,21 @@ async def _scrape_with_transports(url: str, *, mode: str, session: str | None) -
             try:
                 content = await exa_scrape(url, mode=mode)
                 logger.info("Exa contents served %s (mode=%s)", url, mode)
+                if _scrape_failure(content):
+                    raise RuntimeError(_scrape_failure(content))
                 return {**content, "transport": "exa"}
             except Exception as exa_exc:
                 logger.warning("Exa contents failed for %s: %s", url, exa_exc)
         raise
+
+
+def _scrape_failure(content: dict[str, Any]) -> str | None:
+    if content.get("waf_challenge"):
+        return "Browser returned an unresolved WAF/CAPTCHA challenge"
+    status = content.get("status")
+    if isinstance(status, int) and status >= 400:
+        return f"Target returned HTTP {status}"
+    return None
 
 
 @app.post("/scrape")
@@ -619,6 +780,8 @@ async def scrape(req: ScrapeRequest) -> dict[str, Any]:
         return {**cached, "cached": True}
     try:
         content = await _scrape_with_transports(req.url, mode=req.mode, session=req.session)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Scrape error: {exc}")
     if _cacheable(content):
@@ -648,6 +811,8 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
             safesearch=0,
             max_results=req.max_results,
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Search error: {exc}")
 
@@ -679,7 +844,7 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
         if page is None:
             page = exa_pages.get(url)
             transport = "exa"
-        if page and req.scrape_mode == "extract":
+        if page and req.scrape_mode == "extract" and req.session is None:
             content = {
                 "url": url,
                 "title": page.get("title") or result.get("title") or "",
@@ -705,6 +870,10 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
         "number_of_results": results.get("number_of_results", 0),
         "results": scraped,
         "fallback": results.get("fallback"),
+        "provider": results.get("provider"),
+        "fallback_used": results.get("fallback_used", False),
+        "attempts": results.get("attempts", []),
+        "filters_applied": results.get("filters_applied", {}),
     }
 
 
@@ -759,6 +928,7 @@ async def list_sessions() -> dict[str, Any]:
 async def delete_session(name: str = Path(..., pattern=_SESSION_NAME_PATTERN, description="Session name")) -> dict[str, Any]:
     """Close and forget a named browser session."""
     deleted = await browser_close_session(name)
+    _cache_invalidate_session(name)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Session not found: {name}")
     return {"name": name, "deleted": True}

@@ -231,7 +231,7 @@ def test_general_category_still_falls_back(monkeypatch):
 
     monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
     monkeypatch.setattr(main_mod, "browser_web_search", fake_browser)
-    resp = _run(categories="general,it")
+    resp = _run(categories="general")
     assert resp["fallback"] == "browser:google"
 
 
@@ -303,7 +303,10 @@ def test_browser_primary_serves_without_searxng(monkeypatch):
     monkeypatch.setattr(main_mod, "searxng_search", fail)
     monkeypatch.setattr(main_mod, "browser_web_search", fake_browser)
     resp = _run()
-    assert resp["fallback"] == "browser:duckduckgo"
+    assert "fallback" not in resp
+    assert resp["provider"] == "browser:duckduckgo"
+    assert resp["fallback_used"] is False
+    assert [(a["provider"], a["status"]) for a in resp["attempts"]] == [("browser", "ok")]
 
 
 def test_browser_primary_falls_back_to_searxng(monkeypatch):
@@ -321,7 +324,7 @@ def test_browser_primary_falls_back_to_searxng(monkeypatch):
     monkeypatch.setattr(main_mod, "browser_web_search", fake_browser)
     resp = _run()
     assert seen == ["q"]
-    assert "fallback" not in resp
+    assert resp["fallback"] == "searxng"
     assert resp["results"][0]["engine"] == "x"
 
 
@@ -360,3 +363,29 @@ def test_browser_primary_bing_stage_absent(monkeypatch):
     monkeypatch.setattr(main_mod, "browser_web_search", fake_browser)
     resp = _run()
     assert resp["results"] == []
+
+
+def test_browser_filters_are_forwarded_and_cloud_stages_skipped(monkeypatch):
+    monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "browser")
+    monkeypatch.setattr(main_mod, "JINA_SEARCH_FALLBACK", True)
+    monkeypatch.setattr(main_mod, "EXA_SEARCH_FALLBACK", True)
+    seen = {}
+
+    async def browser(query, **kwargs):
+        seen.update(kwargs)
+        return {"results": []}
+
+    async def searxng(query, **kwargs):
+        return _searxng_response([])
+
+    def fail(*args, **kwargs):
+        raise AssertionError("cloud providers cannot enforce these filters")
+
+    monkeypatch.setattr(main_mod, "browser_web_search", browser)
+    monkeypatch.setattr(main_mod, "searxng_search", searxng)
+    monkeypatch.setattr(main_mod, "jina_search", fail)
+    monkeypatch.setattr(main_mod, "exa_search", fail)
+    out = _run(language="fr", time_range="week", safesearch=2)
+    assert (seen["language"], seen["time_range"], seen["safesearch"]) == ("fr", "week", 2)
+    assert out["filters_applied"]["time_range"] == "week"
+    assert [a["provider"] for a in out["attempts"] if a.get("reason") == "unsupported filters"] == ["jina", "exa"]

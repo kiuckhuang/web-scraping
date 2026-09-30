@@ -40,7 +40,7 @@ echo ""
 echo "=== Containers ==="
 
 if [ -n "$CONTAINER_CMD" ]; then
-    for svc in valkey searxng camoufox bridge mcp; do
+    for svc in valkey egress-guard searxng camoufox bridge mcp; do
         if $CONTAINER_CMD ps --format '{{.Names}}' | grep -q "ws-$svc"; then
             ok "ws-$svc running"
         else
@@ -86,4 +86,5 @@ fi
 
 echo ""
 echo "=== Result: $PASS passed, $FAIL failed ==="
+echo "Search engine availability is separate from health: run 'make test-search'."
 [ "$FAIL" -eq 0 ]

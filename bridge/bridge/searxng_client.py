@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import httpx
 
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
-DEFAULT_TIMEOUT = 15.0
+DEFAULT_TIMEOUT = float(os.environ.get("SEARXNG_CLIENT_TIMEOUT", "18"))
+BREAKER_THRESHOLD = int(os.environ.get("SEARXNG_BREAKER_THRESHOLD", "2"))
+BREAKER_COOLDOWN = float(os.environ.get("SEARXNG_BREAKER_COOLDOWN", "60"))
+_failures = 0
+_skip_until = 0.0
 SEARXNG_HEADERS = {
     "X-Real-IP": "127.0.0.1",
     "X-Forwarded-For": "127.0.0.1",
@@ -64,6 +69,11 @@ async def search(
         - query, number_of_results, results[], unresponsive_engines[]
     """
     language = LANGUAGE_ALIASES.get(language.lower(), language)
+    global _failures, _skip_until
+    general = not categories or categories == "general"
+    breaker_applies = general and not query.lstrip().startswith("!") and pageno == 1
+    if breaker_applies and time.monotonic() < _skip_until:
+        raise RuntimeError("SearXNG circuit breaker open after repeated unavailable searches")
     params: dict[str, Any] = {
         "q": query,
         "format": "json",
@@ -77,23 +87,30 @@ async def search(
         params["time_range"] = time_range
 
     client = _get_client()
-    resp = await client.get(f"{SEARXNG_URL}/search", params=params)
-    resp.raise_for_status()
-    data = resp.json()
-
-    # Some engines cannot provide dated results for all locales. Preserve
-    # useful search output when a strict time filter produces no results.
-    if time_range and not data.get("results"):
-        fallback_params = {**params}
-        fallback_params.pop("time_range", None)
-        fallback_resp = await client.get(f"{SEARXNG_URL}/search", params=fallback_params)
-        fallback_resp.raise_for_status()
-        data = fallback_resp.json()
-        data["time_range_fallback"] = True
+    try:
+        resp = await client.get(f"{SEARXNG_URL}/search", params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        if breaker_applies:
+            _record_failure()
+        raise
+    if breaker_applies:
+        if data.get("results"):
+            _failures, _skip_until = 0, 0.0
+        elif data.get("unresponsive_engines"):
+            _record_failure()
 
     results = data.get("results", [])[:max_results]
     data["results"] = results
     return data
+
+
+def _record_failure() -> None:
+    global _failures, _skip_until
+    _failures += 1
+    if BREAKER_THRESHOLD > 0 and _failures >= BREAKER_THRESHOLD:
+        _skip_until = time.monotonic() + BREAKER_COOLDOWN
 
 
 async def health() -> bool:

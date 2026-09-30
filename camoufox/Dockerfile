@@ -1,6 +1,5 @@
 # Camoufox — anti-detect Firefox (patched at the C++ level), served over
-# Playwright's websocket protocol. Opt-in alternative to Fortress (stage 1 of
-# the migration path; see README "Alternative browser engine").
+# Playwright's websocket protocol; the stack's browser engine.
 FROM python:3.12-slim
 
 ARG APP_UID=1000
