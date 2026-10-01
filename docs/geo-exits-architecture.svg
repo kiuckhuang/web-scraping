@@ -1,0 +1,209 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 800" role="img" aria-label="Geo-exit scraping architecture: one Camoufox per exit, sing-box WireGuard fabric, egress-guard preserved" font-family="ui-sans-serif, system-ui, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#57606a"/>
+    </marker>
+    <marker id="a-ca" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#e76f51"/>
+    </marker>
+    <marker id="a-hk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#c1121f"/>
+    </marker>
+    <marker id="a-jp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#e9a03b"/>
+    </marker>
+    <marker id="a-uk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3a5bcd"/>
+    </marker>
+    <marker id="a-us" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f8a70"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1180" height="800" fill="#ffffff"/>
+
+  <text x="590" y="38" text-anchor="middle" font-size="20" font-weight="700" fill="#1f2328">Geo-exit scraping architecture — CA · HK · JP · UK · US</text>
+  <text x="590" y="60" text-anchor="middle" font-size="12.5" fill="#57606a">One Camoufox container per exit · sing-box WireGuard fabric · egress-guard chain preserved · design doc — not implemented yet</text>
+
+  <!-- ============ left column: clients / edge ============ -->
+  <rect x="24" y="140" width="170" height="56" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="109" y="163" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1f2328">AI agents / apps</text>
+  <text x="109" y="181" text-anchor="middle" font-size="10.5" fill="#57606a">MCP · REST callers</text>
+
+  <rect x="24" y="236" width="170" height="52" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="109" y="258" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1f2328">ws-mcp</text>
+  <text x="109" y="276" text-anchor="middle" font-size="10.5" fill="#57606a">:9100 · edge network</text>
+
+  <rect x="24" y="328" width="170" height="64" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="109" y="350" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1f2328">ws-bridge — FastAPI</text>
+  <text x="109" y="368" text-anchor="middle" font-size="10.5" fill="#57606a">:8000 · session→exit map</text>
+  <text x="109" y="384" text-anchor="middle" font-size="10.5" fill="#57606a">per-exit TZ resolution</text>
+
+  <rect x="24" y="640" width="170" height="64" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-dasharray="5 4"/>
+  <text x="109" y="662" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">ws-searxng (optional)</text>
+  <text x="109" y="680" text-anchor="middle" font-size="10.5" fill="#57606a">profile: searxng</text>
+  <text x="109" y="696" text-anchor="middle" font-size="10.5" fill="#57606a">per-engine geo networks</text>
+
+  <line x1="109" y1="196" x2="109" y2="232" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="109" y1="288" x2="109" y2="324" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="109" y1="392" x2="109" y2="636" stroke="#57606a" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <text x="115" y="520" font-size="10" fill="#57606a">search chain</text>
+
+  <!-- ============ browser fleet ============ -->
+  <rect x="280" y="96" width="244" height="356" rx="10" fill="none" stroke="#d0d7de" stroke-dasharray="6 5"/>
+  <text x="402" y="114" text-anchor="middle" font-size="10" letter-spacing="1" fill="#57606a">BROWSER FLEET — ONE CAMOUFOX PER EXIT</text>
+
+  <g>
+    <rect x="302" y="128" width="200" height="50" rx="8" fill="#e76f51" fill-opacity="0.10" stroke="#e76f51"/>
+    <rect x="302" y="128" width="4" height="50" fill="#e76f51"/>
+    <text x="316" y="148" font-size="12.5" font-weight="600" fill="#1f2328">camoufox-ca</text>
+    <text x="316" y="166" font-size="10.5" fill="#57606a">Playwright ws :9222/browser</text>
+
+    <rect x="302" y="194" width="200" height="50" rx="8" fill="#c1121f" fill-opacity="0.10" stroke="#c1121f"/>
+    <rect x="302" y="194" width="4" height="50" fill="#c1121f"/>
+    <text x="316" y="214" font-size="12.5" font-weight="600" fill="#1f2328">camoufox-hk</text>
+    <text x="316" y="232" font-size="10.5" fill="#57606a">Playwright ws :9222/browser</text>
+
+    <rect x="302" y="260" width="200" height="50" rx="8" fill="#e9a03b" fill-opacity="0.10" stroke="#e9a03b"/>
+    <rect x="302" y="260" width="4" height="50" fill="#e9a03b"/>
+    <text x="316" y="280" font-size="12.5" font-weight="600" fill="#1f2328">camoufox-jp</text>
+    <text x="316" y="298" font-size="10.5" fill="#57606a">Playwright ws :9222/browser</text>
+
+    <rect x="302" y="326" width="200" height="50" rx="8" fill="#3a5bcd" fill-opacity="0.10" stroke="#3a5bcd"/>
+    <rect x="302" y="326" width="4" height="50" fill="#3a5bcd"/>
+    <text x="316" y="346" font-size="12.5" font-weight="600" fill="#1f2328">camoufox-uk</text>
+    <text x="316" y="364" font-size="10.5" fill="#57606a">Playwright ws :9222/browser</text>
+
+    <rect x="302" y="392" width="200" height="50" rx="8" fill="#1f8a70" fill-opacity="0.10" stroke="#1f8a70"/>
+    <rect x="302" y="392" width="4" height="50" fill="#1f8a70"/>
+    <text x="316" y="412" font-size="12.5" font-weight="600" fill="#1f2328">camoufox-us</text>
+    <text x="316" y="430" font-size="10.5" fill="#57606a">Playwright ws :9222/browser</text>
+  </g>
+
+  <!-- ============ egress guards ============ -->
+  <rect x="560" y="96" width="160" height="356" rx="10" fill="none" stroke="#d0d7de" stroke-dasharray="6 5"/>
+  <text x="640" y="114" text-anchor="middle" font-size="10" letter-spacing="1" fill="#57606a">EGRESS GUARDS ×5</text>
+
+  <g>
+    <rect x="572" y="128" width="136" height="50" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="640" y="148" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">guard-ca :8081</text>
+    <text x="640" y="166" text-anchor="middle" font-size="9.5" fill="#57606a">DNS-pinned egress</text>
+
+    <rect x="572" y="194" width="136" height="50" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="640" y="214" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">guard-hk :8081</text>
+    <text x="640" y="232" text-anchor="middle" font-size="9.5" fill="#57606a">DNS-pinned egress</text>
+
+    <rect x="572" y="260" width="136" height="50" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="640" y="280" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">guard-jp :8081</text>
+    <text x="640" y="298" text-anchor="middle" font-size="9.5" fill="#57606a">DNS-pinned egress</text>
+
+    <rect x="572" y="326" width="136" height="50" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="640" y="346" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">guard-uk :8081</text>
+    <text x="640" y="364" text-anchor="middle" font-size="9.5" fill="#57606a">DNS-pinned egress</text>
+
+    <rect x="572" y="392" width="136" height="50" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="640" y="412" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">guard-us :8081</text>
+    <text x="640" y="430" text-anchor="middle" font-size="9.5" fill="#57606a">DNS-pinned egress</text>
+  </g>
+
+  <!-- ============ exit router (sing-box) ============ -->
+  <rect x="790" y="128" width="176" height="316" rx="10" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+  <text x="878" y="150" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">ws-exit-router</text>
+  <text x="878" y="166" text-anchor="middle" font-size="10.5" fill="#57606a">(sing-box)</text>
+
+  <rect x="802" y="183" width="9" height="9" rx="2" fill="#e76f51"/>
+  <text x="818" y="192" font-size="11" fill="#1f2328">:10801 → WG · CA</text>
+  <rect x="802" y="209" width="9" height="9" rx="2" fill="#c1121f"/>
+  <text x="818" y="218" font-size="11" fill="#1f2328">:10802 → WG · HK</text>
+  <rect x="802" y="235" width="9" height="9" rx="2" fill="#e9a03b"/>
+  <text x="818" y="244" font-size="11" fill="#1f2328">:10803 → WG · JP</text>
+  <rect x="802" y="261" width="9" height="9" rx="2" fill="#3a5bcd"/>
+  <text x="818" y="270" font-size="11" fill="#1f2328">:10804 → WG · UK</text>
+  <rect x="802" y="287" width="9" height="9" rx="2" fill="#1f8a70"/>
+  <text x="818" y="296" font-size="11" fill="#1f2328">:10805 → WG · US</text>
+
+  <text x="802" y="330" font-size="9.5" fill="#57606a">ip_is_private → reject</text>
+  <text x="802" y="346" font-size="9.5" fill="#57606a">fail-closed (no default out)</text>
+  <text x="802" y="362" font-size="9.5" fill="#57606a">exit-side DNS per inbound</text>
+  <text x="802" y="378" font-size="9.5" fill="#57606a">urltest health per exit</text>
+
+  <!-- ============ VPS exits ============ -->
+  <text x="995" y="118" text-anchor="middle" font-size="10" fill="#57606a">WireGuard tunnels</text>
+  <g>
+    <rect x="1024" y="128" width="132" height="50" rx="8" fill="#e76f51" fill-opacity="0.10" stroke="#e76f51"/>
+    <text x="1090" y="148" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">VPS · CA</text>
+    <text x="1090" y="166" text-anchor="middle" font-size="9.5" fill="#57606a">WireGuard :51820</text>
+
+    <rect x="1024" y="194" width="132" height="50" rx="8" fill="#c1121f" fill-opacity="0.10" stroke="#c1121f"/>
+    <text x="1090" y="214" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">VPS · HK</text>
+    <text x="1090" y="232" text-anchor="middle" font-size="9.5" fill="#57606a">WireGuard :51820</text>
+
+    <rect x="1024" y="260" width="132" height="50" rx="8" fill="#e9a03b" fill-opacity="0.10" stroke="#e9a03b"/>
+    <text x="1090" y="280" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">VPS · JP</text>
+    <text x="1090" y="298" text-anchor="middle" font-size="9.5" fill="#57606a">WireGuard :51820</text>
+
+    <rect x="1024" y="326" width="132" height="50" rx="8" fill="#3a5bcd" fill-opacity="0.10" stroke="#3a5bcd"/>
+    <text x="1090" y="346" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">VPS · UK</text>
+    <text x="1090" y="364" text-anchor="middle" font-size="9.5" fill="#57606a">WireGuard :51820</text>
+
+    <rect x="1024" y="392" width="132" height="50" rx="8" fill="#1f8a70" fill-opacity="0.10" stroke="#1f8a70"/>
+    <text x="1090" y="412" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">VPS · US</text>
+    <text x="1090" y="430" text-anchor="middle" font-size="9.5" fill="#57606a">WireGuard :51820</text>
+  </g>
+
+  <!-- ============ arrows: fleet -> guards -> router -> exits ============ -->
+  <g stroke="#57606a" stroke-width="1.5">
+    <line x1="502" y1="153" x2="568" y2="153" marker-end="url(#a)"/>
+    <line x1="502" y1="219" x2="568" y2="219" marker-end="url(#a)"/>
+    <line x1="502" y1="285" x2="568" y2="285" marker-end="url(#a)"/>
+    <line x1="502" y1="351" x2="568" y2="351" marker-end="url(#a)"/>
+    <line x1="502" y1="417" x2="568" y2="417" marker-end="url(#a)"/>
+
+    <line x1="708" y1="153" x2="786" y2="153" marker-end="url(#a)"/>
+    <line x1="708" y1="219" x2="786" y2="219" marker-end="url(#a)"/>
+    <line x1="708" y1="285" x2="786" y2="285" marker-end="url(#a)"/>
+    <line x1="708" y1="351" x2="786" y2="351" marker-end="url(#a)"/>
+    <line x1="708" y1="417" x2="786" y2="417" marker-end="url(#a)"/>
+  </g>
+
+  <g stroke-width="2" stroke-dasharray="6 4">
+    <line x1="966" y1="153" x2="1020" y2="153" stroke="#e76f51" marker-end="url(#a-ca)"/>
+    <line x1="966" y1="219" x2="1020" y2="219" stroke="#c1121f" marker-end="url(#a-hk)"/>
+    <line x1="966" y1="285" x2="1020" y2="285" stroke="#e9a03b" marker-end="url(#a-jp)"/>
+    <line x1="966" y1="351" x2="1020" y2="351" stroke="#3a5bcd" marker-end="url(#a-uk)"/>
+    <line x1="966" y1="417" x2="1020" y2="417" stroke="#1f8a70" marker-end="url(#a-us)"/>
+  </g>
+
+  <!-- bridge -> fleet -->
+  <line x1="194" y1="344" x2="280" y2="320" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="237" y="314" text-anchor="middle" font-size="10" fill="#57606a">Playwright ws</text>
+
+  <!-- ============ bottom flows ============ -->
+  <polyline points="194,380 236,380 236,568 300,568" fill="none" stroke="#57606a" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <rect x="300" y="540" width="264" height="56" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-dasharray="5 4"/>
+  <text x="432" y="562" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">HTTP fast path — curl_cffi</text>
+  <text x="432" y="580" text-anchor="middle" font-size="10.5" fill="#57606a">(chrome-shaped TLS · static pages)</text>
+  <polyline points="564,568 640,568 640,462" fill="none" stroke="#57606a" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <text x="650" y="520" font-size="10" fill="#57606a">:8082 · default exit</text>
+
+  <polyline points="194,672 878,672 878,452" fill="none" stroke="#57606a" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <text x="536" y="664" text-anchor="middle" font-size="10" fill="#57606a">socks5h :10801–10805 · per-engine geo networks</text>
+
+  <!-- ============ legend ============ -->
+  <g font-size="11" fill="#1f2328">
+    <rect x="24" y="732" width="12" height="12" rx="2" fill="#e76f51"/><text x="42" y="742">CA</text>
+    <rect x="84" y="732" width="12" height="12" rx="2" fill="#c1121f"/><text x="102" y="742">HK</text>
+    <rect x="144" y="732" width="12" height="12" rx="2" fill="#e9a03b"/><text x="162" y="742">JP</text>
+    <rect x="204" y="732" width="12" height="12" rx="2" fill="#3a5bcd"/><text x="222" y="742">UK</text>
+    <rect x="264" y="732" width="12" height="12" rx="2" fill="#1f8a70"/><text x="282" y="742">US</text>
+  </g>
+  <line x1="360" y1="738" x2="400" y2="738" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="408" y="742" font-size="11" fill="#1f2328">page traffic</text>
+  <line x1="510" y1="738" x2="550" y2="738" stroke="#57606a" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <text x="558" y="742" font-size="11" fill="#1f2328">optional flow</text>
+  <line x1="680" y1="738" x2="720" y2="738" stroke="#3a5bcd" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a-uk)"/>
+  <text x="728" y="742" font-size="11" fill="#1f2328">WireGuard tunnel</text>
+
+  <text x="24" y="772" font-size="10.5" fill="#57606a">Session pins the exit at creation (POST /sessions {name, exit}) — the proxy is chosen per container, never per scrape (preserves SSRF-guarded egress).</text>
+  <text x="24" y="788" font-size="10.5" fill="#57606a">CA note: no Vancouver-BC VPS exists at major providers (nearest: AWS ca-west-1 Calgary) · verify each VPS IP reports the right GeoIP country before committing.</text>
+</svg>
