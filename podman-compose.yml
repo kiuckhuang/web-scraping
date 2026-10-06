@@ -266,7 +266,7 @@ services:
       - JINA_SEARCH_FALLBACK=${JINA_SEARCH_FALLBACK:-true}
       - JINA_SCRAPE_FALLBACK=${JINA_SCRAPE_FALLBACK:-true}
       - JINA_TIMEOUT=${JINA_TIMEOUT:-60}
-      - JINA_PROXY=${JINA_PROXY:-}
+      - JINA_PROXY=${JINA_PROXY:-http://egress-guard:8082}
       - JINA_READER_URL=${JINA_READER_URL:-https://r.jina.ai}
       - JINA_SEARCH_URL=${JINA_SEARCH_URL:-https://s.jina.ai}
       # Optional Exa (exa.ai) last-resort fallbacks (default off — see
@@ -277,7 +277,7 @@ services:
       - EXA_SEARCH_FALLBACK=${EXA_SEARCH_FALLBACK:-true}
       - EXA_SCRAPE_FALLBACK=${EXA_SCRAPE_FALLBACK:-true}
       - EXA_TIMEOUT=${EXA_TIMEOUT:-60}
-      - EXA_PROXY=${EXA_PROXY:-}
+      - EXA_PROXY=${EXA_PROXY:-http://egress-guard:8082}
       - EXA_BASE_URL=${EXA_BASE_URL:-https://api.exa.ai}
       - EXA_MAX_CHARACTERS=${EXA_MAX_CHARACTERS:-10000}
       - CAMOUFOX_WS_URL=${CAMOUFOX_WS_URL:-ws://camoufox:9222/browser}

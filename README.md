@@ -429,7 +429,7 @@ and `make build`/`update` picks up the other tracked build changes.
 | `JINA_SEARCH_FALLBACK` | `true` | Append the Jina search stage after every self-hosted search transport (implies `JINA_ENABLED`) |
 | `JINA_SCRAPE_FALLBACK` | `true` | Use the Jina reader when the stealth browser cannot scrape a URL (implies `JINA_ENABLED`; never for named sessions) |
 | `JINA_TIMEOUT` | `60` | Jina API timeout (s) — a search fetches ~5 full pages server-side |
-| `JINA_PROXY` | (unset) | Egress proxy for Jina API calls; overrides `EGRESS_PROXY` (unset = inherit it, else direct) |
+| `JINA_PROXY` | `http://egress-guard:8082` in-stack | Egress proxy for Jina API calls; outside compose, unset = inherit `EGRESS_PROXY`, else direct |
 | `JINA_READER_URL` | `https://r.jina.ai` | Reader endpoint — `https://eu.r.jina.ai` for EU residency, or a self-hosted OSS reader |
 | `JINA_SEARCH_URL` | `https://s.jina.ai` | Search endpoint — `https://eu.s.jina.ai` for EU residency |
 | `EXA_ENABLED` | `false` | Optional [Exa](https://exa.ai/) last-resort fallbacks — when `true`, api.exa.ai search/contents fire only **after** the Jina fallbacks (and every self-hosted transport) failed |
@@ -437,7 +437,7 @@ and `make build`/`update` picks up the other tracked build changes.
 | `EXA_SEARCH_FALLBACK` | `true` | Append the Exa search stage after Jina (implies `EXA_ENABLED`) |
 | `EXA_SCRAPE_FALLBACK` | `true` | Use the Exa contents API when the stealth browser *and* the Jina reader cannot scrape a URL (implies `EXA_ENABLED`; never for named sessions) |
 | `EXA_TIMEOUT` | `60` | Exa API timeout (s) |
-| `EXA_PROXY` | (unset) | Egress proxy for Exa API calls; overrides `EGRESS_PROXY` (unset = inherit it, else direct) |
+| `EXA_PROXY` | `http://egress-guard:8082` in-stack | Egress proxy for Exa API calls; outside compose, unset = inherit `EGRESS_PROXY`, else direct |
 | `EXA_BASE_URL` | `https://api.exa.ai` | Exa API base URL override (corporate gateway / API mirror) |
 | `EXA_MAX_CHARACTERS` | `10000` | Page-text characters per result requested from the API (search contents + `/contents`) |
 | `LOG_LEVEL`             | `INFO`                   | Log level for the bridge and MCP services (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
