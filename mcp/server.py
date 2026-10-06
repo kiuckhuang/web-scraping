@@ -87,6 +87,10 @@ JINA_ENABLED = os.environ.get("JINA_ENABLED", "false").strip().lower() not in ("
 # when the bridge has it enabled (same .env flag, passed through compose).
 EXA_ENABLED = os.environ.get("EXA_ENABLED", "false").strip().lower() not in ("", "0", "false", "no", "off")
 
+# Optional Ceramic (ceramic.ai) integration — same pattern; search-only
+# transport (the API has no contents endpoint).
+CERAMIC_ENABLED = os.environ.get("CERAMIC_ENABLED", "false").strip().lower() not in ("", "0", "false", "no", "off")
+
 # Security knobs
 MCP_SESSION_TTL = float(os.environ.get("MCP_SESSION_TTL", "1800"))  # idle session lifetime (s)
 MCP_RATE_LIMIT = int(os.environ.get("MCP_RATE_LIMIT", "120"))  # requests/minute/IP, 0 = unlimited
@@ -330,6 +334,29 @@ if EXA_ENABLED:
         ),
     ]
 
+# Optional Ceramic tool — appended only when the integration is enabled
+# (CERAMIC_ENABLED in .env, mirrored into the mcp container by compose).
+# Search-only: api.ceramic.ai has no contents endpoint, so there is no
+# ceramic_scrape. When disabled the tool stays out of tools/list; calling it
+# anyway still fails cleanly (the bridge answers 503 with an explanatory
+# message). api.ceramic.ai has no anonymous tier — every call fails 401
+# without CERAMIC_API_KEY.
+if CERAMIC_ENABLED:
+    TOOLS += [
+        Tool(
+            name="ceramic_search",
+            description="Search via the Ceramic API (ceramic.ai keyword web search with page-content snippets) — optional transport (CERAMIC_ENABLED), also applied automatically as the last-resort search fallback after Exa. Requires CERAMIC_API_KEY. Search-only: Ceramic has no contents endpoint.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Keyword search query (1-50 words)"},
+                    "max_results": {"type": "integer", "description": "Max results (1-20, default 5)", "default": 5},
+                },
+                "required": ["query"],
+            },
+        ),
+    ]
+
 
 async def _list_tools_handler(_ctx, _params):
     return ListToolsResult(tools=TOOLS)
@@ -432,6 +459,14 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
                 "mode": arguments.get("mode", "extract"),
             })
             return CallToolResult(content=[TextContent(type="text", text=_format_scrape_result(result))])
+
+        elif name == "ceramic_search":
+            result = await _api_get(
+                "/ceramic_search",
+                q=arguments["query"],
+                max_results=arguments.get("max_results", 5),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=_format_search_results(result))])
 
         elif name == "create_session":
             result = await _api_post("/sessions", {"name": arguments["name"]})

@@ -113,6 +113,15 @@ covers the conventions and non-obvious decisions you must not regress.
     selects it for Make targets from `.env`. Do not restore mandatory Bridge
     dependencies on these services. Specialized categories, pagination and
     bang queries fail explicitly when disabled instead of dropping semantics.
+15. **Ceramic is opt-in, stages strictly after Exa, and search-only** —
+    `CERAMIC_ENABLED=false` by default; when enabled, `api.ceramic.ai/search`
+    fires only after the Exa fallback (search chain: SearXNG/browser SERPs →
+    Jina → Exa → Ceramic). It is a credit-metered paid API with no anonymous
+    tier: do not flip the default, reorder the chain to put Ceramic before
+    Exa, or add automatic retries. The API has **no contents/reader endpoint**
+    — Ceramic must never join the scrape chain or gain a scrape tool. The
+    client is `bridge/bridge/ceramic_client.py`; `/ceramic_search` is the
+    explicit endpoint.
 
 ## Style
 

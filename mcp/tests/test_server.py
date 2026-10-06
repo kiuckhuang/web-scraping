@@ -654,6 +654,7 @@ def _tool_names_with_exa_env(monkeypatch, value: str) -> set[str]:
 
     monkeypatch.setenv("EXA_ENABLED", value)
     monkeypatch.setenv("JINA_ENABLED", "false")
+    monkeypatch.setenv("CERAMIC_ENABLED", "false")
     reloaded = importlib.reload(server_mod)
     return {tool.name for tool in reloaded.TOOLS}
 
@@ -678,3 +679,38 @@ def test_exa_tools_absent_by_default(monkeypatch):
     names = _tool_names_with_exa_env(monkeypatch, "false")
     assert "exa_search" not in names
     assert "exa_scrape" not in names
+
+
+# ---------------------------------------------------------------------------
+#  Optional Ceramic tool — advertised only when CERAMIC_ENABLED reaches the
+#  module. Search-only transport: there is no ceramic_scrape tool.
+# ---------------------------------------------------------------------------
+
+def _tool_names_with_ceramic_env(monkeypatch, value: str) -> set[str]:
+    import importlib
+
+    monkeypatch.setenv("CERAMIC_ENABLED", value)
+    monkeypatch.setenv("JINA_ENABLED", "false")
+    monkeypatch.setenv("EXA_ENABLED", "false")
+    reloaded = importlib.reload(server_mod)
+    return {tool.name for tool in reloaded.TOOLS}
+
+
+def test_ceramic_tool_listed_when_enabled(monkeypatch):
+    names = _tool_names_with_ceramic_env(monkeypatch, "true")
+    assert "ceramic_search" in names
+    assert "ceramic_scrape" not in names
+
+
+def test_ceramic_tool_schema_when_enabled(monkeypatch):
+    """ceramic_search takes query + max_results."""
+    _tool_names_with_ceramic_env(monkeypatch, "true")
+    tools = {t.name: t for t in server_mod.TOOLS if t.name == "ceramic_search"}
+    assert set(tools["ceramic_search"].input_schema["properties"]) == {"query", "max_results"}
+
+
+def test_ceramic_tool_absent_by_default(monkeypatch):
+    # Last in file: the "false" reload leaves the module in the default-tools
+    # state, exactly as the default environment produces.
+    names = _tool_names_with_ceramic_env(monkeypatch, "false")
+    assert "ceramic_search" not in names

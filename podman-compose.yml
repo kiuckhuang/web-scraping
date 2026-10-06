@@ -280,6 +280,15 @@ services:
       - EXA_PROXY=${EXA_PROXY:-http://egress-guard:8082}
       - EXA_BASE_URL=${EXA_BASE_URL:-https://api.exa.ai}
       - EXA_MAX_CHARACTERS=${EXA_MAX_CHARACTERS:-10000}
+      # Optional Ceramic (ceramic.ai) last-resort search fallback (default off
+      # — see .env.example). Search-only (no contents endpoint); when enabled,
+      # api.ceramic.ai fires only after the Exa fallback also failed.
+      - CERAMIC_ENABLED=${CERAMIC_ENABLED:-false}
+      - CERAMIC_API_KEY=${CERAMIC_API_KEY:-}
+      - CERAMIC_SEARCH_FALLBACK=${CERAMIC_SEARCH_FALLBACK:-true}
+      - CERAMIC_TIMEOUT=${CERAMIC_TIMEOUT:-60}
+      - CERAMIC_PROXY=${CERAMIC_PROXY:-http://egress-guard:8082}
+      - CERAMIC_BASE_URL=${CERAMIC_BASE_URL:-https://api.ceramic.ai}
       - CAMOUFOX_WS_URL=${CAMOUFOX_WS_URL:-ws://camoufox:9222/browser}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
@@ -348,6 +357,9 @@ services:
       # Mirrors the bridge's Exa flag: the exa_search/exa_scrape tools are
       # only advertised when the integration is enabled (default off)
       - EXA_ENABLED=${EXA_ENABLED:-false}
+      # Mirrors the bridge's Ceramic flag: the ceramic_search tool is only
+      # advertised when the integration is enabled (default off)
+      - CERAMIC_ENABLED=${CERAMIC_ENABLED:-false}
     depends_on:
       bridge:
         condition: service_healthy

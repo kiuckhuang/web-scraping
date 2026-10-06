@@ -18,7 +18,7 @@ A self-hosted, Podman-based search-and-scrape stack that combines:
 make init && make up && make test
 ```
 
-That's it — generates secrets, starts the enabled services, and verifies everything works. Search uses the browser by default, followed by enabled Jina/Exa fallbacks. Then point your AI agent at the MCP server (see [MCP Server](#mcp-server-for-ai-agents) below).
+That's it — generates secrets, starts the enabled services, and verifies everything works. Search uses the browser by default, followed by enabled Jina/Exa/Ceramic fallbacks. Then point your AI agent at the MCP server (see [MCP Server](#mcp-server-for-ai-agents) below).
 
 ### Architecture
 
@@ -185,6 +185,14 @@ curl -X POST http://localhost:8000/exa_scrape \
   -d '{"url": "https://example.com", "mode": "extract"}'
 ```
 
+### `GET /ceramic_search` (optional)
+
+Explicit access to the optional [Ceramic](https://ceramic.ai/) search transport (disabled unless `CERAMIC_ENABLED=true` in `.env`). The REST API requires a `CERAMIC_API_KEY` — there is no anonymous tier. Ceramic is **search-only** (keyword query, 1–50 words; results carry title/url/page-content snippet) — the API has no contents endpoint, so it never joins the scrape chain.
+
+```bash
+curl 'http://localhost:8000/ceramic_search?q=california+rental+laws&max_results=5'
+```
+
 ### `GET /health`
 
 Check status of SearXNG and the Camoufox browser.
@@ -268,6 +276,7 @@ For a **remote** connection, include the token:
 | `jina_scrape`        | Scrape via the Jina AI Reader API (only listed when `JINA_ENABLED=true`) |
 | `exa_search`         | Search via the Exa API with clean page content (only listed when `EXA_ENABLED=true`) |
 | `exa_scrape`         | Fetch a URL's cleaned page text via the Exa Contents API (only listed when `EXA_ENABLED=true`) |
+| `ceramic_search`     | Search via the Ceramic API with page-content snippets (only listed when `CERAMIC_ENABLED=true`) |
 | `create_session`     | Create a named long-lived session (login persistence) |
 | `delete_session`     | Close and forget a named session (drops its cookies) |
 | `list_sessions`      | List live session names |
@@ -440,6 +449,13 @@ and `make build`/`update` picks up the other tracked build changes.
 | `EXA_PROXY` | `http://egress-guard:8082` in-stack | Egress proxy for Exa API calls; outside compose, unset = inherit `EGRESS_PROXY`, else direct |
 | `EXA_BASE_URL` | `https://api.exa.ai` | Exa API base URL override (corporate gateway / API mirror) |
 | `EXA_MAX_CHARACTERS` | `10000` | Page-text characters per result requested from the API (search contents + `/contents`) |
+| `CERAMIC_ENABLED` | `false` | Optional [Ceramic](https://ceramic.ai/) last-resort search fallback — when `true`, api.ceramic.ai fires only **after** the Exa fallback (and every self-hosted transport) failed; search-only (no contents endpoint) |
+| `CERAMIC_API_KEY` | (unset) | Key from [platform.ceramic.ai](https://platform.ceramic.ai/keys) — required (the Ceramic API has no anonymous tier) |
+| `CERAMIC_SEARCH_FALLBACK` | `true` | Append the Ceramic search stage after Exa (implies `CERAMIC_ENABLED`) |
+| `CERAMIC_TIMEOUT` | `60` | Ceramic API timeout (s) |
+| `CERAMIC_PROXY` | `http://egress-guard:8082` in-stack | Egress proxy for Ceramic API calls; outside compose, unset = inherit `EGRESS_PROXY`, else direct |
+| `CERAMIC_BASE_URL` | `https://api.ceramic.ai` | Ceramic API base URL override (corporate gateway / API mirror) |
+| `CERAMIC_DESCRIPTION_CHARS` | `1000` | Description characters per result requested from the API (1000-8000; only a 400-char snippet is kept) |
 | `LOG_LEVEL`             | `INFO`                   | Log level for the bridge and MCP services (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 | `HEALTHCHECK_INTERVAL` | `60s` | Container health probe interval; successful Bridge/MCP probe logs are suppressed, errors remain visible |
 | `PORT_CAMOUFOX`         | `9223`                   | Host (loopback) port for direct access to the ws-camoufox container |
@@ -465,7 +481,7 @@ and `make build`/`update` picks up the other tracked build changes.
 ### [SearXNG](https://docs.searxng.org/) Configuration
 
 SearXNG is **disabled by default**. Normal searches use the browser, then
-enabled Jina/Exa fallbacks, without any SearXNG requests. `/health` reports
+enabled Jina/Exa/Ceramic fallbacks, without any SearXNG requests. `/health` reports
 `services.searxng: "off"` and its absence does not degrade stack health.
 The SearXNG-backed Bing stage is disabled with it, even if its flag is true.
 
@@ -649,6 +665,21 @@ EXA_API_KEY=xxx              # from https://dashboard.exa.ai/api-keys
 The REST API has **no anonymous tier**: without a key every call fails 401 before spending anything (`/health` reports the configured state under `services.exa` — `off` / `unconfigured` / `ready`), while `s.jina.ai`'s search would burn ≥10k tokens. Failed Exa calls degrade back to the normal error paths — requests are never retried automatically. Granular kill switches (`EXA_SEARCH_FALLBACK` / `EXA_SCRAPE_FALLBACK`), the timeout, an egress proxy, and a base-URL override are in the env table above.
 
 The client (`bridge/bridge/exa_client.py`) implements just the two calls it needs (search with page text, contents for one URL) — the full surface lives upstream in the official SDK ([exa-labs/exa-js](https://github.com/exa-labs/exa-js)) and [docs.exa.ai](https://docs.exa.ai/) (nothing is vendored in this repo). The MCP server mirrors the same tools as `exa_search` / `exa_scrape` when enabled, comparable to [exa-mcp-server](https://github.com/exa-labs/exa-mcp-server)'s `web_search_exa` / `web_fetch_exa`.
+
+### Optional Ceramic (ceramic.ai) last-resort search fallback
+
+[Ceramic](https://ceramic.ai/)'s hosted Search API (`api.ceramic.ai/search`) is integrated the same way as Exa — **opt-in, and even further down the chain**: when `CERAMIC_ENABLED=true`, it fires only after the Exa fallback above (and every self-hosted transport) returned nothing. Ceramic is **search-only**: the API surface has no contents/reader endpoint, so it never joins the scrape chain.
+
+Enable it in `.env`:
+
+```bash
+CERAMIC_ENABLED=true
+CERAMIC_API_KEY=xxx              # from https://platform.ceramic.ai/keys
+```
+
+The API is credit-metered with **no anonymous tier**: without a key every call fails 401 before spending anything (`/health` reports the configured state under `services.ceramic` — `off` / `unconfigured` / `ready`). Failed Ceramic calls degrade back to the normal error paths — requests are never retried automatically; 429s surface the upstream `retry_after_seconds`. Granular kill switch (`CERAMIC_SEARCH_FALLBACK`), the timeout, an egress proxy, a base-URL override and the description length are in the env table above.
+
+The client (`bridge/bridge/ceramic_client.py`) implements just the one call it needs (keyword search, 1–50 words, results carrying title/url/page-content snippet) — the full surface lives upstream at [docs.ceramic.ai](https://docs.ceramic.ai/) (nothing is vendored in this repo). The MCP server mirrors it as the `ceramic_search` tool when enabled.
 
 ## Security
 

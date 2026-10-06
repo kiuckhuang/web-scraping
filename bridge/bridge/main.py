@@ -11,12 +11,14 @@ Endpoints:
   POST /jina_scrape         — scrape via Jina AI reader (optional, requires JINA_ENABLED)
   GET  /exa_search          — search via Exa (optional, requires EXA_ENABLED + EXA_API_KEY)
   POST /exa_scrape          — scrape via Exa contents (optional, requires EXA_ENABLED)
+  GET  /ceramic_search      — search via Ceramic (optional, requires CERAMIC_ENABLED + CERAMIC_API_KEY)
 
 Optional Jina AI (s.jina.ai / r.jina.ai) transports act as LAST resorts when
 enabled (JINA_ENABLED): search only after SearXNG/browser SERPs fail, scrape
 only after the Camoufox browser cannot serve a page (WAF/anti-bot blocks).
 Optional Exa (api.exa.ai) behaves the same when enabled (EXA_ENABLED) and
-stages strictly AFTER the Jina fallbacks.
+stages strictly AFTER the Jina fallbacks. Optional Ceramic (api.ceramic.ai,
+search-only — no contents endpoint) stages strictly AFTER the Exa fallback.
 """
 
 from __future__ import annotations
@@ -50,6 +52,14 @@ from .browser_client import (
     search_web as browser_web_search,
     set_session_invalidator,
     shutdown as browser_shutdown,
+)
+from .ceramic_client import (
+    CERAMIC_API_KEY,
+    CERAMIC_SEARCH_FALLBACK,
+    CeramicError,
+    search as ceramic_search,
+    shutdown as ceramic_shutdown,
+    status as ceramic_status,
 )
 from .exa_client import (
     EXA_API_KEY,
@@ -145,7 +155,7 @@ class OperationDeadline:
             return await self.app(scope, receive, send)
         path = scope["path"]
         budget = COMBINED_MAX_SECONDS if path == "/search_and_scrape" else (
-            SEARCH_MAX_SECONDS if path in ("/search", "/web_search", "/jina_search", "/exa_search")
+            SEARCH_MAX_SECONDS if path in ("/search", "/web_search", "/jina_search", "/exa_search", "/ceramic_search")
             else SCRAPE_MAX_SECONDS
         )
         if path == "/crawl":
@@ -185,12 +195,18 @@ async def lifespan(app: FastAPI):
             EXA_SEARCH_FALLBACK,
             EXA_SCRAPE_FALLBACK,
         )
+    if CERAMIC_SEARCH_FALLBACK:
+        logger.info(
+            "Ceramic last-resort search fallback enabled (key: %s) (stage after Exa)",
+            "set" if CERAMIC_API_KEY else "UNSET (every call fails 401 — set CERAMIC_API_KEY)",
+        )
     yield
-    logger.info("Bridge shutting down — closing SearXNG/browser/Jina/Exa sessions")
+    logger.info("Bridge shutting down — closing SearXNG/browser/Jina/Exa/Ceramic sessions")
     await searxng_shutdown()
     await browser_shutdown()
     await jina_shutdown()
     await exa_shutdown()
+    await ceramic_shutdown()
 
 
 app = FastAPI(
@@ -363,6 +379,8 @@ async def health_check() -> dict[str, Any]:
             "jina": jina_status(),
             # Same for the optional Exa fallback ("off" | "unconfigured" | "ready").
             "exa": exa_status(),
+            # Same for the optional Ceramic search-only fallback ("off" | "unconfigured" | "ready").
+            "ceramic": ceramic_status(),
         },
     }
 
@@ -514,6 +532,24 @@ async def _stage_exa(q: str, *, max_results: int, unresponsive: list) -> dict[st
     return None
 
 
+async def _stage_ceramic(q: str, *, max_results: int, unresponsive: list) -> dict[str, Any] | None:
+    """Ceramic stage (api.ceramic.ai /search) — fires only after every
+    self-hosted stage AND the Jina and Exa fallbacks returned nothing (or are
+    disabled). Search-only transport: Ceramic has no contents endpoint.
+    """
+    try:
+        served = await asyncio.wait_for(ceramic_search(q, max_results=max_results), timeout=SEARCH_STAGE_SECONDS)
+    except Exception as exc:
+        logger.warning("Ceramic search fallback failed for %r: %s", q, exc)
+        return None
+    if served.get("results"):
+        served["fallback"] = "ceramic"
+        served["unresponsive_engines"] = unresponsive
+        logger.info("Search fallback served %d results via ceramic for %r", len(served["results"]), q)
+        return served
+    return None
+
+
 async def _search_with_fallbacks(
     q: str, *, categories: str | None, language: str, pageno: int,
     time_range: str | None, safesearch: int, max_results: int,
@@ -550,15 +586,16 @@ async def _run_search_chain(
     """Search with graceful degradation across transports.
 
     Stage order (SEARCH_PRIMARY):
-      "searxng" — SearXNG merge → SearXNG "!bing" → Camoufox SERPs → Jina → Exa
-      "browser" — Camoufox SERPs → SearXNG merge → Jina → Exa
+      "searxng" — SearXNG merge → SearXNG "!bing" → Camoufox SERPs → Jina → Exa → Ceramic
+      "browser" — Camoufox SERPs → SearXNG merge → Jina → Exa → Ceramic
     Each stage runs only if the previous one returned zero results; stage
     errors are logged and skipped. A response served by a non-primary stage
-    carries a "fallback" field ("bing" / "browser:google" / "jina" / "exa").
-    Jina (s.jina.ai) is the paid cloud LAST resort — JINA_SEARCH_FALLBACK
-    appends it after every self-hosted stage, never before. Exa (api.exa.ai)
-    is the same kind of opt-in fallback and stages strictly after Jina
-    (EXA_SEARCH_FALLBACK).
+    carries a "fallback" field ("bing" / "browser:google" / "jina" / "exa" /
+    "ceramic"). Jina (s.jina.ai) is the paid cloud LAST resort —
+    JINA_SEARCH_FALLBACK appends it after every self-hosted stage, never
+    before. Exa (api.exa.ai) is the same kind of opt-in fallback and stages
+    strictly after Jina (EXA_SEARCH_FALLBACK). Ceramic (api.ceramic.ai,
+    search-only) stages strictly after Exa (CERAMIC_SEARCH_FALLBACK).
     """
     if not SEARXNG_ENABLED and not _fallback_allowed(categories, pageno, q):
         raise HTTPException(
@@ -579,6 +616,8 @@ async def _run_search_chain(
         stage_names.append("jina")
     if EXA_SEARCH_FALLBACK:
         stage_names.append("exa")
+    if CERAMIC_SEARCH_FALLBACK:
+        stage_names.append("ceramic")
 
     searxng_result: dict[str, Any] | None = None
     attempts: list[dict[str, Any]] = []
@@ -614,12 +653,12 @@ async def _run_search_chain(
                              "unresponsive_engines": (searxng_result or {}).get("unresponsive_engines", [])})
             if searxng_result is not None and searxng_result.get("results"):
                 return finish(searxng_result, stage)
-        elif stage in ("bing", "browser", "jina", "exa"):
+        elif stage in ("bing", "browser", "jina", "exa", "ceramic"):
             # All fallback stages are page-1 general-web searches — gated.
             if not _fallback_allowed(categories, pageno, q):
                 attempts.append({"provider": stage, "status": "skipped", "reason": "unsupported category, page or bang"})
                 continue
-            if stage in ("jina", "exa") and (language != "en" or time_range or safesearch):
+            if stage in ("jina", "exa", "ceramic") and (language != "en" or time_range or safesearch):
                 attempts.append({"provider": stage, "status": "skipped", "reason": "unsupported filters"})
                 continue
             if stage == "bing" and time_range:
@@ -637,8 +676,10 @@ async def _run_search_chain(
                                               language=language, time_range=time_range, safesearch=safesearch)
             elif stage == "jina":
                 served = await _stage_jina(q, max_results=max_results, unresponsive=unresponsive)
-            else:
+            elif stage == "exa":
                 served = await _stage_exa(q, max_results=max_results, unresponsive=unresponsive)
+            else:
+                served = await _stage_ceramic(q, max_results=max_results, unresponsive=unresponsive)
             attempts.append({"provider": stage, "status": "ok" if served is not None else "unavailable",
                              "seconds": round(time.monotonic() - stage_started, 3)})
             if served is not None:
@@ -665,8 +706,9 @@ async def search(
     """Search the web, degrading across transports (SEARCH_PRIMARY): SearXNG
     merge and stealth-browser SERPs (google/duckduckgo/duckduckgo lite) in the
     configured order; the non-primary transport serves as the fallback, Jina
-    AI (s.jina.ai) is the optional last resort, and Exa (api.exa.ai) the
-    optional fallback after it."""
+    AI (s.jina.ai) is the optional last resort, Exa (api.exa.ai) the optional
+    fallback after it, and Ceramic (api.ceramic.ai) the optional search-only
+    fallback after Exa."""
     result = await _search_with_fallbacks(
         q,
         categories=categories,
@@ -1073,6 +1115,34 @@ async def exa_scrape_endpoint(req: ScrapeRequest) -> dict[str, Any]:
     if _cacheable(content):
         _cache_set(req.url, req.mode, content)
     return {**content, "transport": "exa"}
+
+
+# ---------------------------------------------------------------------------
+#  Ceramic (optional) — explicit access to the last-resort search transport
+# ---------------------------------------------------------------------------
+
+def _ceramic_http_exception(exc: CeramicError) -> HTTPException:
+    """Map a CeramicError onto the bridge's HTTP surface (429 carries Retry-After)."""
+    headers = {"Retry-After": str(int(exc.retry_after))} if exc.retry_after else None
+    return HTTPException(status_code=exc.bridge_status, detail=str(exc), headers=headers)
+
+
+@app.get("/ceramic_search")
+async def ceramic_search_endpoint(
+    q: str = Query(..., min_length=1, max_length=1000, description="Search query"),
+    max_results: int = Query(5, ge=1, le=20, description="Max results (1-20)"),
+) -> dict[str, Any]:
+    """Search via the Ceramic API (api.ceramic.ai /search) — optional transport.
+
+    Requires CERAMIC_ENABLED=true and a CERAMIC_API_KEY (no anonymous tier).
+    Ceramic is search-only (no contents endpoint, so it never joins the scrape
+    chain); the same transport is applied automatically as the final search
+    fallback (after Exa) when enabled.
+    """
+    try:
+        return await ceramic_search(q, max_results=max_results)
+    except CeramicError as exc:
+        raise _ceramic_http_exception(exc)
 
 
 # ---------------------------------------------------------------------------
