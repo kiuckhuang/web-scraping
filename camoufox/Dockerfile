@@ -19,9 +19,11 @@ RUN pip install --no-cache-dir -U pip
 # from the project's GitHub releases at build time — never at container start.
 # playwright is pinned to the same minor as bridge/pyproject.toml: Playwright's
 # remote protocol enforces client/server minor-version parity (HTTP 428 on
-# mismatch), and camoufox 0.5.6 requires playwright <1.63.
-ARG CAMOUFOX_PKG_VERSION=0.5.6
-ARG CAMOUFOX_BROWSER_VERSION=156.0.1-beta.33
+# mismatch), and camoufox 0.5.7 requires playwright <1.63.
+ARG CAMOUFOX_PKG_VERSION=0.5.7
+# Pinned to the build camoufox 0.5.7 was built and tested with (the launcher
+# warns on any other build: "other builds may not be compatible").
+ARG CAMOUFOX_BROWSER_VERSION=156.0.1-beta.34
 # camoufox installs the browser under XDG_CACHE_HOME (platformdirs) — a fixed
 # shared path so the build-time fetch as root is visible to appuser at runtime.
 ENV XDG_CACHE_HOME=/opt/camoufox-cache
@@ -42,6 +44,12 @@ RUN pip install --no-cache-dir \
 # Preserve the CLI fetch path's extension warmup when using the exact installer.
 RUN python -c "from camoufox.__main__ import maybe_download_addons, DefaultAddons; maybe_download_addons(list(DefaultAddons))" \
     && chown -R appuser:appuser /opt/camoufox-cache
+
+# camoufox 0.5.7 fetches the fpgen fingerprint model into site-packages at
+# startup unless installed — bake it in here (never at container start) and
+# hand it to appuser, whose writability the launcher asserts (FpgenModelError).
+RUN python -c "from camoufox.fpgen_model import ensure_fpgen_model; ensure_fpgen_model()" \
+    && chown -R appuser:appuser "$(python -c 'import importlib.util, os; print(os.path.dirname(importlib.util.find_spec("fpgen").origin))')/data"
 
 # Runtime libraries for the patched Firefox binary. playwright install-deps
 # resolves the correct package names for the detected Debian release.
