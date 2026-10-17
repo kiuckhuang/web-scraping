@@ -73,7 +73,7 @@ CRAWL_MAX_SECONDS = float(os.environ.get("CRAWL_MAX_SECONDS", "1800"))
 SERP_ENGINE_SECONDS = float(os.environ.get("SERP_ENGINE_SECONDS", "12"))
 # Playwright's remote protocol enforces client/server minor-version parity
 # (the server answers 428 on mismatch); the camoufox image pins playwright
-# 1.62.x (camoufox 0.5.7 requires <1.63) — keep bridge/pyproject.toml on the
+# 1.62.x (camoufox 0.5.8 requires <1.63) — keep bridge/pyproject.toml on the
 # same line and bump both pins together (see AGENTS.md).
 WAF_MARKERS = (
     "just a moment",

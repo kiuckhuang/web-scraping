@@ -8,5 +8,5 @@ uvicorn==0.54.0
 # cluster fixed in 2.13.0, and the 2.14.0 hardening batch — HMAC key
 # validation vs JWK/JWKS/PEM confusion (GHSA-r6x4-923q-g947 et al.),
 # PyJWKClient redirect + refresh-flood (GHSA-9v7f-9g4p-ffgj, GHSA-2gx3-rcp4-g85q)).
-starlette==1.7.0
+starlette==1.8.0
 pyjwt[crypto]==2.15.1
