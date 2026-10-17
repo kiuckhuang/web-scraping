@@ -112,7 +112,8 @@ BRIDGE_CACHE_MAX_BYTES = int(os.environ.get("BRIDGE_CACHE_MAX_BYTES", str(25 * 1
 # queried first:
 #   "browser" (default) — browser SERPs (google → ddg → ddg-lite) first, then SearXNG
 #   "searxng"           — SearXNG merge, then bing, then browser SERPs
-# Bing was dropped from the chain: its result quality proved useless.
+# The bing stage still exists but is off by default (SEARCH_FALLBACK_BING=false)
+# and only reachable in "searxng"-primary mode: its result quality proved useless.
 def _env_flag(name: str, default: str = "true") -> bool:
     return os.environ.get(name, default).strip().lower() not in ("", "0", "false", "no", "off")
 

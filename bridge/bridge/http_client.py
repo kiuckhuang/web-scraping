@@ -52,6 +52,12 @@ MAX_REDIRECTS = 5
 # JS app shell (React/Next.js): the browser must render it instead.
 JS_SHELL_MIN_TEXT = 200
 MAX_MARKDOWN_CHARS = 50_000
+# Bounds concurrent fast-path fetches, mirroring browser_client._page_slots.
+# Without it, /search_and_scrape fans out over every result (up to 50) with
+# asyncio.gather, opening one curl session per hop at once — far past the
+# default thread pool and the bridge's memory limit. 0 disables the bound.
+MAX_CONCURRENT_FETCHES = int(os.environ.get("HTTP_FASTPATH_MAX_CONCURRENT", "6"))
+_fetch_slots = asyncio.Semaphore(MAX_CONCURRENT_FETCHES) if MAX_CONCURRENT_FETCHES > 0 else None
 
 
 class Escalation(Exception):
@@ -123,7 +129,10 @@ def _fetch_public_sync(url: str, *, mode: str) -> dict[str, Any]:
 
 async def scrape(url: str, *, mode: str = "extract") -> dict[str, Any]:
     """HTTP fast-path scrape; raises Escalation when the browser is needed."""
-    return await asyncio.to_thread(_fetch_public_sync, url, mode=mode)
+    if _fetch_slots is None:
+        return await asyncio.to_thread(_fetch_public_sync, url, mode=mode)
+    async with _fetch_slots:
+        return await asyncio.to_thread(_fetch_public_sync, url, mode=mode)
 
 
 # ---------------------------------------------------------------------------

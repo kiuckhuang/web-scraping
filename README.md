@@ -392,9 +392,10 @@ and `make build`/`update` picks up the other tracked build changes.
 | `SEARXNG_SUSPEND_TOO_MANY` | `180`                | How long an engine is suspended (s) after a 429 / rate-limit |
 | `EGRESS_PROXY` | (unset)                   | Stack-wide egress proxy — SearXNG engines + Camoufox browser + HTTP fast path all route through it; the per-component knobs below override it per transport |
 | `SEARXNG_OUTGOING_PROXY` | (unset)               | Outbound proxy for engine requests; overrides `EGRESS_PROXY` for SearXNG (unset = inherit it, else direct) |
-| `SEARXNG_FORCE_OWNERSHIP` | `true`                | Force SearXNG file ownership on start |
-| `SEARXNG_UWSGI_THREADS` | `4`                    | SearXNG worker thread count          |
+| `SEARXNG_FORCE_OWNERSHIP` | `true`                | Force SearXNG file ownership on start (passed to the container as upstream's `FORCE_OWNERSHIP`) |
+| `SEARXNG_UWSGI_THREADS` | `4`                    | SearXNG worker thread count (passed to the container as upstream's `UWSGI_THREADS`) |
 | `CAMOUFOX_WS_URL`       | `ws://camoufox:9222/browser` | Playwright websocket endpoint (container-internal) |
+| `CAMOUFOX_PORT`         | `9222`                   | Camoufox Playwright server port inside the container (compose-fixed; the host publishes it as `PORT_CAMOUFOX`) |
 | `CAMOUFOX_MEM_LIMIT`    | `4g`                     | Camoufox container memory ceiling (not a reservation) |
 | `CAMOUFOX_PIDS_LIMIT`   | `1024`                   | Camoufox container process/thread limit |
 | `CAMOUFOX_SHM_SIZE`     | `4gb`                    | Browser shared memory (/dev/shm) size |
@@ -423,6 +424,7 @@ and `make build`/`update` picks up the other tracked build changes.
 | `CAMOUFOX_TIMEOUT`       | `60`                    | Browser navigation timeout (s) |
 | `CAMOUFOX_NAV_WAIT`      | `domcontentloaded`      | Browser navigation wait condition |
 | `CAMOUFOX_MAX_CONCURRENT_PAGES` | `3`              | Maximum concurrent browser pages |
+| `HTTP_FASTPATH_MAX_CONCURRENT` | `6`             | Maximum concurrent shaped-TLS fast-path fetches (mirrors `CAMOUFOX_MAX_CONCURRENT_PAGES`, so a wide `/search_and_scrape` fan-out cannot open one curl session per result at once); `0` disables the bound |
 | `CAMOUFOX_WAF_WAIT`      | `15`                    | Maximum WAF challenge wait (s) |
 | `CAMOUFOX_ISOLATE_CONTEXTS` | `true`                | Isolate cookies/storage for each request |
 | `CAMOUFOX_MAX_SESSIONS` | `16`                     | Max concurrent named sessions (login persistence) |
@@ -432,6 +434,8 @@ and `make build`/`update` picks up the other tracked build changes.
 | `CAMOUFOX_GEOIP`        | `auto`                   | GeoIP-consistent fingerprints (timezone/locale/lat-lon matched to the proxy's egress IP); `auto` = on whenever a proxy is set |
 | `CAMOUFOX_TIMEZONE`     | (auto-derived)           | Browser context timezone; unset = derived from the proxy's egress IP via ip-api.com (through the proxy, once) |
 | `CRAWL_MAX_SECONDS`     | `1800`                   | Wall-clock budget per `/crawl` call (s); `0` = unlimited. Returns partial results when exhausted |
+| `CAMOUFOX_WS_PATH`      | `browser`                | Path the Camoufox Playwright server listens on (compose-fixed) |
+| `CAMOUFOX_MAX_CONNECTIONS` | `8`                   | Max concurrent Playwright websocket connections to the browser (compose-fixed) |
 | `SSRF_DNS_CACHE_TTL`    | `60`                     | TTL (s) for cached SSRF DNS verdicts (`0` disables caching) |
 | `JINA_ENABLED` | `false` | Optional [Jina AI](https://github.com/jina-ai/reader) last-resort fallbacks — when `true`, `s.jina.ai` (search) and `r.jina.ai` (scrape) only fire **after** SearXNG/browser search and the Camoufox browser have failed (WAF/anti-bot blocks) |
 | `JINA_API_KEY` | (unset) | Bearer key from [jina.ai](https://jina.ai/?sui=apikey) — required for `s.jina.ai` (bills ≥10k tokens/request); raises `r.jina.ai` from 20 to 500 RPM |
@@ -467,6 +471,7 @@ and `make build`/`update` picks up the other tracked build changes.
 | `PORT_MCP`              | `9100`                   | Host port for MCP server             |
 | `MCP_API_KEY`           | (auto-generated)         | Bearer token for remote MCP clients (localhost bypasses auth) |
 | `MCP_BIND_HOST`         | `127.0.0.1`              | Host address published for MCP; non-loopback requires `MCP_API_KEY` |
+| `MCP_PUBLIC_BIND_HOST`  | (mirrors `MCP_BIND_HOST`) | The host address the server sees for itself, used only to decide whether `MCP_API_KEY` is mandatory at startup — startup fails hard when it is non-loopback and no key is set |
 | `MCP_TRUSTED_CIDRS`     | (auto-detected)          | Comma-separated CIDRs that bypass bearer auth; empty = loopback + container /24 subnets |
 | `MCP_SESSION_TTL`       | `1800`                   | Idle MCP session lifetime (s) before expiry |
 | `MCP_RATE_LIMIT`        | `120`                    | Max MCP requests/min per client IP (`0` = unlimited) |
@@ -475,6 +480,9 @@ and `make build`/`update` picks up the other tracked build changes.
 | `MCP_SNIPPET_CHARS`     | `300`                    | Search-result snippet length (chars) in MCP tool output |
 | `MCP_CONTENT_CHARS`     | `5000`                   | Single-page scrape length (chars) in MCP tool output |
 | `MCP_COMBINED_CHARS`    | `1200`                   | Per-result length (chars) in `search_and_scrape` MCP output |
+| `MCP_PORT`              | `9100`                   | MCP listen port inside the container (compose-fixed; the host publishes it as `PORT_MCP`) |
+| `MCP_LISTEN_HOST`       | `0.0.0.0`                | MCP listen address inside the container (compose-fixed — `MCP_BIND_HOST` controls the published host address) |
+| `SEARXNG_BASE_URL`      | derived from `PORT_SEARXNG` | Base URL SearXNG advertises for its own links (compose-derived) |
 | `APP_UID`               | `1000`                   | Host user UID for bridge/mcp containers |
 | `APP_GID`               | `1000`                   | Host user GID for bridge/mcp containers |
 

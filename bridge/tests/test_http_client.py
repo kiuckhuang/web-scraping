@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import threading
+import time
 
 import bridge.http_client as hc
 import pytest
@@ -199,3 +201,50 @@ def test_redirect_loop_is_bounded(monkeypatch):
     with pytest.raises(Escalation):
         asyncio.run(hc.scrape("https://example.com/hop0", mode="extract"))
     assert len(calls) == hc.MAX_REDIRECTS + 1
+
+
+def test_concurrent_fetches_are_bounded(monkeypatch):
+    """/search_and_scrape fans out over every result at once; the fast path
+    must cap how many curl sessions are open concurrently (mirrors
+    browser_client._page_slots) instead of one per result."""
+    monkeypatch.setattr(hc, "_fetch_slots", asyncio.Semaphore(2))
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+
+    live = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def slow_fetch(url, *, mode):
+        nonlocal live, peak
+        with lock:
+            live += 1
+            peak = max(peak, live)
+        try:
+            time.sleep(0.02)
+            return {"url": url, "title": "", "markdown": "x", "tables": [], "status": 200}
+        finally:
+            with lock:
+                live -= 1
+
+    monkeypatch.setattr(hc, "_fetch_public_sync", slow_fetch)
+
+    async def run():
+        await asyncio.gather(*[hc.scrape(f"https://example.com/{i}") for i in range(8)])
+
+    asyncio.run(run())
+    assert peak <= 2
+
+
+def test_fetch_bound_disabled_when_zero(monkeypatch):
+    """0 disables the bound (module-level default is bounded)."""
+    monkeypatch.setattr(hc, "_fetch_slots", None)
+    monkeypatch.setattr(socket, "getaddrinfo", _public_getaddrinfo)
+    seen = []
+
+    def fetch(url, *, mode):
+        seen.append(url)
+        return {"url": url, "title": "", "markdown": "x", "tables": [], "status": 200}
+
+    monkeypatch.setattr(hc, "_fetch_public_sync", fetch)
+    asyncio.run(hc.scrape("https://example.com/a", mode="extract"))
+    assert seen == ["https://example.com/a"]

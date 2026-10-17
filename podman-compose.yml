@@ -228,6 +228,9 @@ services:
       - HTTP_FASTPATH=${HTTP_FASTPATH:-true}
       - HTTP_FASTPATH_TIMEOUT=${HTTP_FASTPATH_TIMEOUT:-15}
       - HTTP_FASTPATH_IMPERSONATE=${HTTP_FASTPATH_IMPERSONATE:-chrome}
+      # Bounds concurrent fast-path fetches (0 = unlimited) so a wide
+      # /search_and_scrape fan-out cannot open one curl session per result
+      - HTTP_FASTPATH_MAX_CONCURRENT=${HTTP_FASTPATH_MAX_CONCURRENT:-6}
       - HTTP_FASTPATH_PROXY=http://egress-guard:8082
       # Search chain: SEARCH_PRIMARY picks the first transport ("searxng" or
       # "browser"); the other serves as fallback. Browser SERP engine order
@@ -248,8 +251,8 @@ services:
       - CAMOUFOX_MAX_SESSIONS=${CAMOUFOX_MAX_SESSIONS:-16}
       # Proxy (bridge-side copy): derives the egress timezone for context
       # creation so the fingerprint timezone matches the proxy exit.
-      # CAMOUFOX_PROXY_SERVER wins, else the stack-wide EGRESS_PROXY applies
-      - EGRESS_PROXY=${EGRESS_PROXY:-}
+      # CAMOUFOX_PROXY_SERVER wins, else the stack-wide EGRESS_PROXY declared
+      # above (with the fast path) applies.
       - CAMOUFOX_PROXY_SERVER=${CAMOUFOX_PROXY_SERVER:-}
       - CAMOUFOX_PROXY_USERNAME=${CAMOUFOX_PROXY_USERNAME:-}
       - CAMOUFOX_PROXY_PASSWORD=${CAMOUFOX_PROXY_PASSWORD:-}
