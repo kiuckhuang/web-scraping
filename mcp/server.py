@@ -23,7 +23,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 from mcp.server.streamable_http import StreamableHTTPServerTransport
@@ -93,9 +93,15 @@ CERAMIC_ENABLED = os.environ.get("CERAMIC_ENABLED", "false").strip().lower() not
 
 # Security knobs
 MCP_SESSION_TTL = float(os.environ.get("MCP_SESSION_TTL", "1800"))  # idle session lifetime (s)
-MCP_RATE_LIMIT = int(os.environ.get("MCP_RATE_LIMIT", "120"))  # requests/minute/IP, 0 = unlimited
-MCP_MAX_BODY = int(os.environ.get("MCP_MAX_BODY", "1048576"))  # max request body bytes
+MCP_RATE_LIMIT = max(0, int(os.environ.get("MCP_RATE_LIMIT", "120")))  # requests/minute/IP, 0 = unlimited
+MCP_MAX_BODY = max(0, int(os.environ.get("MCP_MAX_BODY", "1048576")))  # max request body bytes
 MCP_ALLOWED_ORIGIN = os.environ.get("MCP_ALLOWED_ORIGIN", "localhost").strip()
+# Local/podman-forwarded clients bypass the bearer token by default. Disable
+# this when a loopback reverse proxy fronts the server (the proxy's source is
+# loopback, so every remote client would otherwise look local).
+MCP_TRUST_LOCAL = os.environ.get("MCP_TRUST_LOCAL", "true").strip().lower() not in ("", "0", "false", "no", "off")
+# Bound the number of live MCP sessions/transports (0 = unlimited).
+MCP_MAX_SESSIONS = max(0, int(os.environ.get("MCP_MAX_SESSIONS", "128")))
 
 
 def _is_local_bind_host(host: str) -> bool:
@@ -110,14 +116,19 @@ def _is_local_bind_host(host: str) -> bool:
 # Masked key for logging (never leak the full key)
 _key_preview = f"{MCP_API_KEY[:4]}...{MCP_API_KEY[-4:]}" if len(MCP_API_KEY) > 8 else ("set" if MCP_API_KEY else "unset")
 
+if MCP_API_KEY and "change-me" in MCP_API_KEY.lower():
+    raise RuntimeError(
+        "MCP_API_KEY is still the published template placeholder — run 'make init' to generate one"
+    )
+
 if not MCP_API_KEY:
     logger.warning(
         "MCP_API_KEY is NOT set — authentication is DISABLED. Anyone who can reach this "
         "server can use it. Set MCP_API_KEY in .env (make init generates one)."
     )
-    if not _is_local_bind_host(MCP_PUBLIC_BIND_HOST):
+    if not _is_local_bind_host(MCP_PUBLIC_BIND_HOST) or not MCP_TRUST_LOCAL:
         raise RuntimeError(
-            "MCP_API_KEY is required when MCP_PUBLIC_BIND_HOST is not localhost or a loopback address"
+            "MCP_API_KEY is required when MCP_PUBLIC_BIND_HOST is not localhost or MCP_TRUST_LOCAL=false"
         )
 
 server = Server("web-scrape-bridge")
@@ -133,26 +144,26 @@ _client = httpx.AsyncClient(timeout=HTTP_TIMEOUT)
 async def _api_get(path: str, **params) -> dict:
     # Drop empty-string/None params so FastAPI's pattern validators don't reject them
     clean = {k: v for k, v in params.items() if v not in (None, "")}
-    resp = await _client.get(f"{BRIDGE_URL}{path}", params=clean, headers=_request_headers(path),
+    resp = await _client.get(f"{BRIDGE_URL}{path}", params=clean, headers=_request_headers(path, "GET"),
                              timeout=CRAWL_TIMEOUT if path == "/crawl" else HTTP_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
 
 async def _api_post(path: str, body: dict) -> dict:
-    resp = await _client.post(f"{BRIDGE_URL}{path}", json=body, headers=_request_headers(path))
+    resp = await _client.post(f"{BRIDGE_URL}{path}", json=body, headers=_request_headers(path, "POST"))
     resp.raise_for_status()
     return resp.json()
 
 
 async def _api_delete(path: str) -> dict:
-    headers = _request_headers(path)
+    headers = _request_headers(path, "DELETE")
     resp = await _client.delete(f"{BRIDGE_URL}{path}", headers=headers)
     resp.raise_for_status()
     return resp.json()
 
 
-def _request_headers(path: str) -> dict[str, str]:
+def _request_headers(path: str, method: str = "GET") -> dict[str, str]:
     """Attach an X-Request-ID that the bridge echoes back and logs as req=...
 
     Tool handlers run inside the long-lived server task, not the per-request
@@ -161,7 +172,7 @@ def _request_headers(path: str) -> dict[str, str]:
     grepping that ID matches the bridge's log tag and X-Request-ID header.
     """
     rid = uuid.uuid4().hex[:8]
-    logger.info("bridge req=%s GET %s", rid, path)
+    logger.info("bridge req=%s %s %s", rid, method, path)
     return {"X-Request-ID": rid}
 
 
@@ -242,7 +253,7 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="create_session",
-        description="Create a named long-lived browser session (login persistence): log in once inside scrapes that pass this session name, then reuse cookies/localStorage on later scrape_url/search_and_scrape/crawl_site calls.",
+        description="Create a named long-lived browser session (login persistence). Seed cookies via the bridge REST endpoint POST /sessions/{name}/cookies, then reuse them on later scrape_url/search_and_scrape/crawl_site calls.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -474,7 +485,7 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
             return CallToolResult(content=[TextContent(type="text", text=f"Session '{result['name']}' {state}. Pass session='{result['name']}' to scrape_url / search_and_scrape / crawl_site to reuse its cookies.")])
 
         elif name == "delete_session":
-            result = await _api_delete(f"/sessions/{arguments['name']}")
+            result = await _api_delete(f"/sessions/{quote(str(arguments['name']), safe='')}")
             return CallToolResult(content=[TextContent(type="text", text=f"Session '{result['name']}' deleted.")])
 
         elif name == "list_sessions":
@@ -492,7 +503,7 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
             "Tool %s HTTP error: %s %s",
             name,
             exc.response.status_code,
-            exc.response.text[:500],
+            _redact(exc.response.text[:500]),
         )
         return CallToolResult(
             content=[TextContent(type="text", text=f"Error in {name}: {exc.response.status_code} {exc.response.text[:500]}")],
@@ -551,8 +562,15 @@ def _get_trusted_cidrs() -> set[str]:
 _TRUSTED_CIDRS = _get_trusted_cidrs()
 
 
+def _header_map(scope) -> dict[str, str]:
+    """HTTP headers as a lowercase map; Latin-1 never raises on raw bytes."""
+    return {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+
+
 def _is_trusted(scope) -> bool:
     """True if the request originates from a trusted (local/podman-forwarded) address."""
+    if not MCP_TRUST_LOCAL:
+        return False
     client = scope.get("client")
     if not client:
         return False
@@ -567,16 +585,23 @@ def _is_trusted(scope) -> bool:
 
 
 def _auth_ok(scope) -> bool:
-    """Check bearer token. Always passes for trusted sources or when no key is set."""
+    """Check bearer token. Local clients bypass it unless the request is proxied.
+
+    Browser-originated requests (``Origin``) and reverse-proxied requests
+    (``X-Forwarded-For``/``Forwarded``) always need the token: otherwise any
+    website could use a loopback MCP server, or a loopback TLS proxy would make
+    every remote client look local.
+    """
     if not MCP_API_KEY:
         return True
-    if _is_trusted(scope):
+    headers = _header_map(scope)
+    proxied = bool(headers.get("origin") or headers.get("x-forwarded-for") or headers.get("forwarded"))
+    if not proxied and _is_trusted(scope):
         return True
-    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
     auth = headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         token = auth[7:].strip()
-        return hmac.compare_digest(token, MCP_API_KEY)
+        return hmac.compare_digest(token.encode("utf-8"), MCP_API_KEY.encode("utf-8"))
     return False
 
 
@@ -753,6 +778,7 @@ class Session:
     task: asyncio.Task
     cm: Any  # the connect() async context manager
     last_seen: float  # time.monotonic() of the most recent request
+    busy: int = 0  # in-flight request count; the idle sweep must not cancel these
 
 
 _sessions: dict[str, Session] = {}
@@ -762,7 +788,7 @@ _cleanup_task: asyncio.Task | None = None
 async def _sweep_sessions() -> None:
     """Close and remove sessions idle for longer than MCP_SESSION_TTL."""
     now = time.monotonic()
-    expired = [sid for sid, s in _sessions.items() if now - s.last_seen > MCP_SESSION_TTL]
+    expired = [sid for sid, s in _sessions.items() if not s.busy and now - s.last_seen > MCP_SESSION_TTL]
     for sid in expired:
         session = _sessions.pop(sid, None)
         if session is None:
@@ -869,7 +895,7 @@ async def handle_mcp(scope, receive, send, body: bytes = b""):
     Uses the MCP Streamable HTTP transport (protocol version 2025-03-26+),
     which replaces the deprecated HTTP+SSE transport.
     """
-    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+    headers = _header_map(scope)
     method = scope.get("method", "POST")
     session_id = headers.get("mcp-session-id")
 
@@ -880,6 +906,10 @@ async def handle_mcp(scope, receive, send, body: bytes = b""):
         # sweep). The POST body is buffered by the caller for exactly this.
         if method != "POST" or not _is_initialize_request(body):
             await _send_json(scope, send, 400, {"error": "Missing Mcp-Session-Id header — send an initialize request first"})
+            return
+        if MCP_MAX_SESSIONS > 0 and len(_sessions) >= MCP_MAX_SESSIONS:
+            logger.warning("MCP session limit reached (%d) — rejecting initialize", MCP_MAX_SESSIONS)
+            await _send_json(scope, send, 503, {"error": "session limit reached"})
             return
         # New session — create transport, connect server, handle initialize request
         transport = StreamableHTTPServerTransport(
@@ -893,19 +923,39 @@ async def handle_mcp(scope, receive, send, body: bytes = b""):
         task = asyncio.create_task(
             server.run(read_stream, write_stream, server.create_initialization_options())
         )
-        # Handle the initialize request (this sends the response back via HTTP)
-        await transport.handle_request(scope, receive, send)
+        try:
+            # Handle the initialize request (this sends the response back via HTTP)
+            await transport.handle_request(scope, receive, send)
+        except BaseException:
+            task.cancel()
+            try:
+                await cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+            raise
         sid = transport.mcp_session_id or ""
         if sid:
             _sessions[sid] = Session(transport=transport, task=task, cm=cm, last_seen=time.monotonic())
             logger.info("MCP session created: %s", sid)
+        else:
+            # Defensive: never leave an orphan server task if the transport
+            # somehow failed to assign a session id.
+            task.cancel()
+            try:
+                await cm.__aexit__(None, None, None)
+            except Exception:
+                pass
     else:
         session = _sessions.get(session_id)
         if session is None:
             await _send_json(scope, send, 404, {"error": "Session not found or expired"})
             return
         session.last_seen = time.monotonic()
-        await session.transport.handle_request(scope, receive, send)
+        session.busy += 1
+        try:
+            await session.transport.handle_request(scope, receive, send)
+        finally:
+            session.busy -= 1
         if method == "DELETE":
             # The client ended the session (MCP spec: DELETE terminates it and
             # the transport 404s further requests) — free its task + context
@@ -951,7 +1001,7 @@ _CORS_BASE_HEADERS = [
 
 def _cors_origin(scope) -> str | None:
     """Return the request origin when it matches the configured CORS policy."""
-    origin = next((value.decode() for key, value in scope.get("headers", []) if key.lower() == b"origin"), "")
+    origin = _header_map(scope).get("origin", "")
     if not origin or not MCP_ALLOWED_ORIGIN:
         return None
     if MCP_ALLOWED_ORIGIN.lower() == "localhost":
@@ -1031,7 +1081,7 @@ async def app(scope, receive, send):
     method = scope.get("method", "")
     rid = uuid.uuid4().hex[:8]
     client = scope.get("client")
-    headers_in = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+    headers_in = _header_map(scope)
 
     # Handle CORS preflight
     if method == "OPTIONS":
@@ -1084,6 +1134,18 @@ async def app(scope, receive, send):
         logger.info("req=%s %s %s from %s", rid, method, path, client)
         await handle_mcp(scope, receive, send_with_cors, body=body)
     elif path == "/health" and method == "GET":
+        # Health stays unauthenticated (probes need it), but must not become an
+        # unthrottled amplifier for bridge health checks.
+        if not _rate_limit_ok(scope):
+            logger.warning("req=%s rate limited: GET /health from %s", rid, client)
+            await _send_json(
+                scope,
+                send_with_cors,
+                429,
+                {"error": "rate limit exceeded", "request_id": rid},
+                headers=[(b"retry-after", b"60")],
+            )
+            return
         await handle_health(scope, receive, send_with_cors)
     else:
         await _send_json(scope, send_with_cors, 404, {"error": "not found"})

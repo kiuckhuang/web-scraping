@@ -30,10 +30,18 @@ else
     bad ".env missing — run 'make init' first"
 fi
 
-if [ -f .env ] && grep -q '^MCP_API_KEY=change-me' .env 2>/dev/null; then
-    bad ".env MCP_API_KEY is still the placeholder — run 'make init' to generate one"
+if [ -f .env ]; then
+    MCP_KEY=$(sed -n 's/^MCP_API_KEY=//p' .env 2>/dev/null | head -1)
+    case "$MCP_KEY" in
+        ""|*change-me*)
+            bad ".env MCP_API_KEY is empty or still the placeholder — run 'make init' to generate one"
+            ;;
+        *)
+            ok "MCP_API_KEY looks set"
+            ;;
+    esac
 else
-    ok "MCP_API_KEY looks set"
+    bad "cannot check MCP_API_KEY — .env is missing"
 fi
 
 echo ""

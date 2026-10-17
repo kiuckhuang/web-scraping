@@ -15,6 +15,10 @@ case "${SEARXNG_SECRET_KEY:-}" in
         ;;
 esac
 
+# Upstream SearXNG reads SEARXNG_SECRET (not SEARXNG_SECRET_KEY); export the
+# final value so the generated key above is actually used.
+export SEARXNG_SECRET="$SEARXNG_SECRET_KEY"
+
 export SEARXNG_REQUEST_TIMEOUT="${SEARXNG_REQUEST_TIMEOUT:-10}"
 export SEARXNG_MAX_REQUEST_TIMEOUT="${SEARXNG_MAX_REQUEST_TIMEOUT:-15}"
 export SEARXNG_BAN_TIME_ON_FAIL="${SEARXNG_BAN_TIME_ON_FAIL:-5}"

@@ -53,6 +53,20 @@ def test_existing_keys_flags_blanks_comments_and_overrides_preserved(init, monke
     assert "SEARXNG_CHANNEL=old-tag" not in out
 
 
+def test_placeholders_in_existing_file_are_replaced(init, monkeypatch):
+    """A copied .env.example must not keep its published secrets forever."""
+    init.ENV_FILE.write_text(
+        "MCP_API_KEY=change-me-init-will-generate # generated\n"
+        "SEARXNG_SECRET_KEY=change-me-to-a-random-64-char-hex-string\n"
+    )
+    run(init, monkeypatch)
+    values = init.parse_env_file(init.ENV_FILE)
+    assert "change-me" not in values["MCP_API_KEY"]
+    assert "change-me" not in values["SEARXNG_SECRET_KEY"]
+    assert len(values["SEARXNG_SECRET_KEY"]) == 64
+    assert "# generated" in init.ENV_FILE.read_text()
+
+
 def test_ensure_does_not_touch_existing_file(init, monkeypatch):
     init.ENV_FILE.write_text("MCP_API_KEY=keep\nSEARXNG_CHANNEL=old\n")
     original = init.ENV_FILE.read_bytes()

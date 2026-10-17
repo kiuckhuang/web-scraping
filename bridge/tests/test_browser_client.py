@@ -16,6 +16,7 @@ def _reset_browser_state(monkeypatch):
     monkeypatch.setattr(bc, "_browser", None)
     monkeypatch.setattr(bc, "_playwright_ctx", None)
     monkeypatch.setattr(bc, "_sessions", {})
+    monkeypatch.setattr(bc, "_shared_context", None)
     monkeypatch.setattr(bc, "_timezone_id", None)
     monkeypatch.setattr(bc, "_timezone_resolved", False)
     monkeypatch.setattr(bc, "_serp_breaker", {})
@@ -143,6 +144,13 @@ class _FakeSessionContext:
     def __init__(self, recorder):
         self._recorder = recorder
         self.closed = False
+        self.cookies = []
+
+    async def add_cookies(self, cookies):
+        self.cookies.extend(cookies)
+
+    def is_closed(self):
+        return self.closed
 
     async def new_page(self):
         self._recorder["pages"] = self._recorder.get("pages", 0) + 1
@@ -225,6 +233,25 @@ def test_session_limit_rejects_excess(session_playwright, monkeypatch):
         asyncio.run(bc.get_session("b"))
     assert asyncio.run(bc.close_session("a")) is True  # freeing makes room
     asyncio.run(bc.get_session("b"))
+
+
+def test_set_session_cookies_imports_into_existing_session(session_playwright):
+    ctx = asyncio.run(bc.get_session("work"))
+    cookie = {"name": "sid", "value": "x", "url": "https://example.com"}
+    assert asyncio.run(bc.set_session_cookies("work", [cookie])) is True
+    assert ctx.cookies == [cookie]
+    assert asyncio.run(bc.set_session_cookies("missing", [cookie])) is False
+
+
+def test_new_page_does_not_reuse_a_named_session_context(monkeypatch, session_playwright):
+    """With isolation off, sessionless pages get their own shared context."""
+    monkeypatch.setattr(bc, "ISOLATE_CONTEXTS", False)
+    session_ctx = asyncio.run(bc.get_session("login"))
+    page = asyncio.run(bc._new_page())
+    assert page.context is not session_ctx
+    page2 = asyncio.run(bc._new_page())
+    assert page2.context is page.context
+    assert session_playwright["contexts"] == 2  # session + dedicated shared context
 
 
 def test_close_session_closes_context(session_playwright):

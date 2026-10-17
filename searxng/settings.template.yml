@@ -6,11 +6,12 @@
 use_default_settings:
   engines:
     keep_only:
-      # General web engines. bing is intentionally NOT kept: its results
-      # quality is poor and the bridge's browser-SERP fallback is a better
-      # last resort. Re-add here (and below) only if you accept that.
+      # General web engines. bing is kept only so the bridge's optional
+      # `!bing` fallback stage can select it; it stays disabled for normal
+      # category searches (see the engines list below).
       - google
       - duckduckgo
+      - bing
       - duckduckgo news
       - wikipedia
       - github
@@ -29,11 +30,15 @@ server:
   port: 8080
   bind_address: "0.0.0.0"
   base_url: "${SEARXNG_BASE_URL}"
-  secret_key: "change-me-via-SEARXNG_SECRET_KEY-env"
+  # Rendered from SEARXNG_SECRET_KEY at container start (see render_settings.py).
+  secret_key: "${SEARXNG_SECRET_KEY}"
   # This instance is private and only reachable by the internal bridge.
   limiter: false
   public_instance: false
-  image_proxy: true
+  # The stack consumes the JSON API only. The image proxy would let a holder of
+  # the instance secret make SearXNG fetch arbitrary URLs from the internal
+  # network, so it stays off unless the web UI is actually used.
+  image_proxy: false
 
 # Valkey (Redis-compatible) for rate limiting and caching
 valkey:
@@ -81,6 +86,10 @@ engines:
   # Priority 2 — default weight; still answers when google is CAPTCHA-walled
   - name: duckduckgo
     disabled: false
+  # Available to an explicit !bing bang (SEARCH_FALLBACK_BING), never to
+  # general category searches.
+  - name: bing
+    disabled: true
   - name: duckduckgo news
     disabled: false
   - name: wikipedia

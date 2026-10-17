@@ -55,6 +55,20 @@ def _outgoing_proxy_block() -> str:
     )
 
 
+def _secret_key() -> str:
+    """Return the instance secret, rejecting unset/template placeholder values.
+
+    The entrypoint generates a key when the environment value is missing or
+    still a template placeholder, so this should always see a real value. The
+    check keeps a direct renderer invocation from silently baking the published
+    placeholder into settings.yml.
+    """
+    secret = os.environ.get("SEARXNG_SECRET_KEY", "").strip()
+    if not secret or "change-me" in secret.lower():
+        raise ValueError("SEARXNG_SECRET_KEY must be set to a non-placeholder value")
+    return secret
+
+
 def main() -> None:
     src, dst = sys.argv[1], sys.argv[2]
     with open(src, encoding="utf-8") as fh:
@@ -71,6 +85,7 @@ def main() -> None:
         else:
             val = json.dumps(val)[1:-1]
         data = data.replace(f"${{{token}}}", val)
+    data = data.replace("${SEARXNG_SECRET_KEY}", json.dumps(_secret_key())[1:-1])
     data = data.replace("${SEARXNG_OUTGOING_PROXY_BLOCK}", os.environ["SEARXNG_OUTGOING_PROXY_BLOCK"])
     with open(dst, "w", encoding="utf-8") as fh:
         fh.write(data)

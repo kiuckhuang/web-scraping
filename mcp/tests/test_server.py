@@ -140,6 +140,7 @@ def test_read_body_limited_handles_chunked_body(monkeypatch):
 
 def test_auth_with_key(monkeypatch):
     monkeypatch.setattr(server_mod, "MCP_API_KEY", "sekrit")
+    monkeypatch.setattr(server_mod, "MCP_TRUST_LOCAL", True)
     monkeypatch.setattr(server_mod, "_TRUSTED_CIDRS", {"127.0.0.0/8", "::1/128"})
     assert server_mod._auth_ok({"client": ("127.0.0.1", 5), "headers": []}) is True
     untrusted = {"client": ("10.0.0.5", 5), "headers": [(b"authorization", b"Bearer wrong")]}
@@ -147,6 +148,30 @@ def test_auth_with_key(monkeypatch):
     good = {"client": ("10.0.0.5", 5), "headers": [(b"authorization", b"Bearer sekrit")]}
     assert server_mod._auth_ok(good) is True
     assert server_mod._auth_ok({"client": ("10.0.0.5", 5), "headers": []}) is False
+
+
+def test_auth_requires_token_for_browser_and_proxied_requests(monkeypatch):
+    """A loopback MCP server must not be usable by a website or a local proxy."""
+    monkeypatch.setattr(server_mod, "MCP_API_KEY", "sekrit")
+    monkeypatch.setattr(server_mod, "MCP_TRUST_LOCAL", True)
+    origin = {"client": ("127.0.0.1", 5), "headers": [(b"origin", b"http://evil.example")]}
+    assert server_mod._auth_ok(origin) is False
+    proxied = {"client": ("127.0.0.1", 5), "headers": [(b"x-forwarded-for", b"203.0.113.9")]}
+    assert server_mod._auth_ok(proxied) is False
+    authorized = {
+        "client": ("127.0.0.1", 5),
+        "headers": [(b"origin", b"http://evil.example"), (b"authorization", b"Bearer sekrit")],
+    }
+    assert server_mod._auth_ok(authorized) is True
+
+
+def test_auth_trust_local_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(server_mod, "MCP_API_KEY", "sekrit")
+    monkeypatch.setattr(server_mod, "MCP_TRUST_LOCAL", False)
+    loopback = {"client": ("127.0.0.1", 5), "headers": []}
+    assert server_mod._auth_ok(loopback) is False
+    loopback["headers"] = [(b"authorization", b"Bearer sekrit")]
+    assert server_mod._auth_ok(loopback) is True
 
 
 def test_trusted_cidrs(monkeypatch):
@@ -199,6 +224,23 @@ def test_rate_limit_disabled(monkeypatch):
         server_mod._RATE_WINDOW.clear()
 
 
+def test_session_limit_rejects_initialize(monkeypatch):
+    async def go():
+        monkeypatch.setattr(server_mod, "_ensure_cleanup", lambda: None)
+        monkeypatch.setattr(server_mod, "MCP_MAX_SESSIONS", 1)
+        server_mod._sessions.clear()
+        try:
+            server_mod._sessions["existing"] = object()  # only len(_sessions) matters
+            start = await _post_mcp(
+                b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}', monkeypatch
+            )
+            assert start["status"] == 503
+        finally:
+            server_mod._sessions.clear()
+
+    asyncio.run(go())
+
+
 def test_session_sweep_expires_idle(monkeypatch):
     async def go():
         class FakeCM:
@@ -218,11 +260,14 @@ def test_session_sweep_expires_idle(monkeypatch):
         try:
             stale = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic() - 99999)  # type: ignore[arg-type]
             fresh = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic())  # type: ignore[arg-type]
+            busy = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic() - 99999, busy=1)  # type: ignore[arg-type]
             server_mod._sessions["stale"] = stale
             server_mod._sessions["fresh"] = fresh
+            server_mod._sessions["busy"] = busy
             await server_mod._sweep_sessions()
             assert "stale" not in server_mod._sessions
             assert "fresh" in server_mod._sessions
+            assert "busy" in server_mod._sessions
         finally:
             server_mod._sessions.clear()
 
@@ -317,6 +362,12 @@ def test_mcp_lifecycle_initialize_tools_delete(monkeypatch):
 def test_request_headers_attaches_x_request_id():
     headers = server_mod._request_headers("/search")
     assert re.fullmatch(r"[0-9a-f]{8}", headers["X-Request-ID"])
+
+
+def test_request_headers_logs_the_real_method(caplog):
+    with caplog.at_level("INFO", logger=server_mod.logger.name):
+        server_mod._request_headers("/scrape", "POST")
+    assert " POST /scrape" in caplog.text
 
 
 # ---------------------------------------------------------------------------

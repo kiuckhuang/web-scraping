@@ -281,6 +281,16 @@ def test_endpoint_disabled_returns_503(monkeypatch):
     assert excinfo.value.status_code == 503
 
 
+def test_endpoint_maps_transport_errors(monkeypatch):
+    async def fake_search(*_a, **_k):
+        raise RuntimeError("upstream timeout")
+
+    monkeypatch.setattr(main_mod, "ceramic_search", fake_search)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(main_mod.ceramic_search_endpoint(q="q", max_results=5))
+    assert excinfo.value.status_code == 502
+
+
 def test_endpoint_serves_normalized_results(monkeypatch):
     _serve_json(monkeypatch, lambda *a: (200, _ceramic_payload(2)))
     out = asyncio.run(main_mod.ceramic_search_endpoint(q="california rental laws", max_results=2))

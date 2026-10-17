@@ -25,12 +25,22 @@ def test_render_settings_produces_yaml_and_proxy_override(monkeypatch, tmp_path)
     monkeypatch.setenv("EGRESS_PROXY", "http://shared.example:8080")
     monkeypatch.setenv("SEARXNG_OUTGOING_PROXY", "http://specific.example:8080")
     monkeypatch.setenv("SEARXNG_REQUEST_TIMEOUT", "7")
+    monkeypatch.setenv("SEARXNG_SECRET_KEY", "test-secret-key")
     monkeypatch.setattr(sys, "argv", ["render_settings", str(ROOT / "searxng/settings.template.yml"), str(target)])
     renderer.main()
     data = yaml.safe_load(target.read_text())
     assert data["outgoing"]["request_timeout"] == 7
     assert data["outgoing"]["proxies"]["all://"] == ["http://specific.example:8080"]
+    assert data["server"]["secret_key"] == "test-secret-key"
+    assert data["server"]["image_proxy"] is False
     assert "${" not in target.read_text()
+
+
+def test_bing_is_registered_but_disabled_by_default():
+    """SEARCH_FALLBACK_BING needs a configured engine, not just a bang."""
+    text = (ROOT / "searxng/settings.template.yml").read_text()
+    assert "\n      - bing\n" in text
+    assert "\n  - name: bing\n    disabled: true\n" in text
 
 
 def test_search_diagnostic_retains_engine_error_reasons():
@@ -43,9 +53,22 @@ def test_search_diagnostic_retains_engine_error_reasons():
 
 def test_renderer_rejects_invalid_timeout(monkeypatch, tmp_path):
     renderer = load("render_settings", "searxng/render_settings.py")
+    monkeypatch.setenv("SEARXNG_SECRET_KEY", "test-secret-key")
     monkeypatch.setenv("SEARXNG_REQUEST_TIMEOUT", "not-a-number")
     monkeypatch.setattr(sys, "argv", ["render_settings", str(ROOT / "searxng/settings.template.yml"), str(tmp_path / "out")])
     with pytest.raises(ValueError):
+        renderer.main()
+
+
+@pytest.mark.parametrize("secret", [None, "", "change-me-to-a-random-64-char-hex-string"])
+def test_renderer_rejects_missing_or_placeholder_secret(monkeypatch, tmp_path, secret):
+    renderer = load("render_settings", "searxng/render_settings.py")
+    if secret is None:
+        monkeypatch.delenv("SEARXNG_SECRET_KEY", raising=False)
+    else:
+        monkeypatch.setenv("SEARXNG_SECRET_KEY", secret)
+    monkeypatch.setattr(sys, "argv", ["render_settings", str(ROOT / "searxng/settings.template.yml"), str(tmp_path / "out")])
+    with pytest.raises(ValueError, match="SEARXNG_SECRET_KEY"):
         renderer.main()
 
 

@@ -20,6 +20,8 @@ services:
     pids_limit: 128
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       - EGRESS_PROXY=${EGRESS_PROXY:-}
       - CAMOUFOX_PROXY_SERVER=${CAMOUFOX_PROXY_SERVER:-}
@@ -96,6 +98,9 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://localhost:${PORT_SEARXNG:-8888}/
       - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-}
+      # Upstream SearXNG reads SEARXNG_SECRET; the entrypoint exports the final
+      # value too (including an ephemeral key generated from a placeholder).
+      - SEARXNG_SECRET=${SEARXNG_SECRET_KEY:-}
       - FORCE_OWNERSHIP=${SEARXNG_FORCE_OWNERSHIP:-true}
       - UWSGI_THREADS=${SEARXNG_UWSGI_THREADS:-4}
       # Engine tuning — customizable via .env, with defaults if unset
@@ -146,6 +151,10 @@ services:
     mem_limit: ${CAMOUFOX_MEM_LIMIT:-4g}
     pids_limit: ${CAMOUFOX_PIDS_LIMIT:-1024}
     shm_size: ${CAMOUFOX_SHM_SIZE:-4gb}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "127.0.0.1:${PORT_CAMOUFOX:-9223}:9222"
     environment:
@@ -197,6 +206,8 @@ services:
     pids_limit: 512
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "127.0.0.1:${PORT_BRIDGE:-8000}:8000"
     environment:
@@ -292,6 +303,7 @@ services:
       - CERAMIC_TIMEOUT=${CERAMIC_TIMEOUT:-60}
       - CERAMIC_PROXY=${CERAMIC_PROXY:-http://egress-guard:8082}
       - CERAMIC_BASE_URL=${CERAMIC_BASE_URL:-https://api.ceramic.ai}
+      - CERAMIC_DESCRIPTION_CHARS=${CERAMIC_DESCRIPTION_CHARS:-1000}
       - CAMOUFOX_WS_URL=${CAMOUFOX_WS_URL:-ws://camoufox:9222/browser}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
@@ -330,6 +342,8 @@ services:
     pids_limit: 256
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "${MCP_BIND_HOST:-127.0.0.1}:${PORT_MCP:-9100}:9100"
     environment:
@@ -347,8 +361,13 @@ services:
       - MCP_RATE_LIMIT=${MCP_RATE_LIMIT:-120}
       - MCP_MAX_BODY=${MCP_MAX_BODY:-1048576}
       - MCP_ALLOWED_ORIGIN=${MCP_ALLOWED_ORIGIN:-localhost}
+      # Local/podman-forwarded clients bypass bearer auth unless disabled. Set
+      # false when MCP is fronted by a loopback reverse proxy.
+      - MCP_TRUST_LOCAL=${MCP_TRUST_LOCAL:-true}
       # Trusted client CIDRs; empty = auto-detect (loopback + container /24)
       - MCP_TRUSTED_CIDRS=${MCP_TRUSTED_CIDRS:-}
+      # Reject new sessions beyond this bound (0 = unlimited).
+      - MCP_MAX_SESSIONS=${MCP_MAX_SESSIONS:-128}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # Result token budgets (chars per item)
       - MCP_SNIPPET_CHARS=${MCP_SNIPPET_CHARS:-300}

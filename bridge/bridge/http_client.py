@@ -52,11 +52,14 @@ MAX_REDIRECTS = 5
 # JS app shell (React/Next.js): the browser must render it instead.
 JS_SHELL_MIN_TEXT = 200
 MAX_MARKDOWN_CHARS = 50_000
+MAX_TABLE_ROWS = 200
+MAX_HTML_CHARS = 2_000_000
+MAX_CHALLENGE_SCAN = 65_536
 # Bounds concurrent fast-path fetches, mirroring browser_client._page_slots.
 # Without it, /search_and_scrape fans out over every result (up to 50) with
 # asyncio.gather, opening one curl session per hop at once — far past the
 # default thread pool and the bridge's memory limit. 0 disables the bound.
-MAX_CONCURRENT_FETCHES = int(os.environ.get("HTTP_FASTPATH_MAX_CONCURRENT", "6"))
+MAX_CONCURRENT_FETCHES = max(0, int(os.environ.get("HTTP_FASTPATH_MAX_CONCURRENT", "6")))
 _fetch_slots = asyncio.Semaphore(MAX_CONCURRENT_FETCHES) if MAX_CONCURRENT_FETCHES > 0 else None
 
 
@@ -90,9 +93,12 @@ def _request_raw(url: str) -> tuple[int, str, dict[str, str], str]:
         if not HTTP_FASTPATH_PROXY:
             address = addresses[0]
             address = f"[{address}]" if ":" in address else address
-            session.curl_options[CurlOpt.RESOLVE] = [f"{host}:{port}:{address}".encode()]
+            # Bracket an IPv6 literal host as well: curl's --resolve syntax is
+            # host:port:address, and an unbracketed "::1:443:..." is ambiguous.
+            resolve_host = f"[{host}]" if ":" in host else host
+            session.curl_options[CurlOpt.RESOLVE] = [f"{resolve_host}:{port}:{address}".encode()]
         resp = session.get(url, allow_redirects=False)
-        return resp.status_code, str(resp.url), dict(resp.headers), resp.text
+        return resp.status_code, str(resp.url), dict(resp.headers), resp.text[:MAX_HTML_CHARS]
 
 
 def _ensure_public(url: str, what: str) -> None:
@@ -139,11 +145,18 @@ async def scrape(url: str, *, mode: str = "extract") -> dict[str, Any]:
 #  HTML → result conversion (mirrors browser_client's extract/fetch shapes)
 # ---------------------------------------------------------------------------
 
+_CHALLENGE_SELECTORS = (
+    "#challenge-running, #challenge-form, #cf-chl-widget, "
+    'iframe[src*="challenges.cloudflare.com"], [id*="cf-chl-"], [class*="cf-chl-"], '
+    '.g-recaptcha, form[action*="recaptcha"]'
+)
+
+
 def _looks_like_challenge(title: str, html: str) -> bool:
-    """Cheap WAF detection: markers in the title or the first 4 KB of HTML."""
+    """Cheap WAF detection: markers in the title or the leading HTML."""
     if any(marker in (title or "").lower() for marker in WAF_MARKERS):
         return True
-    head = html[:4096].lower()
+    head = html[:MAX_CHALLENGE_SCAN].lower()
     return any(marker in head for marker in WAF_MARKERS)
 
 
@@ -190,7 +203,7 @@ def _extract_tables(soup: BeautifulSoup) -> list[dict[str, Any]]:
         for table in soup.find_all("table")[:20]:
             rows = [
                 [cell.get_text(" ", strip=True) for cell in row.find_all(["th", "td"])]
-                for row in table.find_all("tr")
+                for row in table.find_all("tr")[:MAX_TABLE_ROWS]
             ]
             tables.append({"rows": rows})
         return tables
@@ -199,9 +212,10 @@ def _extract_tables(soup: BeautifulSoup) -> list[dict[str, Any]]:
 
 
 def _build_result(url: str, body: str, mode: str, status: int) -> dict[str, Any]:
+    body = body[:MAX_HTML_CHARS]
     soup = _soup_from(body)
     title = _title_of(soup)
-    if _looks_like_challenge(title, body):
+    if _looks_like_challenge(title, body) or soup.select_one(_CHALLENGE_SELECTORS):
         raise Escalation("WAF challenge detected — letting the browser verify")
     if mode == "fetch":
         return {

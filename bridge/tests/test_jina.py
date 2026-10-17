@@ -557,6 +557,16 @@ def test_jina_scrape_endpoint_serves_and_caches(monkeypatch):
     assert calls == ["https://example.com/page"]
 
 
+def test_jina_search_endpoint_maps_transport_errors(monkeypatch):
+    async def fake_search(*_a, **_k):
+        raise RuntimeError("upstream timeout")
+
+    monkeypatch.setattr(main_mod, "jina_search", fake_search)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(main_mod.jina_search_endpoint(q="q", max_results=5))
+    assert excinfo.value.status_code == 502
+
+
 def test_jina_status_reflects_config(monkeypatch):
     monkeypatch.setattr(jc, "JINA_ENABLED", False)
     assert jc.status() == "off"

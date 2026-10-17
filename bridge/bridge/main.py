@@ -36,7 +36,7 @@ from typing import Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Path, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import ssrf
 from .browser_client import (
@@ -50,6 +50,7 @@ from .browser_client import (
     list_sessions as browser_list_sessions,
     scrape as browser_scrape,
     search_web as browser_web_search,
+    set_session_cookies as browser_set_session_cookies,
     set_session_invalidator,
     shutdown as browser_shutdown,
 )
@@ -141,7 +142,7 @@ SCRAPE_MAX_SECONDS = float(os.environ.get("SCRAPE_MAX_SECONDS", "90"))
 COMBINED_MAX_SECONDS = float(os.environ.get("COMBINED_MAX_SECONDS", "110"))
 SEARCH_STAGE_SECONDS = float(os.environ.get("SEARCH_STAGE_SECONDS", "20"))
 SEARCH_CACHE_TTL = float(os.environ.get("SEARCH_CACHE_TTL", "60"))
-SEARCH_CACHE_MAX = int(os.environ.get("SEARCH_CACHE_MAX", "100"))
+SEARCH_CACHE_MAX = max(0, int(os.environ.get("SEARCH_CACHE_MAX", "100")))
 _search_cache: dict[tuple, tuple[float, dict[str, Any]]] = {}
 
 
@@ -268,6 +269,25 @@ class SessionRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64, pattern=_SESSION_NAME_PATTERN, description="Session name")
 
 
+class SessionCookie(BaseModel):
+    """Playwright cookie shape (url, or domain + path)."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(..., min_length=1, max_length=256)
+    value: str = Field("", max_length=8192)
+    url: str | None = Field(None, max_length=8192)
+    domain: str | None = Field(None, max_length=255)
+    path: str | None = Field(None, max_length=4096)
+    expires: float | None = None
+    http_only: bool | None = Field(None, alias="httpOnly")
+    secure: bool | None = None
+    same_site: Literal["Strict", "Lax", "None"] | None = Field(None, alias="sameSite")
+
+
+class SessionCookiesRequest(BaseModel):
+    cookies: list[SessionCookie] = Field(..., min_length=1, max_length=100)
+
+
 # ---------------------------------------------------------------------------
 #  URL validation — block private/internal networks (SSRF protection)
 #  (core logic lives in bridge.bridge.ssrf, shared with the browser guard)
@@ -300,15 +320,32 @@ def _is_public_url(url: str) -> bool:
 #  Scrape cache — TTL + size-bounded, keyed by (url, mode)
 # ---------------------------------------------------------------------------
 
-_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any], int]] = {}
+_cache: dict[tuple, tuple[float, dict[str, Any], int]] = {}
 _cache_bytes = 0
 
 
-async def _cache_get(url: str, mode: str, session: str | None = None) -> dict[str, Any] | None:
+def _cache_key(url: str, mode: str, session: str | None, transport: str | None) -> tuple:
+    """Cache key; provider-specific callers add the transport namespace.
+
+    Generic /scrape and /search_and_scrape entries deliberately share a key so
+    a page fetched by any transport can be reused. Explicit /jina_scrape and
+    /exa_scrape calls use their own namespace: their contract is that the named
+    provider served the request, so they must not consume browser/fast-path or
+    other-provider entries (and vice versa).
+    """
+    key: tuple = (url, mode, session or "")
+    if transport:
+        key += (transport,)
+    return key
+
+
+async def _cache_get(
+    url: str, mode: str, session: str | None = None, transport: str | None = None,
+) -> dict[str, Any] | None:
     global _cache_bytes
     if session:
         invalidate_disconnected_sessions()
-    key = (url, mode, session or "")
+    key = _cache_key(url, mode, session, transport)
     item = _cache.get(key)
     if item is None:
         return None
@@ -320,12 +357,14 @@ async def _cache_get(url: str, mode: str, session: str | None = None) -> dict[st
     return item[1]
 
 
-def _cache_set(url: str, mode: str, value: dict[str, Any], session: str | None = None) -> None:
+def _cache_set(
+    url: str, mode: str, value: dict[str, Any], session: str | None = None, transport: str | None = None,
+) -> None:
     global _cache_bytes
     size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
     if size > BRIDGE_CACHE_MAX_BYTES or BRIDGE_CACHE_MAX <= 0 or BRIDGE_CACHE_TTL <= 0:
         return
-    key = (url, mode, session or "")
+    key = _cache_key(url, mode, session, transport)
     existing = _cache.pop(key, None)
     if existing is not None:
         _cache_bytes -= existing[2]
@@ -433,8 +472,12 @@ async def _stage_bing(
     q: str, *, categories: str | None, language: str, safesearch: int, max_results: int,
     unresponsive: list,
 ) -> dict[str, Any] | None:
-    """SearXNG bing stage: the engine is not registered anymore, so force it
-    with an inline "!bing" bang for this query only. None on error/empty."""
+    """SearXNG bing stage: force an inline "!bing" bang for this query only.
+
+    The shipped settings template keeps bing registered but disabled for
+    category searches, so the bang can select it without polluting normal
+    results. None on error/empty.
+    """
     try:
         bing = await asyncio.wait_for(searxng_search(
             f"!bing {q}",
@@ -975,6 +1018,26 @@ async def list_sessions() -> dict[str, Any]:
     return {"sessions": browser_list_sessions()}
 
 
+@app.post("/sessions/{name}/cookies")
+async def import_session_cookies(
+    req: SessionCookiesRequest,
+    name: str = Path(..., pattern=_SESSION_NAME_PATTERN, description="Session name"),
+) -> dict[str, Any]:
+    """Import cookies into a named session (login persistence).
+
+    Use a browser extension/devtools export to obtain the cookie list, then
+    POST it here. Local storage cannot be imported through this endpoint.
+    """
+    cookies = [cookie.model_dump(exclude_none=True, by_alias=True) for cookie in req.cookies]
+    try:
+        updated = await browser_set_session_cookies(name, cookies)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid cookie data: {exc}") from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Session not found: {name}")
+    return {"name": name, "cookies": len(cookies)}
+
+
 @app.delete("/sessions/{name}")
 async def delete_session(name: str = Path(..., pattern=_SESSION_NAME_PATTERN, description="Session name")) -> dict[str, Any]:
     """Close and forget a named browser session."""
@@ -1029,6 +1092,8 @@ async def jina_search_endpoint(
         return await jina_search(q, max_results=max_results)
     except JinaError as exc:
         raise _jina_http_exception(exc)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Jina search error: {exc}")
 
 
 @app.post("/jina_scrape")
@@ -1046,9 +1111,11 @@ async def jina_scrape_endpoint(req: ScrapeRequest) -> dict[str, Any]:
             status_code=400,
             detail="Named sessions apply to the stealth browser only — the Jina reader is a cookieless cloud fetch",
         )
-    cached = await _cache_get(req.url, req.mode)
+    if jina_status() == "off":
+        raise HTTPException(status_code=503, detail="Jina integration is disabled (JINA_ENABLED=false)")
+    cached = await _cache_get(req.url, req.mode, transport="jina")
     if cached is not None:
-        return {**cached, "cached": True}
+        return {**cached, "transport": "jina", "cached": True}
     try:
         content = await jina_scrape(req.url, mode=req.mode)
     except JinaError as exc:
@@ -1056,7 +1123,7 @@ async def jina_scrape_endpoint(req: ScrapeRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Jina scrape error: {exc}")
     if _cacheable(content):
-        _cache_set(req.url, req.mode, content)
+        _cache_set(req.url, req.mode, content, transport="jina")
     return {**content, "transport": "jina"}
 
 
@@ -1086,6 +1153,8 @@ async def exa_search_endpoint(
         return await exa_search(q, max_results=max_results)
     except ExaError as exc:
         raise _exa_http_exception(exc)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Exa search error: {exc}")
 
 
 @app.post("/exa_scrape")
@@ -1104,9 +1173,13 @@ async def exa_scrape_endpoint(req: ScrapeRequest) -> dict[str, Any]:
             status_code=400,
             detail="Named sessions apply to the stealth browser only — the Exa contents API is a cookieless cloud fetch",
         )
-    cached = await _cache_get(req.url, req.mode)
+    if exa_status() == "off":
+        raise HTTPException(status_code=503, detail="Exa integration is disabled (EXA_ENABLED=false)")
+    if exa_status() == "unconfigured":
+        raise HTTPException(status_code=503, detail="Exa requires EXA_API_KEY")
+    cached = await _cache_get(req.url, req.mode, transport="exa")
     if cached is not None:
-        return {**cached, "cached": True}
+        return {**cached, "transport": "exa", "cached": True}
     try:
         content = await exa_scrape(req.url, mode=req.mode)
     except ExaError as exc:
@@ -1114,7 +1187,7 @@ async def exa_scrape_endpoint(req: ScrapeRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Exa scrape error: {exc}")
     if _cacheable(content):
-        _cache_set(req.url, req.mode, content)
+        _cache_set(req.url, req.mode, content, transport="exa")
     return {**content, "transport": "exa"}
 
 
@@ -1144,6 +1217,8 @@ async def ceramic_search_endpoint(
         return await ceramic_search(q, max_results=max_results)
     except CeramicError as exc:
         raise _ceramic_http_exception(exc)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Ceramic search error: {exc}")
 
 
 # ---------------------------------------------------------------------------

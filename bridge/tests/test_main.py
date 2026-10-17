@@ -564,6 +564,43 @@ def test_sessions_endpoints(monkeypatch):
     asyncio.run(run())
 
 
+def test_import_session_cookies(monkeypatch):
+    import bridge.main as main_mod
+    import httpx
+
+    captured = {}
+
+    async def fake_import(name, cookies):
+        captured["name"] = name
+        captured["cookies"] = cookies
+        return name == "work"
+
+    monkeypatch.setattr(main_mod, "browser_set_session_cookies", fake_import)
+
+    async def run():
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/sessions/work/cookies",
+                json={"cookies": [{"name": "sid", "value": "x", "url": "https://example.com",
+                                   "httpOnly": True, "sameSite": "Lax"}]},
+            )
+            assert resp.status_code == 200 and resp.json() == {"name": "work", "cookies": 1}
+            assert captured["name"] == "work"
+            assert captured["cookies"] == [{"name": "sid", "value": "x", "url": "https://example.com",
+                                             "httpOnly": True, "sameSite": "Lax"}]
+
+            resp = await client.post("/sessions/missing/cookies",
+                                     json={"cookies": [{"name": "sid", "value": "x", "url": "https://example.com"}]})
+            assert resp.status_code == 404
+
+            resp = await client.post("/sessions/bad name/cookies",
+                                     json={"cookies": [{"name": "sid", "value": "x", "url": "https://example.com"}]})
+            assert resp.status_code == 422
+
+    asyncio.run(run())
+
+
 def test_scrape_with_session_passes_through_and_caches_separately(monkeypatch):
     """Same URL via different sessions must not share cache entries."""
     import bridge.main as main_mod

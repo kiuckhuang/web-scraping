@@ -41,6 +41,29 @@ def test_delete_and_recreate_session_does_not_reuse_content(monkeypatch):
     assert main._cache_bytes == 0
 
 
+def test_provider_cache_is_namespaced():
+    """An explicit Jina/Exa call must not consume a generic browser entry."""
+    main._cache_set("https://example.com", "extract", {"markdown": "browser"})
+    assert asyncio.run(main._cache_get("https://example.com", "extract", transport="jina")) is None
+    main._cache_set("https://example.com", "extract", {"markdown": "jina"}, transport="jina")
+    assert asyncio.run(main._cache_get("https://example.com", "extract", transport="jina"))["markdown"] == "jina"
+    assert asyncio.run(main._cache_get("https://example.com", "extract"))["markdown"] == "browser"
+
+
+def test_disabled_jina_endpoint_does_not_serve_generic_cache(monkeypatch):
+    class Req:
+        url = "https://example.com"
+        mode = "extract"
+        session = None
+
+    main._cache_set(Req.url, Req.mode, {"markdown": "browser"})
+    monkeypatch.setattr(main, "_validate_public_url", lambda url: url)
+    monkeypatch.setattr(main, "jina_status", lambda: "off")
+    with pytest.raises(main.HTTPException) as exc:
+        asyncio.run(main.jina_scrape_endpoint(Req()))  # type: ignore[arg-type]
+    assert exc.value.status_code == 503
+
+
 def test_browser_reset_invalidates_only_named_content():
     for session in (None, "a", "b"):
         main._cache_set("https://example.com", "extract", {"markdown": "body"}, session)

@@ -55,6 +55,15 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def _is_placeholder(value: str) -> bool:
+    """True for template placeholders such as "change-me-init-will-generate".
+
+    Only applies to GENERATED keys: a real user-supplied value is never
+    replaced, but a copied .env.example must not keep a published secret.
+    """
+    return "change-me" in value.strip().strip("\"'").lower()
+
+
 def render(
     existing: dict[str, str],
     *, original: str | None = None,
@@ -78,7 +87,8 @@ def render(
             continue
         key = key.strip()
         templated.add(key)
-        if key in existing and key not in VERSIONED:
+        replace_placeholder = key in GENERATED and key in existing and _is_placeholder(existing[key])
+        if key in existing and key not in VERSIONED and not replace_placeholder:
             lines[index] = f"{key}={existing[key]}\n"
         else:
             if key in GENERATED:
@@ -88,7 +98,7 @@ def render(
                 lines[index] = f"{key}={HOST_IDS[key]()}\n"
             # else: keep the template default as-is
             if key in existing:
-                if existing[key].strip() != template_value.strip():
+                if not replace_placeholder and existing[key].strip() != template_value.strip():
                     updated.append((key, existing[key].strip(), template_value.strip()))
             else:
                 added.append(key)
@@ -96,6 +106,11 @@ def render(
     if original is not None:
         # Preserve user formatting/comments and advanced settings in place.
         managed = parse_env_file(TEMPLATE)
+        generated_values = {
+            match[2]: match[4].rstrip("\n")
+            for match in (_ASSIGNMENT.match(line) for line in lines)
+            if match and match[2] in generated
+        }
         preserved = []
         for line in original.splitlines(keepends=True):
             match = _ASSIGNMENT.match(line)
@@ -103,6 +118,10 @@ def render(
                 comment = re.search(r"\s+#.*", match[4])
                 suffix = comment[0] if comment else ""
                 line = f"{match[1]}{match[2]}{match[3]}{managed[match[2]]}{suffix}\n"
+            elif match and match[2] in generated_values:
+                comment = re.search(r"\s+#.*", match[4])
+                suffix = comment[0] if comment else ""
+                line = f"{match[1]}{match[2]}{match[3]}{generated_values[match[2]]}{suffix}\n"
             preserved.append(line)
         missing = [key for key in templated if key not in existing]
         if missing:

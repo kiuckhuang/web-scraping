@@ -62,7 +62,11 @@ covers the conventions and non-obvious decisions you must not regress.
    endpoint that fetches a URL must go through the same validator.
 6. **MCP auth model** — localhost/podman-forwarded subnets bypass bearer auth
    (`_get_trusted_cidrs`); a non-loopback `MCP_BIND_HOST` without
-   `MCP_API_KEY` is a hard startup error. Keep it that way.
+   `MCP_API_KEY` is a hard startup error. Requests carrying an `Origin` header
+   or `X-Forwarded-For`/`Forwarded` always require the token (so a website
+   cannot use a loopback MCP server, and a loopback TLS proxy cannot make
+   remote clients look local). `MCP_TRUST_LOCAL=false` disables the bypass
+   entirely. Keep these protections.
 7. **SearXNG settings are rendered at container start** from
    `searxng/settings.template.yml` + env overrides (`render_settings.py`,
    `searxng-entrypoint.sh`). The `/etc/searxng/settings.yml` mount is a
@@ -76,6 +80,8 @@ covers the conventions and non-obvious decisions you must not regress.
    volume. Login persistence across scrape calls is provided by named
    sessions (`bridge/bridge/browser_client.py` + `POST /sessions`), which are
    bounded by `CAMOUFOX_MAX_SESSIONS` and die with the browser connection.
+   Cookies are seeded through `POST /sessions/{name}/cookies`; external
+   Playwright clients cannot address a bridge-created named context by name.
 10. **Proxy + GeoIP** — browser egress is configured via `CAMOUFOX_PROXY_*`
     env in the ws-camoufox container (never per-scrape). The GeoIP database
     is warmed at image build time (`camoufox[geoip]` + `download_mmdb()` in

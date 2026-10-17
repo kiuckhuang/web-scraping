@@ -12,13 +12,13 @@ A self-hosted, Podman-based search-and-scrape stack that combines:
 ### Prerequisites
 
 - [Podman](https://podman.io/) 4.x+ with `podman compose` (or [podman-compose](https://github.com/containers/podman-compose))
-- ~2.5 GB RAM (SearXNG ~512 MB, Camoufox ~1 GB, Bridge ~128 MB)
+- ~4 GB free RAM for the default ceilings (Camoufox 4 GB, Bridge 1 GB, MCP 512 MB; SearXNG adds up to 1 GB when enabled) — lower `CAMOUFOX_MEM_LIMIT` on smaller hosts
 
 ```bash
 make init && make up && make test
 ```
 
-That's it — generates secrets, starts the enabled services, and verifies everything works. Search uses the browser by default, followed by enabled Jina/Exa/Ceramic fallbacks. Then point your AI agent at the MCP server (see [MCP Server](#mcp-server-for-ai-agents) below).
+That's it — generates secrets, starts the enabled services, and verifies everything works. Search uses the browser by default, SearXNG when enabled, followed by enabled Jina/Exa/Ceramic fallbacks. Then point your AI agent at the MCP server (see [MCP Server](#mcp-server-for-ai-agents) below).
 
 ### Architecture
 
@@ -126,7 +126,7 @@ Search the web through the configured browser/SearXNG provider chain.
 | `categories`  | string | —       | Comma-separated: `general,it,images` |
 | `language`    | string | `en`    | Language code                        |
 | `pageno`      | int    | `1`     | Page number                          |
-| `time_range`  | string | —       | `day`, `month`, or `year`            |
+| `time_range`  | string | —       | `day`, `week`, `month`, or `year`    |
 | `safesearch`  | int    | `0`     | 0=off, 1=moderate, 2=strict          |
 | `max_results` | int    | `10`    | Truncate to N results                |
 
@@ -143,7 +143,7 @@ Scrape a single URL. Static pages are served by an HTTP fast path — [curl_cffi
 
 ### `POST /search_and_scrape`
 
-Search via [SearXNG](https://github.com/searxng/searxng), then scrape each result URL concurrently through the cheapest transport that serves it (HTTP fast path → stealth browser). This is the primary Exa-style endpoint.
+Search through the configured provider chain, then scrape each result URL concurrently through the cheapest transport that serves it (HTTP fast path → stealth browser). This is the primary Exa-style endpoint.
 
 ```json
 {"query": "best practices for kubernetes security", "max_results": 5, "scrape_mode": "extract"}
@@ -195,7 +195,7 @@ curl 'http://localhost:8000/ceramic_search?q=california+rental+laws&max_results=
 
 ### `GET /health`
 
-Check status of SearXNG and the Camoufox browser.
+Check the browser, SearXNG (when enabled), and the optional Jina/Exa/Ceramic configuration state.
 
 ## MCP Server (for AI Agents)
 
@@ -261,7 +261,7 @@ For a **remote** connection, include the token:
 }
 ```
 
-> **Auth model:** Localhost (and podman-forwarded host connections) bypass auth automatically based on the container's trusted subnet. Remote clients must send `Authorization: Bearer <MCP_API_KEY>`. Set the key in `.env` (`MCP_API_KEY`) — `make init` generates one automatically and preserves it across re-runs.
+> **Auth model:** Localhost (and podman-forwarded host connections) bypass auth automatically based on the container's trusted subnet, except browser-originated requests (`Origin` present) and reverse-proxied requests (`X-Forwarded-For`/`Forwarded`), which always require `Authorization: Bearer <MCP_API_KEY>`. Set the key in `.env` (`MCP_API_KEY`) — `make init` generates one automatically and preserves it across re-runs. For a loopback TLS proxy, also set `MCP_TRUST_LOCAL=false`.
 
 ### MCP Tools
 
@@ -314,9 +314,12 @@ calls within that session:
 # 1. Create the session
 curl -s -X POST localhost:8000/sessions -H 'Content-Type: application/json' -d '{"name": "github"}'
 
-# 2. Log in inside it (e.g. drive the login form via your own Playwright
-#    client connected to ws://localhost:9223/browser, or scrape the login
-#    endpoint with the session name) — cookies now live in the session.
+# 2. Import cookies from a browser/devtools export into that exact session.
+#    (An external Playwright client cannot address the bridge's named context
+#    by name; /scrape is GET-only, so POST login forms cannot be submitted.)
+curl -s -X POST localhost:8000/sessions/github/cookies \
+  -H 'Content-Type: application/json' \
+  -d '{"cookies": [{"name": "sid", "value": "…", "url": "https://github.com"}]}'
 
 # 3. Scrape authenticated pages with the same session
 curl -s -X POST localhost:8000/scrape -H 'Content-Type: application/json' \
@@ -327,17 +330,23 @@ curl -s localhost:8000/sessions
 curl -s -X DELETE localhost:8000/sessions/github
 ```
 
+Cookie import is available through the REST endpoint above; it accepts the
+Playwright cookie shape (`url`, or `domain` + `path`, plus optional
+`httpOnly`/`secure`/`sameSite`). localStorage is not imported by this endpoint.
+
 The MCP tools work the same way: `create_session` → pass `session: "github"`
 to `scrape_url` / `search_and_scrape` / `crawl_site` → `list_sessions` /
 `delete_session`. Caches are session-scoped (the same URL is fetched once per
 session, not across sessions), sessions are bounded by
 `CAMOUFOX_MAX_SESSIONS` (default 16), and all sessions die with the browser
-connection — restart `ws-camoufox` and you start logged-out again.
+connection — restart `ws-camoufox` and you start logged-out again. Sessions are
+global to the bridge (single-tenant): anyone who can reach the REST/MCP API can
+list, use, or delete them.
 
 ## Configuration
 
 `.env` is your local configuration, not a copy of every runtime default.
-Fresh `make init` creates just 13 everyday settings: credentials, provider
+Fresh `make init` creates just 15 everyday settings: credentials, provider
 switches, search priority, proxy, host binding/IDs, and the managed SearXNG tag.
 Timeouts, caches, ports and browser tuning already have working defaults in
 Compose/code. Copy individual overrides from `.env.advanced.example` when
@@ -354,7 +363,7 @@ make init-compact                  # Back up .env and simplify it
 
 | Setting | Existing `.env` behavior |
 |---------|-------------------------|
-| API keys and generated secrets | Preserved exactly, including explicit empty values; generated only if missing |
+| API keys and generated secrets | Preserved exactly, including explicit empty values; generated when missing or still a `change-me*` template placeholder |
 | Enable/disable flags | Preserved, even when equal to the shipped default |
 | Custom overrides / unknown settings | Preserved |
 | Managed image pin (`SEARXNG_CHANNEL`) | Updated from `.env.example` by `make init` |
@@ -378,7 +387,7 @@ and `make build`/`update` picks up the other tracked build changes.
 
 | Variable                | Default                  | Description                          |
 |-------------------------|--------------------------|--------------------------------------|
-| `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG session encryption key       |
+| `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG instance secret; rendered into `server.secret_key` and exported as upstream's `SEARXNG_SECRET` |
 | `SEARXNG_ENABLED` | `false` | Enable SearXNG searches/health probes; `make up` starts SearXNG and Valkey only when true |
 | `SEARXNG_CHANNEL`       | `2026.10.4-d48c4b555`  | SearXNG image tag (change deliberately when updating) |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
@@ -400,8 +409,8 @@ and `make build`/`update` picks up the other tracked build changes.
 | `CAMOUFOX_PIDS_LIMIT`   | `1024`                   | Camoufox container process/thread limit |
 | `CAMOUFOX_SHM_SIZE`     | `4gb`                    | Browser shared memory (/dev/shm) size |
 | `CAMOUFOX_NAV_DELAY`    | `400`                    | Post-navigation pause (ms) before extraction (crawl, SERP, and extract-mode pages; fetch mode skips it) |
-| `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen address (internal container) |
-| `BRIDGE_PORT`           | `8000`                   | Bridge listen port (internal container) |
+| `BRIDGE_HOST`           | `0.0.0.0`                | Bridge listen address for standalone `python -m bridge.main` only (Compose fixes the internal host/port) |
+| `BRIDGE_PORT`           | `8000`                   | Bridge listen port for standalone runs only; use `PORT_BRIDGE` for the published Compose port |
 | `BRIDGE_CACHE_TTL`      | `300`                    | Scrape cache TTL (s) — repeat scrapes of the same URL skip the browser |
 | `BRIDGE_CACHE_MAX`      | `100`                    | Max pages held in the scrape cache |
 | `BRIDGE_CACHE_MAX_BYTES` | `26214400`              | Max serialized scrape-cache size (25 MiB) |
@@ -410,15 +419,15 @@ and `make build`/`update` picks up the other tracked build changes.
 | `HTTP_FASTPATH_IMPERSONATE` | `chrome`             | curl_cffi impersonation target (TLS/JA3 + HTTP/2 fingerprint shape) |
 | `HTTP_FASTPATH_PROXY` | (unset)                    | Egress proxy for the HTTP fast path only; overrides `EGRESS_PROXY` (unset = inherit it, else direct) |
 | `SEARCH_PRIMARY` | `browser`                | First search transport: `browser` (Camoufox SERPs → SearXNG merge) or `searxng` (merge → bing → browser SERPs). Browser-first is robust against engine bot-walls; `searxng` is lower-latency where your IP isn't challenged |
-| `SEARCH_MAX_SECONDS` | `75` | Overall search deadline, including browser queue waits (s) |
-| `SEARCH_STAGE_SECONDS` | `20` | Per-provider search stage budget (s), within the overall deadline |
-| `SERP_ENGINE_SECONDS` | `12` | Per-browser-engine search budget (s) |
-| `SCRAPE_MAX_SECONDS` | `90` | Overall scrape deadline including transport fallbacks and slot waits (s) |
+| `SEARCH_MAX_SECONDS` | `75` | Overall search deadline, including browser queue waits (s); stages later in the chain may be cut off |
+| `SEARCH_STAGE_SECONDS` | `20` | Per-provider search stage budget (s), within the overall deadline; caps `SERP_ENGINE_SECONDS`/cloud client timeouts |
+| `SERP_ENGINE_SECONDS` | `12` | Per-browser-engine search budget (s); the browser stage can try up to three engines within `SEARCH_STAGE_SECONDS` |
+| `SCRAPE_MAX_SECONDS` | `90` | Overall scrape deadline including transport fallbacks and slot waits (s); Jina/Exa only get the time left after the browser |
 | `COMBINED_MAX_SECONDS` | `110` | Overall search-and-scrape HTTP deadline (s) |
 | `SEARCH_CACHE_TTL` | `60` | Non-empty search-result cache lifetime (s), scoped to all query filters; `0` disables |
 | `SEARCH_CACHE_MAX` | `100` | Maximum cached searches; full cloud page texts are excluded |
 | `EGRESS_GUARD_TIMEOUT` | `30` | DNS-pinned proxy connection/idle timeout (s) |
-| `SEARCH_FALLBACK_BING` | `false`                  | Insert a forced `!bing` SearXNG stage between the two transports (default off — bing result quality proved useless) |
+| `SEARCH_FALLBACK_BING` | `false`                  | Insert a forced `!bing` SearXNG stage between the two transports (bing is registered but disabled for normal searches); default off — bing result quality proved useless |
 | `SEARCH_FALLBACK_BROWSER` | `true`                | Allow the stealth-browser SERP stage at all (as primary or fallback) |
 | `BROWSER_SEARCH_ENGINES` | `google,duckduckgo,duckduckgo lite` | Browser SERP engine order (first non-empty wins; engines tripping the empty-results circuit breaker are skipped for 10 min) |
 | `CAMOUFOX_TIMEOUT`       | `60`                    | Browser navigation timeout (s) |
@@ -472,11 +481,13 @@ and `make build`/`update` picks up the other tracked build changes.
 | `MCP_API_KEY`           | (auto-generated)         | Bearer token for remote MCP clients (localhost bypasses auth) |
 | `MCP_BIND_HOST`         | `127.0.0.1`              | Host address published for MCP; non-loopback requires `MCP_API_KEY` |
 | `MCP_PUBLIC_BIND_HOST`  | (mirrors `MCP_BIND_HOST`) | The host address the server sees for itself, used only to decide whether `MCP_API_KEY` is mandatory at startup — startup fails hard when it is non-loopback and no key is set |
-| `MCP_TRUSTED_CIDRS`     | (auto-detected)          | Comma-separated CIDRs that bypass bearer auth; empty = loopback + container /24 subnets |
-| `MCP_SESSION_TTL`       | `1800`                   | Idle MCP session lifetime (s) before expiry |
+| `MCP_TRUST_LOCAL`       | `true`                   | Allow localhost/podman-forwarded clients to bypass bearer auth; set `false` (requires `MCP_API_KEY`) when a loopback reverse proxy fronts MCP |
+| `MCP_TRUSTED_CIDRS`     | (auto-detected)          | Comma-separated CIDRs that bypass bearer auth; empty = loopback + container /24 subnets. Set this explicitly for exposed deployments (the auto /24 can overlap a LAN or podman-forwarded source) |
+| `MCP_MAX_SESSIONS`      | `128`                    | Max live MCP sessions/transports (`0` = unlimited); excess `initialize` requests get `503` |
+| `MCP_SESSION_TTL`       | `1800`                   | Idle MCP session lifetime (s) before expiry (in-flight requests are never swept); keep above `MCP_CRAWL_TIMEOUT` |
 | `MCP_RATE_LIMIT`        | `120`                    | Max MCP requests/min per client IP (`0` = unlimited) |
 | `MCP_MAX_BODY`          | `1048576`                | Max MCP request body size (bytes)    |
-| `MCP_ALLOWED_ORIGIN`    | `localhost`              | CORS allow-list for browser clients. `localhost` allows loopback hosts on any port; otherwise comma-separated exact origins (`scheme://host:port` — a bare hostname never matches); `*` allows any origin (refused without `MCP_API_KEY`); empty disables CORS |
+| `MCP_ALLOWED_ORIGIN`    | `localhost`              | CORS allow-list for browser clients. `localhost` allows loopback hosts on any port; otherwise comma-separated exact origins (`scheme://host:port` — a bare hostname never matches); `*` allows any origin (refused without `MCP_API_KEY`; browser-originated requests always need the token when a key is set); empty disables CORS |
 | `MCP_SNIPPET_CHARS`     | `300`                    | Search-result snippet length (chars) in MCP tool output |
 | `MCP_CONTENT_CHARS`     | `5000`                   | Single-page scrape length (chars) in MCP tool output |
 | `MCP_COMBINED_CHARS`    | `1200`                   | Per-result length (chars) in `search_and_scrape` MCP output |
@@ -712,15 +723,15 @@ The stack is split into two bridge networks:
 
 ### MCP hardening
 
-- **Idle session expiry** — MCP sessions are garbage-collected after `MCP_SESSION_TTL` seconds of inactivity (default 30 min), so abandoned client connections cannot leak memory or background tasks forever. A client `DELETE /mcp` frees the session immediately, and only `initialize` requests can create sessions — headerless non-initialize requests are rejected with `400` instead of piling up orphan transports.
-- **Per-IP rate limiting** — `MCP_RATE_LIMIT` (default 120/min per IP) throttles abusive clients; excess requests get `429`. Set `0` to disable.
+- **Session bounds** — MCP sessions are garbage-collected after `MCP_SESSION_TTL` seconds of inactivity (default 30 min) and capped by `MCP_MAX_SESSIONS` (default 128), so abandoned or abusive clients cannot leak memory or background tasks forever. In-flight requests are never swept. A client `DELETE /mcp` frees the session immediately, and only `initialize` requests can create sessions — headerless non-initialize requests are rejected with `400` instead of piling up orphan transports.
+- **Per-IP rate limiting** — `MCP_RATE_LIMIT` (default 120/min per IP) throttles abusive clients on `/mcp` and `/health`; excess requests get `429`. Set `0` to disable.
 - **Request body limit** — requests larger than `MCP_MAX_BODY` (default 1 MB) are rejected with `413`.
-- **Local-first authentication** — localhost clients may use the trusted local path. A non-loopback `MCP_BIND_HOST` requires a non-empty `MCP_API_KEY`; `make init` generates one.
+- **Local-first authentication** — localhost clients may use the trusted local path. A non-loopback `MCP_BIND_HOST` requires a non-empty `MCP_API_KEY`; `make init` generates one. Requests carrying an `Origin` header or `X-Forwarded-For`/`Forwarded` always require the bearer token, and `MCP_TRUST_LOCAL=false` disables the local bypass entirely. Use that when a loopback reverse proxy fronts MCP, otherwise the proxy's source address makes every remote client look local.
 - **Auth failures are logged** — every rejected request logs the client address, so "why can't my client connect" is answerable from `podman compose logs mcp`.
 - **Log redaction** — tool arguments with embedded credentials (`user:pass@`, `?token=`, `?key=`...) are masked in logs.
-- **Configurable CORS** — `MCP_ALLOWED_ORIGIN=localhost` allows browser clients from `localhost`, `127.0.0.1`, and `::1` on any port. Otherwise set a comma-separated list of exact origins (`scheme://host:port`, e.g. `http://myhost:8184` — a bare hostname never matches, since the browser's `Origin` header always includes the scheme), or `*` to reflect any origin. Empty disables CORS. Note that CORS **cannot be skipped for key-authenticated requests**: browser clients sending an `Authorization` header trigger a CORS preflight (`OPTIONS`), and the preflight never carries the key, so the server cannot distinguish authorized from unauthorized cross-origin calls at that point — the origin must be allowed either way. A "Failed to fetch" browser error with a working `curl` is the classic symptom of a CORS mismatch, not an auth failure. `*` is only honored when `MCP_API_KEY` is set: without a key, loopback and podman-forwarded clients bypass auth entirely, and wildcard CORS would let any website open in a browser call that unauthenticated endpoint. Debug with: `curl -i -X OPTIONS http://<host>:9100/mcp -H "Origin: <your-origin>" -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: authorization,content-type"` and check for an `Access-Control-Allow-Origin` response header.
+- **Configurable CORS** — `MCP_ALLOWED_ORIGIN=localhost` allows browser clients from `localhost`, `127.0.0.1`, and `::1` on any port. Otherwise set a comma-separated list of exact origins (`scheme://host:port`, e.g. `http://myhost:8184` — a bare hostname never matches, since the browser's `Origin` header always includes the scheme), or `*` to reflect any origin. Empty disables CORS. Note that CORS **cannot be skipped for key-authenticated requests**: browser clients sending an `Authorization` header trigger a CORS preflight (`OPTIONS`), and the preflight never carries the key, so the server cannot distinguish authorized from unauthorized cross-origin calls at that point — the origin must be allowed either way. A "Failed to fetch" browser error with a working `curl` is the classic symptom of a CORS mismatch, not an auth failure. `*` is only honored when `MCP_API_KEY` is set. Browser-originated requests (`Origin` present) always need the bearer token when a key is set, even from loopback, so a website cannot use a local unauthenticated MCP server just because the source address is trusted. Debug with: `curl -i -X OPTIONS http://<host>:9100/mcp -H "Origin: <your-origin>" -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: authorization,content-type"` and check for an `Access-Control-Allow-Origin` response header.
 - **Request IDs** — every MCP request gets a short `req=...` log tag (also echoed in error bodies), and the bridge logs one per REST call with an `X-Request-ID` response header, so a failing agent call can be traced across the stack.
-- **Known limitation: no TLS.** The MCP endpoint serves plain HTTP (a valid trusted certificate requires operational setup, which this project deliberately avoids). For exposure beyond a trusted LAN, terminate TLS in front of `:9100` with a reverse proxy (e.g. Caddy or Traefik with automatic HTTPS) and send the bearer token over that connection.
+- **Known limitation: no TLS.** The MCP endpoint serves plain HTTP (a valid trusted certificate requires operational setup, which this project deliberately avoids). For exposure beyond a trusted LAN, terminate TLS in front of `:9100` with a reverse proxy (e.g. Caddy or Traefik with automatic HTTPS) and send the bearer token over that connection. Because a local proxy connects from loopback, set `MCP_TRUST_LOCAL=false` (or make the proxy forward `X-Forwarded-For`) so remote clients still need the token.
 
 ### SSRF protection
 
@@ -734,6 +745,13 @@ target-host re-resolution. TLS remains end-to-end. Browser proxy bypasses are
 disabled. Direct standalone HTTP fast-path requests pin DNS with curl's
 `RESOLVE`; standalone deployments using other proxies must provide equivalent
 connection-time enforcement.
+
+The guard is a forward proxy, not a network fence: services are configured to
+use it, but the Compose `internal` network still has normal outbound NAT. A
+compromised container can bypass the guard with raw sockets. If your threat
+model includes container compromise, add a separate egress network for the
+guard and mark the `internal` network `internal: true` (and route SearXNG
+through the guard as well).
 
 ### Project Structure
 
@@ -766,8 +784,12 @@ web-scraping/
 │       ├── searxng_client.py   # SearXNG JSON API client
 │       ├── browser_client.py   # Camoufox client (Playwright websocket)
 │       ├── http_client.py      # HTTP fast path (curl_cffi, shaped TLS)
+│       ├── egress_guard.py     # DNS-pinned forward proxy (8081/8082)
+│       ├── search_results.py   # destination normalization + SERP parsing
+│       ├── logging_utils.py    # credential-safe log filter
 │       ├── jina_client.py      # optional Jina AI last-resort transports
 │       ├── exa_client.py       # optional Exa (exa.ai) last-resort transports
+│       ├── ceramic_client.py   # optional Ceramic search-only fallback
 │       └── ssrf.py             # shared SSRF guard (edge + browser-side)
 └── mcp/
     ├── Dockerfile              # Python 3.12 + mcp + httpx (lightweight)
@@ -830,11 +852,11 @@ podman compose build camoufox && podman compose up -d camoufox
 
 ## How It Works
 
-1. **Search**: The bridge sends a query to [SearXNG](https://github.com/searxng/searxng)'s `/search?format=json` endpoint. The configured engines return JSON with titles, URLs, and snippets.
+1. **Search**: The bridge queries the configured provider chain. By default it scrapes real browser SERPs (Google → DuckDuckGo → DuckDuckGo Lite); when `SEARXNG_ENABLED=true`, SearXNG's `/search?format=json` merge is used as the primary or fallback transport. Opt-in Jina/Exa/Ceramic stages run only after the self-hosted transports return nothing.
 
 2. **Scrape**: The bridge connects to [Camoufox](https://github.com/daijro/camoufox) over Playwright's websocket protocol (`ws://camoufox:9222/browser`). Camoufox is a patched [Firefox](https://www.mozilla.org/firefox/) fork that corrects the browser fingerprint at the C++ level (fonts, WebRTC, screen, navigator properties — not via detectable JS injection), so bot detectors ([Cloudflare](https://www.cloudflare.com/), [DataDome](https://datadome.co/), [PerimeterX](https://www.perimeterx.com/), [Akamai](https://www.akamai.com/)) read it as a normal Firefox install. The [Playwright](https://playwright.dev/) client drives the browser to fetch/extract pages.
 
-3. **Search + Scrape**: The Exa-style combined endpoint searches via [SearXNG](https://github.com/searxng/searxng), then scrapes each result URL through the stealth browser concurrently — giving you search results with full page content in one call.
+3. **Search + Scrape**: The Exa-style combined endpoint runs the same provider chain, then scrapes each result URL through the cheapest available transport concurrently — giving you search results with full page content in one call.
 
 ## Troubleshooting
 
@@ -855,7 +877,7 @@ Per-IP rate limit exceeded (`MCP_RATE_LIMIT`, default 120/min). Raise it in `.en
 
 ### MCP client gets "Session not found or expired"
 
-Sessions are dropped after `MCP_SESSION_TTL` seconds of inactivity (default 30 min) or a server restart. MCP clients reconnect automatically with a new session — if yours doesn't, restart it or reduce the TTL.
+Sessions are dropped after `MCP_SESSION_TTL` seconds of inactivity (default 30 min), when `MCP_MAX_SESSIONS` is reached for new sessions, or on a server restart. MCP clients reconnect automatically with a new session — if yours doesn't, restart it or reduce the TTL.
 
 ### Correlating a failing call across logs
 

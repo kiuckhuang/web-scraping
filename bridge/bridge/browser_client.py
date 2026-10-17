@@ -23,7 +23,7 @@ import urllib.request
 from collections import deque
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import quote, urldefrag, urlparse
 
 from markdownify import markdownify
 from playwright.async_api import Browser, Error as PlaywrightError, async_playwright
@@ -52,13 +52,20 @@ CAMOUFOX_TIMEZONE = os.environ.get("CAMOUFOX_TIMEZONE", "").strip()
 SCRAPE_TIMEOUT = float(os.environ.get("CAMOUFOX_TIMEOUT", "60"))
 NAV_WAIT = os.environ.get("CAMOUFOX_NAV_WAIT", "domcontentloaded")
 NAV_DELAY = float(os.environ.get("CAMOUFOX_NAV_DELAY", "400"))
-MAX_CONCURRENT_PAGES = int(os.environ.get("CAMOUFOX_MAX_CONCURRENT_PAGES", "3"))
+MAX_CONCURRENT_PAGES = max(1, int(os.environ.get("CAMOUFOX_MAX_CONCURRENT_PAGES", "3")))
 WAF_WAIT = float(os.environ.get("CAMOUFOX_WAF_WAIT", "15"))
 ISOLATE_CONTEXTS = os.environ.get("CAMOUFOX_ISOLATE_CONTEXTS", "true").lower() not in {"0", "false", "no"}
 # Max concurrent named sessions (login persistence). Each session is a live
 # BrowserContext on the remote browser — bounded so a broken client cannot
 # exhaust the container's memory.
-MAX_SESSIONS = int(os.environ.get("CAMOUFOX_MAX_SESSIONS", "16"))
+MAX_SESSIONS = max(1, int(os.environ.get("CAMOUFOX_MAX_SESSIONS", "16")))
+# Bound oversized pages before they reach the JSON response/cache. The
+# markdown cap matches the HTTP fast path; extract-mode tables and raw fetch
+# payloads need explicit caps because they bypass markdownify.
+MAX_MARKDOWN_CHARS = 50_000
+MAX_TABLE_ROWS = 200
+MAX_HTML_CHARS = 2_000_000
+MAX_CRAWL_LINKS_PER_PAGE = 1_000
 # Wall-clock budget for a single /crawl call (seconds, 0 = unlimited). Without
 # it a 200-page crawl against slow/challenging targets can run for hours while
 # the MCP client has long timed out.
@@ -66,7 +73,7 @@ CRAWL_MAX_SECONDS = float(os.environ.get("CRAWL_MAX_SECONDS", "1800"))
 SERP_ENGINE_SECONDS = float(os.environ.get("SERP_ENGINE_SECONDS", "12"))
 # Playwright's remote protocol enforces client/server minor-version parity
 # (the server answers 428 on mismatch); the camoufox image pins playwright
-# 1.62.x (camoufox 0.5.6 requires <1.63) — keep bridge/pyproject.toml on the
+# 1.62.x (camoufox 0.5.7 requires <1.63) — keep bridge/pyproject.toml on the
 # same line and bump both pins together (see AGENTS.md).
 WAF_MARKERS = (
     "just a moment",
@@ -87,6 +94,10 @@ _page_slots = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
 _sessions: dict[str, Any] = {}
 _sessions_lock = asyncio.Lock()
 _session_invalidator: Callable[[str | None], None] | None = None
+# Dedicated context for sessionless scrapes when isolation is disabled. It
+# must never be a named-session context: reusing browser.contexts[0] could leak
+# login cookies into anonymous requests if a session was created first.
+_shared_context: Any = None
 
 
 def set_session_invalidator(callback: Callable[[str | None], None]) -> None:
@@ -105,10 +116,11 @@ class SessionLimitError(RuntimeError):
 
 async def _reset_browser() -> None:
     """Drop a broken connection so the next request reconnects cleanly."""
-    global _browser, _playwright_ctx
+    global _browser, _playwright_ctx, _shared_context
     browser, playwright_ctx = _browser, _playwright_ctx
     _browser = None
     _playwright_ctx = None
+    _shared_context = None
     # Contexts die with the browser connection — drop the session registry so
     # callers don't hand out dead contexts after a reconnect.
     _sessions.clear()
@@ -160,7 +172,10 @@ async def _new_page(session: str | None = None):
     elif ISOLATE_CONTEXTS:
         context = await browser.new_context(**context_kwargs)
     else:
-        context = browser.contexts[0] if browser.contexts else await browser.new_context(**context_kwargs)
+        global _shared_context
+        if _shared_context is None or _shared_context.is_closed():
+            _shared_context = await browser.new_context(**context_kwargs)
+        context = _shared_context
     page = None
     try:
         page = await context.new_page()
@@ -212,6 +227,24 @@ async def close_session(name: str) -> bool:
     except Exception:
         pass
     logger.info("Closed browser session %r (%d/%d in use)", name, len(_sessions), MAX_SESSIONS)
+    return True
+
+
+async def set_session_cookies(name: str, cookies: list[dict[str, Any]]) -> bool:
+    """Import cookies into an existing named session (login persistence).
+
+    An external Playwright client cannot address the bridge's named context by
+    name, and /scrape cannot submit a login form. Importing a storage-state
+    cookie list is the supported way to seed authentication. Returns False when
+    the session does not exist.
+    """
+    context = _sessions.get(name)
+    if context is None:
+        return False
+    await context.add_cookies(cookies)
+    if _session_invalidator:
+        _session_invalidator(name)
+    logger.info("Imported %d cookie(s) into browser session %r", len(cookies), name)
     return True
 
 
@@ -379,8 +412,8 @@ async def fetch_page(url: str, session: str | None = None) -> dict[str, Any]:
         await _wait_for_waf(page)
 
         title = await page.title()
-        text = await page.inner_text("body")
-        html = await page.content()
+        text = (await page.inner_text("body"))[:MAX_HTML_CHARS]
+        html = (await page.content())[:MAX_HTML_CHARS]
         # None when no navigation response is available (e.g. a client-side
         # redirect chain) — never fabricate a 200, callers filter on status.
         status = response.status if response else None
@@ -457,7 +490,7 @@ async def _extract_tables(page) -> list[dict[str, Any]]:
                 });
             }
         """)
-        return [{"rows": t} for t in tables[:20]]
+        return [{"rows": t[:MAX_TABLE_ROWS]} for t in tables[:20]]
     except Exception:
         return []
 
@@ -487,7 +520,11 @@ async def _extract_markdown(page) -> str:
                 return main ? main.innerHTML : document.body.innerHTML;
             }
         """)
-        md = markdownify(f"<body>{html}</body>", heading_style="ATX", bullets="-")
+        # markdownify is CPU-bound; run it off the event loop so a large page
+        # cannot stall every other bridge request.
+        md = await asyncio.to_thread(
+            markdownify, f"<body>{html}</body>", heading_style="ATX", bullets="-"
+        )
         # Collapse excessive blank lines
         lines = [line.rstrip() for line in md.split("\n")]
         result = []
@@ -500,10 +537,10 @@ async def _extract_markdown(page) -> str:
             else:
                 result.append(line)
                 prev_blank = False
-        return "\n".join(result).strip()[:50000]
+        return "\n".join(result).strip()[:MAX_MARKDOWN_CHARS]
     except Exception:
         # Fall back to plain text if conversion fails
-        return await page.inner_text("body")
+        return (await page.inner_text("body"))[:MAX_MARKDOWN_CHARS]
 
 
 async def scrape(url: str, *, mode: str = "extract", session: str | None = None) -> dict[str, Any]:
@@ -546,6 +583,7 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50, session: str
     Returns:
         dict with keys: pages[], sitemap[]
     """
+    url = urldefrag(url)[0]
     visited: set[str] = set()
     queued: set[str] = {url}
     pages: list[dict] = []
@@ -592,18 +630,22 @@ async def crawl_site(url: str, depth: int = 2, max_pages: int = 50, session: str
 
                     if current_depth < depth - 1:
                         links = await page.evaluate("""
-                            () => [...document.querySelectorAll('a[href]')]
+                            (max) => [...document.querySelectorAll('a[href]')]
                                 .map(a => a.href)
                                 .filter(href => href.startsWith('http'))
-                        """)
+                                .slice(0, max)
+                        """, MAX_CRAWL_LINKS_PER_PAGE)
                         # Filter in one worker-thread batch — same-origin plus
                         # shared-guard DNS checks for every link would otherwise
-                        # run (blocking) on the event loop.
+                        # run (blocking) on the event loop. Fragments are
+                        # stripped so #a/#b variants do not burn the page budget.
                         public_links = await asyncio.to_thread(
                             lambda: [
-                                link
-                                for link in links
-                                if link not in queued and _same_origin(url, link) and _is_public_http_url(link)
+                                clean
+                                for raw in links
+                                if (clean := urldefrag(raw)[0]) not in queued
+                                and _same_origin(url, clean)
+                                and _is_public_http_url(clean)
                             ]
                         )
                         for link in public_links:
@@ -742,14 +784,6 @@ async def _serp_ddg_lite(page, query: str, count: int) -> list[dict[str, str]]:
     return await asyncio.to_thread(parse_serp, await page.content(), "duckduckgo lite", count)
 
 
-def _unwrap_ddg_redirect(url: str) -> str:
-    """Extract the real target from a DuckDuckGo /l/?uddg= redirect link."""
-    if "duckduckgo.com/l/" not in url:
-        return url
-    target = parse_qs(urlparse(url).query).get("uddg", [None])[0]
-    return target or url
-
-
 async def health() -> bool:
     """Check whether the Camoufox Playwright server is reachable.
 
@@ -776,7 +810,8 @@ def _health_sync() -> bool:
 
 async def shutdown() -> None:
     """Close the Playwright connection and all named sessions."""
-    global _browser, _playwright_ctx
+    global _browser, _playwright_ctx, _shared_context
+    _shared_context = None
     _sessions.clear()
     if _session_invalidator:
         _session_invalidator(None)
