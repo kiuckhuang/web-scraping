@@ -72,6 +72,15 @@ def test_renderer_rejects_missing_or_placeholder_secret(monkeypatch, tmp_path, s
         renderer.main()
 
 
+def test_camoufox_keeps_only_sys_chroot_capability():
+    """Firefox's content sandbox chroot helper dies (SIGSEGV per renderer) without CAP_SYS_CHROOT."""
+    compose = yaml.safe_load((ROOT / "podman-compose.yml").read_text())
+    camoufox = compose["services"]["camoufox"]
+    assert camoufox["cap_drop"] == ["ALL"]
+    assert camoufox["cap_add"] == ["SYS_CHROOT"]
+    assert "no-new-privileges:true" in camoufox["security_opt"]
+
+
 def test_compose_profile_selected_by_enable_flag(monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "scripts"))
     compose = load("compose_wrapper", "scripts/compose.py")

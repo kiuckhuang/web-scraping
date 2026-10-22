@@ -1,6 +1,7 @@
 # Local config (may contain credentials/tokens)
 opencode.jsonc
 .env
+.env.bak
 .env.backup-*
 .env.init-*
 

@@ -76,7 +76,7 @@ services:
   # ---------------------------------------------------------------------------
   searxng:
     profiles: ["searxng"]
-    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.10.17-2a6fc07be}
+    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.10.19-81371861f}
     container_name: ws-searxng
     restart: unless-stopped
     mem_limit: 1g
@@ -155,6 +155,13 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Firefox's content-process sandbox forks a chroot helper that chroots each
+    # renderer into an empty directory, which needs CAP_SYS_CHROOT. Without it
+    # the sandbox logs "chroot: EPERM", every content process dies with SIGSEGV
+    # (flooding the host dmesg with segfault lines) and every new_page() fails
+    # with "Target crashed". This is the only capability Camoufox needs.
+    cap_add:
+      - SYS_CHROOT
     ports:
       - "127.0.0.1:${PORT_CAMOUFOX:-9223}:9222"
     environment:
