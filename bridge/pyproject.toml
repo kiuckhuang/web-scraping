@@ -5,12 +5,12 @@ description = "Bridge service: SearXNG search + Camoufox stealth scrape"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
-    "fastapi==0.159.1",
+    "fastapi==0.162.0",
     # Pinned explicitly: fastapi only sets a lower bound (starlette>=0.46.0),
     # so without this the image silently pulls a Starlette that may predate the
     # 2026 security fixes (CVE-2026-48710 "BadHost", CVE-2026-48817/48818,
     # CVE-2026-54282/54283 — all fixed in 1.0.1..1.3.1).
-    "starlette==1.9.0",
+    "starlette==1.10.0",
     "uvicorn[standard]==0.54.0",
     "httpx==0.28.1",
     # Pinned to the 1.62 line: Playwright's remote protocol enforces
@@ -26,12 +26,13 @@ dependencies = [
     "PyYAML==6.0.3",
     # HTTP fast path: Chrome-shaped TLS (JA3/JA4) + HTTP/2 fingerprinting for
     # static pages, escalating to the stealth browser for JS/WAF targets.
-    "curl_cffi==0.16.3",
+    # 0.17.0 carries the brotli 1.2.1 (http2shell) and certifi fixes.
+    "curl_cffi==0.17.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "httpx==0.28.1",
 ]
 

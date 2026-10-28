@@ -42,10 +42,10 @@ services:
   # ---------------------------------------------------------------------------
   valkey:
     profiles: ["searxng"]
-    # Pinned to 9.1.2: current stable patch on the 9.1 major; includes the 2026
+    # Pinned to 9.1.3: current stable patch on the 9.1 major; includes the 2026
     # security fixes (CVE-2025-67733, CVE-2026-21863/21864, CVE-2026-23479/23631/25243,
     # CVE-2026-56684/63639).
-    image: docker.io/valkey/valkey:9.1.2-alpine
+    image: docker.io/valkey/valkey:9.1.3-alpine
     container_name: ws-valkey
     restart: unless-stopped
     mem_limit: 256m
@@ -76,7 +76,7 @@ services:
   # ---------------------------------------------------------------------------
   searxng:
     profiles: ["searxng"]
-    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.10.19-81371861f}
+    image: docker.io/searxng/searxng:${SEARXNG_CHANNEL:-2026.10.27-b5ed73fcb}
     container_name: ws-searxng
     restart: unless-stopped
     mem_limit: 1g

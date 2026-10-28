@@ -389,7 +389,7 @@ and `make build`/`update` picks up the other tracked build changes.
 |-------------------------|--------------------------|--------------------------------------|
 | `SEARXNG_SECRET_KEY`    | (auto-generated)         | SearXNG instance secret; rendered into `server.secret_key` and exported as upstream's `SEARXNG_SECRET` |
 | `SEARXNG_ENABLED` | `false` | Enable SearXNG searches/health probes; `make up` starts SearXNG and Valkey only when true |
-| `SEARXNG_CHANNEL`       | `2026.10.19-81371861f`  | SearXNG image tag (change deliberately when updating) |
+| `SEARXNG_CHANNEL`       | `2026.10.27-b5ed73fcb`  | SearXNG image tag (change deliberately when updating) |
 | `SEARXNG_URL`           | `http://searxng:8080`    | SearXNG URL (container-internal)     |
 | `SEARXNG_CLIENT_TIMEOUT` | `18` | Bridge-to-SearXNG HTTP timeout (s), with headroom above engine timeout |
 | `SEARXNG_BREAKER_THRESHOLD` | `2` | Failed/blocked general searches before skipping SearXNG (`0` disables) |

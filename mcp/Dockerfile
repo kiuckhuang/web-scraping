@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -U pip
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir pytest==9.1.1
+    pip install --no-cache-dir pytest==9.2.0
 
 COPY server.py .
 COPY tests/ ./tests/
