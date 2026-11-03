@@ -14,3 +14,6 @@ def isolate_search_state(monkeypatch):
     # The deployed image's .env may enable the optional Ceramic fallback —
     # tests that exercise it pin it explicitly (deployment-config rule, AGENTS.md).
     monkeypatch.setattr(main, "CERAMIC_SEARCH_FALLBACK", False)
+    # Same for the TinyFish free-tier fallbacks.
+    monkeypatch.setattr(main, "TINYFISH_SEARCH_FALLBACK", False)
+    monkeypatch.setattr(main, "TINYFISH_SCRAPE_FALLBACK", False)

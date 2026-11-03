@@ -12,6 +12,8 @@ Endpoints:
   GET  /exa_search          — search via Exa (optional, requires EXA_ENABLED + EXA_API_KEY)
   POST /exa_scrape          — scrape via Exa contents (optional, requires EXA_ENABLED)
   GET  /ceramic_search      — search via Ceramic (optional, requires CERAMIC_ENABLED + CERAMIC_API_KEY)
+  GET  /tinyfish_search     — search via TinyFish (optional, requires TINYFISH_ENABLED + TINYFISH_API_KEY)
+  POST /tinyfish_scrape     — scrape via TinyFish fetch (optional, requires TINYFISH_ENABLED)
 
 Optional Jina AI (s.jina.ai / r.jina.ai) transports act as LAST resorts when
 enabled (JINA_ENABLED): search only after SearXNG/browser SERPs fail, scrape
@@ -19,6 +21,9 @@ only after the Camoufox browser cannot serve a page (WAF/anti-bot blocks).
 Optional Exa (api.exa.ai) behaves the same when enabled (EXA_ENABLED) and
 stages strictly AFTER the Jina fallbacks. Optional Ceramic (api.ceramic.ai,
 search-only — no contents endpoint) stages strictly AFTER the Exa fallback.
+Optional TinyFish (api.search/fetch.tinyfish.ai, FREE tier — search and fetch
+only, never wallet-metered surfaces) stages strictly BEFORE the Jina fallbacks
+when enabled (TINYFISH_ENABLED): free transports are consulted first.
 """
 
 from __future__ import annotations
@@ -92,6 +97,16 @@ from .searxng_client import (
     health as searxng_health,
     search as searxng_search,
     shutdown as searxng_shutdown,
+)
+from .tinyfish_client import (
+    TINYFISH_API_KEY,
+    TINYFISH_SCRAPE_FALLBACK,
+    TINYFISH_SEARCH_FALLBACK,
+    TinyFishError,
+    scrape as tinyfish_scrape,
+    search as tinyfish_search,
+    shutdown as tinyfish_shutdown,
+    status as tinyfish_status,
 )
 
 logging.basicConfig(
@@ -202,10 +217,18 @@ async def lifespan(app: FastAPI):
             "Ceramic last-resort search fallback enabled (key: %s) (stage after Exa)",
             "set" if CERAMIC_API_KEY else "UNSET (every call fails 401 — set CERAMIC_API_KEY)",
         )
+    if TINYFISH_SEARCH_FALLBACK or TINYFISH_SCRAPE_FALLBACK:
+        logger.info(
+            "TinyFish free-tier fallbacks enabled (key: %s) — search: %s, fetch: %s (stage before Jina)",
+            "set" if TINYFISH_API_KEY else "UNSET (every call fails 401 — set TINYFISH_API_KEY)",
+            TINYFISH_SEARCH_FALLBACK,
+            TINYFISH_SCRAPE_FALLBACK,
+        )
     yield
-    logger.info("Bridge shutting down — closing SearXNG/browser/Jina/Exa/Ceramic sessions")
+    logger.info("Bridge shutting down — closing SearXNG/browser/TinyFish/Jina/Exa/Ceramic sessions")
     await searxng_shutdown()
     await browser_shutdown()
+    await tinyfish_shutdown()
     await jina_shutdown()
     await exa_shutdown()
     await ceramic_shutdown()
@@ -421,6 +444,8 @@ async def health_check() -> dict[str, Any]:
             "exa": exa_status(),
             # Same for the optional Ceramic search-only fallback ("off" | "unconfigured" | "ready").
             "ceramic": ceramic_status(),
+            # Same for the optional TinyFish free-tier fallbacks ("off" | "unconfigured" | "ready").
+            "tinyfish": tinyfish_status(),
         },
     }
 
@@ -537,6 +562,26 @@ async def _stage_browser(
     return None
 
 
+async def _stage_tinyfish(q: str, *, max_results: int, unresponsive: list) -> dict[str, Any] | None:
+    """TinyFish stage (api.search.tinyfish.ai) — the FREE-tier cloud fallback:
+    consulted after every self-hosted stage failed but BEFORE the paid Jina/
+    Exa/Ceramic fallbacks (free transports are tried before paid ones).
+    Results are normalized to the SearXNG shape; search returns snippets only,
+    so there is no server-side page channel to reuse.
+    """
+    try:
+        served = await asyncio.wait_for(tinyfish_search(q, max_results=max_results), timeout=SEARCH_STAGE_SECONDS)
+    except Exception as exc:
+        logger.warning("TinyFish search fallback failed for %r: %s", q, exc)
+        return None
+    if served.get("results"):
+        served["fallback"] = "tinyfish"
+        served["unresponsive_engines"] = unresponsive
+        logger.info("Search fallback served %d results via tinyfish for %r", len(served["results"]), q)
+        return served
+    return None
+
+
 async def _stage_jina(q: str, *, max_results: int, unresponsive: list) -> dict[str, Any] | None:
     """Jina AI stage (s.jina.ai) — the LAST resort: only consulted after
     SearXNG and the browser SERPs both failed. Results are normalized to the
@@ -630,16 +675,19 @@ async def _run_search_chain(
     """Search with graceful degradation across transports.
 
     Stage order (SEARCH_PRIMARY):
-      "searxng" — SearXNG merge → SearXNG "!bing" → Camoufox SERPs → Jina → Exa → Ceramic
-      "browser" — Camoufox SERPs → SearXNG merge → Jina → Exa → Ceramic
+      "searxng" — SearXNG merge → SearXNG "!bing" → Camoufox SERPs → TinyFish → Jina → Exa → Ceramic
+      "browser" — Camoufox SERPs → SearXNG merge → TinyFish → Jina → Exa → Ceramic
     Each stage runs only if the previous one returned zero results; stage
     errors are logged and skipped. A response served by a non-primary stage
-    carries a "fallback" field ("bing" / "browser:google" / "jina" / "exa" /
-    "ceramic"). Jina (s.jina.ai) is the paid cloud LAST resort —
-    JINA_SEARCH_FALLBACK appends it after every self-hosted stage, never
-    before. Exa (api.exa.ai) is the same kind of opt-in fallback and stages
-    strictly after Jina (EXA_SEARCH_FALLBACK). Ceramic (api.ceramic.ai,
-    search-only) stages strictly after Exa (CERAMIC_SEARCH_FALLBACK).
+    carries a "fallback" field ("bing" / "browser:google" / "tinyfish" /
+    "jina" / "exa" / "ceramic"). TinyFish (api.search.tinyfish.ai) is the
+    FREE-tier cloud fallback — TINYFISH_SEARCH_FALLBACK stages it before the
+    paid providers (free transports are tried first). Jina (s.jina.ai) is the
+    paid cloud LAST resort — JINA_SEARCH_FALLBACK appends it after every
+    self-hosted stage, never before. Exa (api.exa.ai) is the same kind of
+    opt-in fallback and stages strictly after Jina (EXA_SEARCH_FALLBACK).
+    Ceramic (api.ceramic.ai, search-only) stages strictly after Exa
+    (CERAMIC_SEARCH_FALLBACK).
     """
     if not SEARXNG_ENABLED and not _fallback_allowed(categories, pageno, q):
         raise HTTPException(
@@ -656,6 +704,8 @@ async def _run_search_chain(
             + (["bing"] if SEARCH_FALLBACK_BING else [])
             + (["browser"] if SEARCH_FALLBACK_BROWSER else [])
         )
+    if TINYFISH_SEARCH_FALLBACK:
+        stage_names.append("tinyfish")
     if JINA_SEARCH_FALLBACK:
         stage_names.append("jina")
     if EXA_SEARCH_FALLBACK:
@@ -697,12 +747,12 @@ async def _run_search_chain(
                              "unresponsive_engines": (searxng_result or {}).get("unresponsive_engines", [])})
             if searxng_result is not None and searxng_result.get("results"):
                 return finish(searxng_result, stage)
-        elif stage in ("bing", "browser", "jina", "exa", "ceramic"):
+        elif stage in ("bing", "browser", "tinyfish", "jina", "exa", "ceramic"):
             # All fallback stages are page-1 general-web searches — gated.
             if not _fallback_allowed(categories, pageno, q):
                 attempts.append({"provider": stage, "status": "skipped", "reason": "unsupported category, page or bang"})
                 continue
-            if stage in ("jina", "exa", "ceramic") and (language != "en" or time_range or safesearch):
+            if stage in ("tinyfish", "jina", "exa", "ceramic") and (language != "en" or time_range or safesearch):
                 attempts.append({"provider": stage, "status": "skipped", "reason": "unsupported filters"})
                 continue
             if stage == "bing" and time_range:
@@ -718,6 +768,8 @@ async def _run_search_chain(
             elif stage == "browser":
                 served = await _stage_browser(q, max_results=max_results, unresponsive=unresponsive,
                                               language=language, time_range=time_range, safesearch=safesearch)
+            elif stage == "tinyfish":
+                served = await _stage_tinyfish(q, max_results=max_results, unresponsive=unresponsive)
             elif stage == "jina":
                 served = await _stage_jina(q, max_results=max_results, unresponsive=unresponsive)
             elif stage == "exa":
@@ -749,10 +801,11 @@ async def search(
 ) -> dict[str, Any]:
     """Search the web, degrading across transports (SEARCH_PRIMARY): SearXNG
     merge and stealth-browser SERPs (google/duckduckgo/duckduckgo lite) in the
-    configured order; the non-primary transport serves as the fallback, Jina
-    AI (s.jina.ai) is the optional last resort, Exa (api.exa.ai) the optional
-    fallback after it, and Ceramic (api.ceramic.ai) the optional search-only
-    fallback after Exa."""
+    configured order; the non-primary transport serves as the fallback,
+    TinyFish (api.search.tinyfish.ai, free tier) the optional fallback after
+    the self-hosted transports, Jina AI (s.jina.ai) the optional last resort,
+    Exa (api.exa.ai) the optional fallback after it, and Ceramic
+    (api.ceramic.ai) the optional search-only fallback after Exa."""
     result = await _search_with_fallbacks(
         q,
         categories=categories,
@@ -790,13 +843,15 @@ async def _run_scrape_transports(url: str, *, mode: str, session: str | None) ->
     escalate to the stealth browser, which renders JS and waits challenges
     out. Named sessions skip the fast path entirely: login persistence lives
     in the browser's long-lived cookie contexts — the HTTP path is cookieless.
-    When the browser itself cannot serve the page (WAF/anti-bot hard block)
+    When the browser itself cannot serve the page (WAF/anti-bot hard block),
+    the free-tier TinyFish fetch API (cloud-side rendering) is the first
+    cloud fallback when TINYFISH_SCRAPE_FALLBACK is on; when that fails too
     and JINA_SCRAPE_FALLBACK is on, the Jina reader (r.jina.ai, cloud-side
-    rendering) is the FINAL resort; when that fails too and
+    rendering) is consulted; and when even that fails and
     EXA_SCRAPE_FALLBACK is on, the Exa contents API (cloud-fetched page text)
-    is consulted after it. Fast-path results carry "transport": "http"; Jina
-    results "transport": "jina"; Exa results "transport": "exa" (browser
-    results are unchanged).
+    is consulted after it. Fast-path results carry "transport": "http";
+    TinyFish results "transport": "tinyfish"; Jina results "transport":
+    "jina"; Exa results "transport": "exa" (browser results are unchanged).
     """
     if session is None and HTTP_FASTPATH_ENABLED:
         try:
@@ -821,8 +876,25 @@ async def _run_scrape_transports(url: str, *, mode: str, session: str | None) ->
     except Exception as exc:
         if isinstance(exc, HTTPException):
             raise
-        # Last resort: Jina's reader renders the page in Jina's own cloud, so
-        # it can serve pages whose WAF defeats both our IP and our browser.
+        # First cloud fallback: TinyFish's fetch API is FREE tier (1,000
+        # URLs/day, free on every account) — it renders in TinyFish's cloud,
+        # so it can serve pages whose WAF defeats both our IP and our browser.
+        # Never for named sessions (cookieless third party — login cookies
+        # must not influence, or leak into, cloud-side fetches).
+        if session is None and TINYFISH_SCRAPE_FALLBACK:
+            logger.warning("Browser scrape failed for %s (%s) — TinyFish fetch as first cloud fallback", url, exc)
+            try:
+                content = await tinyfish_scrape(url, mode=mode)
+                logger.info("TinyFish fetch served %s (mode=%s)", url, mode)
+                if _scrape_failure(content):
+                    raise RuntimeError(_scrape_failure(content))
+                return {**content, "transport": "tinyfish"}
+            except Exception as tinyfish_exc:
+                logger.warning("TinyFish fetch failed for %s: %s", url, tinyfish_exc)
+        # Next cloud fallback: Jina's reader (paid — bills >=10k tokens per
+        # search-side request; the reader is rate-limited) renders the page
+        # in Jina's own cloud, so it can serve pages whose WAF defeats both
+        # our IP and our browser.
         # Never for named sessions (cookieless third party — login cookies
         # must not influence, or leak into, cloud-side fetches).
         if session is None and JINA_SCRAPE_FALLBACK:
@@ -1219,6 +1291,71 @@ async def ceramic_search_endpoint(
         raise _ceramic_http_exception(exc)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Ceramic search error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+#  TinyFish (optional) — explicit access to the FREE-tier cloud transports
+# ---------------------------------------------------------------------------
+
+def _tinyfish_http_exception(exc: TinyFishError) -> HTTPException:
+    """Map a TinyFishError onto the bridge's HTTP surface (429 carries Retry-After)."""
+    headers = {"Retry-After": str(int(exc.retry_after))} if exc.retry_after else None
+    return HTTPException(status_code=exc.bridge_status, detail=str(exc), headers=headers)
+
+
+@app.get("/tinyfish_search")
+async def tinyfish_search_endpoint(
+    q: str = Query(..., min_length=1, max_length=1000, description="Search query"),
+    max_results: int = Query(5, ge=1, le=20, description="Max results (1-20; the API returns a fixed page, sliced client-side)"),
+) -> dict[str, Any]:
+    """Search via the TinyFish Search API (api.search.tinyfish.ai) — optional transport.
+
+    Requires TINYFISH_ENABLED=true and a TINYFISH_API_KEY (X-API-Key scheme;
+    no anonymous tier). Free tier: 12,000 queries/day, 30/min — never retried
+    automatically, 429s surface the upstream Retry-After. The same transport
+    is applied automatically as the first cloud search fallback (before the
+    paid Jina/Exa/Ceramic stages) when enabled.
+    """
+    try:
+        return await tinyfish_search(q, max_results=max_results)
+    except TinyFishError as exc:
+        raise _tinyfish_http_exception(exc)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"TinyFish search error: {exc}")
+
+
+@app.post("/tinyfish_scrape")
+async def tinyfish_scrape_endpoint(req: ScrapeRequest) -> dict[str, Any]:
+    """Fetch a URL via the TinyFish Fetch API (api.fetch.tinyfish.ai) — optional transport.
+
+    Requires TINYFISH_ENABLED=true and a TINYFISH_API_KEY. The page is
+    fetched in TinyFish's cloud, so pages whose WAF defeats the local stack
+    can still come through. Free tier: 1,000 URLs/day, 150/min. Named
+    sessions are rejected — a cookieless third-party fetch must not see
+    login cookies.
+    """
+    await asyncio.to_thread(_validate_public_url, req.url)
+    if req.session:
+        raise HTTPException(
+            status_code=400,
+            detail="Named sessions apply to the stealth browser only — the TinyFish fetch API is a cookieless cloud fetch",
+        )
+    if tinyfish_status() == "off":
+        raise HTTPException(status_code=503, detail="TinyFish integration is disabled (TINYFISH_ENABLED=false)")
+    if tinyfish_status() == "unconfigured":
+        raise HTTPException(status_code=503, detail="TinyFish requires TINYFISH_API_KEY")
+    cached = await _cache_get(req.url, req.mode, transport="tinyfish")
+    if cached is not None:
+        return {**cached, "transport": "tinyfish", "cached": True}
+    try:
+        content = await tinyfish_scrape(req.url, mode=req.mode)
+    except TinyFishError as exc:
+        raise _tinyfish_http_exception(exc)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"TinyFish scrape error: {exc}")
+    if _cacheable(content):
+        _cache_set(req.url, req.mode, content, transport="tinyfish")
+    return {**content, "transport": "tinyfish"}
 
 
 # ---------------------------------------------------------------------------

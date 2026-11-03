@@ -91,6 +91,10 @@ EXA_ENABLED = os.environ.get("EXA_ENABLED", "false").strip().lower() not in ("",
 # transport (the API has no contents endpoint).
 CERAMIC_ENABLED = os.environ.get("CERAMIC_ENABLED", "false").strip().lower() not in ("", "0", "false", "no", "off")
 
+# Optional TinyFish (tinyfish.ai) integration — same pattern; FREE-tier
+# transports only (search + fetch; the wallet-metered surfaces are never exposed).
+TINYFISH_ENABLED = os.environ.get("TINYFISH_ENABLED", "false").strip().lower() not in ("", "0", "false", "no", "off")
+
 # Security knobs
 MCP_SESSION_TTL = float(os.environ.get("MCP_SESSION_TTL", "1800"))  # idle session lifetime (s)
 MCP_RATE_LIMIT = max(0, int(os.environ.get("MCP_RATE_LIMIT", "120")))  # requests/minute/IP, 0 = unlimited
@@ -369,6 +373,43 @@ if CERAMIC_ENABLED:
     ]
 
 
+# Optional TinyFish tools — appended only when the integration is enabled
+# (TINYFISH_ENABLED in .env, mirrored into the mcp container by compose).
+# FREE-tier transports: search (12k queries/day) and fetch (1k URLs/day) are
+# free on every account; the wallet-metered TinyFish surfaces (automation,
+# datasets, deep research, monitors) are deliberately not exposed. When
+# disabled the tools stay out of tools/list; calling them anyway still fails
+# cleanly (the bridge answers 503 with an explanatory message). The REST API
+# has no anonymous tier — every call fails 401 without TINYFISH_API_KEY.
+if TINYFISH_ENABLED:
+    TOOLS += [
+        Tool(
+            name="tinyfish_search",
+            description="Search via the TinyFish Search API (tinyfish.ai keyword web search) — optional transport (TINYFISH_ENABLED), also applied automatically as the first cloud search fallback (before the paid Jina/Exa/Ceramic stages). Requires TINYFISH_API_KEY. Free tier: 12,000 queries/day.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "max_results": {"type": "integer", "description": "Max results (1-20, default 5; the API returns a fixed page, sliced client-side)", "default": 5},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="tinyfish_scrape",
+            description="Fetch a URL's extracted content via the TinyFish Fetch API — free-tier cloud-fetched content (12,000→1,000 URLs/day) when the stealth browser cannot serve a page; consulted before the paid Jina/Exa readers. Requires TINYFISH_API_KEY.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to fetch"},
+                    "mode": {"type": "string", "enum": ["extract", "fetch"], "description": "'extract' = clean markdown, 'fetch' = semantic HTML + derived text", "default": "extract"},
+                },
+                "required": ["url"],
+            },
+        ),
+    ]
+
+
 async def _list_tools_handler(_ctx, _params):
     return ListToolsResult(tools=TOOLS)
 
@@ -478,6 +519,21 @@ async def _call_tool_handler(_ctx, params: CallToolRequestParams) -> CallToolRes
                 max_results=arguments.get("max_results", 5),
             )
             return CallToolResult(content=[TextContent(type="text", text=_format_search_results(result))])
+
+        elif name == "tinyfish_search":
+            result = await _api_get(
+                "/tinyfish_search",
+                q=arguments["query"],
+                max_results=arguments.get("max_results", 5),
+            )
+            return CallToolResult(content=[TextContent(type="text", text=_format_search_results(result))])
+
+        elif name == "tinyfish_scrape":
+            result = await _api_post("/tinyfish_scrape", {
+                "url": arguments["url"],
+                "mode": arguments.get("mode", "extract"),
+            })
+            return CallToolResult(content=[TextContent(type="text", text=_format_scrape_result(result))])
 
         elif name == "create_session":
             result = await _api_post("/sessions", {"name": arguments["name"]})

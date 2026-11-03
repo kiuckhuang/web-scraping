@@ -765,3 +765,41 @@ def test_ceramic_tool_absent_by_default(monkeypatch):
     # state, exactly as the default environment produces.
     names = _tool_names_with_ceramic_env(monkeypatch, "false")
     assert "ceramic_search" not in names
+
+
+# ---------------------------------------------------------------------------
+#  Optional TinyFish tools — advertised only when TINYFISH_ENABLED reaches the
+#  module. FREE-tier transports (search + fetch); the wallet-metered TinyFish
+#  surfaces are never exposed.
+# ---------------------------------------------------------------------------
+
+def _tool_names_with_tinyfish_env(monkeypatch, value: str) -> set[str]:
+    import importlib
+
+    monkeypatch.setenv("TINYFISH_ENABLED", value)
+    monkeypatch.setenv("JINA_ENABLED", "false")
+    monkeypatch.setenv("EXA_ENABLED", "false")
+    monkeypatch.setenv("CERAMIC_ENABLED", "false")
+    reloaded = importlib.reload(server_mod)
+    return {tool.name for tool in reloaded.TOOLS}
+
+
+def test_tinyfish_tools_listed_when_enabled(monkeypatch):
+    names = _tool_names_with_tinyfish_env(monkeypatch, "true")
+    assert {"tinyfish_search", "tinyfish_scrape"} <= names
+
+
+def test_tinyfish_tool_schemas_when_enabled(monkeypatch):
+    """tinyfish_search takes query + max_results; tinyfish_scrape takes url + mode."""
+    _tool_names_with_tinyfish_env(monkeypatch, "true")
+    tools = {t.name: t for t in server_mod.TOOLS if t.name in ("tinyfish_search", "tinyfish_scrape")}
+    assert set(tools["tinyfish_search"].input_schema["properties"]) == {"query", "max_results"}
+    assert set(tools["tinyfish_scrape"].input_schema["properties"]) == {"url", "mode"}
+
+
+def test_tinyfish_tools_absent_by_default(monkeypatch):
+    # Last in file: the "false" reload leaves the module in the default-tools
+    # state, exactly as the default environment produces.
+    names = _tool_names_with_tinyfish_env(monkeypatch, "false")
+    assert "tinyfish_search" not in names
+    assert "tinyfish_scrape" not in names

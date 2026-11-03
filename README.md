@@ -18,7 +18,7 @@ A self-hosted, Podman-based search-and-scrape stack that combines:
 make init && make up && make test
 ```
 
-That's it — generates secrets, starts the enabled services, and verifies everything works. Search uses the browser by default, SearXNG when enabled, followed by enabled Jina/Exa/Ceramic fallbacks. Then point your AI agent at the MCP server (see [MCP Server](#mcp-server-for-ai-agents) below).
+That's it — generates secrets, starts the enabled services, and verifies everything works. Search uses the browser by default, SearXNG when enabled, followed by enabled TinyFish/Jina/Exa/Ceramic fallbacks. Then point your AI agent at the MCP server (see [MCP Server](#mcp-server-for-ai-agents) below).
 
 ### Architecture
 
@@ -193,9 +193,19 @@ Explicit access to the optional [Ceramic](https://ceramic.ai/) search transport 
 curl 'http://localhost:8000/ceramic_search?q=california+rental+laws&max_results=5'
 ```
 
+### `GET /tinyfish_search` + `POST /tinyfish_scrape` (optional, free tier)
+
+Explicit access to the optional [TinyFish](https://www.tinyfish.ai/) transports (disabled unless `TINYFISH_ENABLED=true` in `.env`). The REST APIs require a `TINYFISH_API_KEY` (sent as `X-API-Key` — no anonymous tier). **Free tier only**: search (12,000 queries/day, 30/min) and fetch (1,000 URLs/day, 150/min) are free on every account; the wallet-metered TinyFish surfaces (automation, datasets, deep research) are deliberately not implemented. `POST /tinyfish_scrape` validates the URL against the same SSRF guard as `/scrape`; named sessions are rejected (the fetch API is a cookieless cloud fetch). The Search API has no result-count parameter — results are sliced client-side to `max_results`.
+
+```bash
+curl 'http://localhost:8000/tinyfish_search?q=california+rental+laws&max_results=5'
+curl -X POST http://localhost:8000/tinyfish_scrape -H 'Content-Type: application/json' \
+  -d '{"url": "https://example.com/", "mode": "extract"}'
+```
+
 ### `GET /health`
 
-Check the browser, SearXNG (when enabled), and the optional Jina/Exa/Ceramic configuration state.
+Check the browser, SearXNG (when enabled), and the optional TinyFish/Jina/Exa/Ceramic configuration state.
 
 ## MCP Server (for AI Agents)
 
@@ -277,6 +287,8 @@ For a **remote** connection, include the token:
 | `exa_search`         | Search via the Exa API with clean page content (only listed when `EXA_ENABLED=true`) |
 | `exa_scrape`         | Fetch a URL's cleaned page text via the Exa Contents API (only listed when `EXA_ENABLED=true`) |
 | `ceramic_search`     | Search via the Ceramic API with page-content snippets (only listed when `CERAMIC_ENABLED=true`) |
+| `tinyfish_search`    | Search via the TinyFish Search API (only listed when `TINYFISH_ENABLED=true`) |
+| `tinyfish_scrape`    | Fetch a URL's extracted content via the TinyFish Fetch API (only listed when `TINYFISH_ENABLED=true`) |
 | `create_session`     | Create a named long-lived session (login persistence) |
 | `delete_session`     | Close and forget a named session (drops its cookies) |
 | `list_sessions`      | List live session names |
@@ -469,6 +481,14 @@ and `make build`/`update` picks up the other tracked build changes.
 | `CERAMIC_PROXY` | `http://egress-guard:8082` in-stack | Egress proxy for Ceramic API calls; outside compose, unset = inherit `EGRESS_PROXY`, else direct |
 | `CERAMIC_BASE_URL` | `https://api.ceramic.ai` | Ceramic API base URL override (corporate gateway / API mirror) |
 | `CERAMIC_DESCRIPTION_CHARS` | `1000` | Description characters per result requested from the API (1000-8000; only a 400-char snippet is kept) |
+| `TINYFISH_ENABLED` | `false` | Optional [TinyFish](https://www.tinyfish.ai/) **free-tier** fallbacks — when `true`, api.search/fetch.tinyfish.ai fire after every self-hosted transport failed but **before** the paid Jina/Exa/Ceramic fallbacks (free transports are tried first) |
+| `TINYFISH_API_KEY` | (unset) | Key from [agent.tinyfish.ai/api-keys](https://agent.tinyfish.ai/api-keys) — required (the TinyFish REST API has no anonymous tier; sent as `X-API-Key`) |
+| `TINYFISH_SEARCH_FALLBACK` | `true` | Append the TinyFish search stage before the paid cloud fallbacks (implies `TINYFISH_ENABLED`) |
+| `TINYFISH_SCRAPE_FALLBACK` | `true` | Use the TinyFish fetch API when the stealth browser cannot scrape a URL (implies `TINYFISH_ENABLED`; never for named sessions) |
+| `TINYFISH_TIMEOUT` | `60` | TinyFish API timeout (s) |
+| `TINYFISH_PROXY` | `http://egress-guard:8082` in-stack | Egress proxy for TinyFish API calls; outside compose, unset = inherit `EGRESS_PROXY`, else direct |
+| `TINYFISH_SEARCH_URL` | `https://api.search.tinyfish.ai` | Search endpoint override (corporate gateway / API mirror) |
+| `TINYFISH_FETCH_URL` | `https://api.fetch.tinyfish.ai` | Fetch endpoint override (corporate gateway / API mirror) |
 | `LOG_LEVEL`             | `INFO`                   | Log level for the bridge and MCP services (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 | `HEALTHCHECK_INTERVAL` | `60s` | Container health probe interval; successful Bridge/MCP probe logs are suppressed, errors remain visible |
 | `PORT_CAMOUFOX`         | `9223`                   | Host (loopback) port for direct access to the ws-camoufox container |
@@ -500,7 +520,7 @@ and `make build`/`update` picks up the other tracked build changes.
 ### [SearXNG](https://docs.searxng.org/) Configuration
 
 SearXNG is **disabled by default**. Normal searches use the browser, then
-enabled Jina/Exa/Ceramic fallbacks, without any SearXNG requests. `/health` reports
+enabled TinyFish/Jina/Exa/Ceramic fallbacks, without any SearXNG requests. `/health` reports
 `services.searxng: "off"` and its absence does not degrade stack health.
 The SearXNG-backed Bing stage is disabled with it, even if its flag is true.
 
@@ -700,6 +720,21 @@ The API is credit-metered with **no anonymous tier**: without a key every call f
 
 The client (`bridge/bridge/ceramic_client.py`) implements just the one call it needs (keyword search, 1–50 words, results carrying title/url/page-content snippet) — the full surface lives upstream at [docs.ceramic.ai](https://docs.ceramic.ai/) (nothing is vendored in this repo). The MCP server mirrors it as the `ceramic_search` tool when enabled.
 
+### Optional TinyFish (tinyfish.ai) free-tier fallbacks
+
+[TinyFish](https://www.tinyfish.ai/)'s hosted Search and Fetch APIs (`api.search.tinyfish.ai`, `api.fetch.tinyfish.ai`) are integrated like Jina/Exa — **opt-in, but free**: Search (12,000 queries/day, 30/min) and Fetch (1,000 URLs/day, 150/min) are free on every account, so when `TINYFISH_ENABLED=true` they stage **before** the paid Jina/Exa/Ceramic fallbacks (free transports are tried first). **Free tier only**: the wallet-metered TinyFish surfaces (agent automation, browser sessions, datasets, deep research, monitors) are deliberately not implemented — the stack can never spend wallet credits implicitly.
+
+Enable it in `.env`:
+
+```bash
+TINYFISH_ENABLED=true
+TINYFISH_API_KEY=xxx              # from https://agent.tinyfish.ai/api-keys
+```
+
+The REST APIs have **no anonymous tier**: without a key every call fails 401 before spending the daily allowance (`/health` reports the configured state under `services.tinyfish` — `off` / `unconfigured` / `ready`). Requests are never retried automatically; 429s surface the upstream `Retry-After` header. The Search API has no result-count parameter — results are sliced client-side. Granular kill switches (`TINYFISH_SEARCH_FALLBACK` / `TINYFISH_SCRAPE_FALLBACK`), the timeout, an egress proxy and endpoint overrides are in the env table above.
+
+The client (`bridge/bridge/tinyfish_client.py`) implements just the two free calls it needs (keyword search; fetch for one URL returning markdown or semantic HTML) — the full surface lives upstream at [docs.tinyfish.ai](https://docs.tinyfish.ai/) (nothing is vendored in this repo). The MCP server mirrors them as the `tinyfish_search` / `tinyfish_scrape` tools when enabled.
+
 ## Security
 
 ### Network segmentation
@@ -794,6 +829,7 @@ web-scraping/
 │       ├── jina_client.py      # optional Jina AI last-resort transports
 │       ├── exa_client.py       # optional Exa (exa.ai) last-resort transports
 │       ├── ceramic_client.py   # optional Ceramic search-only fallback
+│       ├── tinyfish_client.py  # optional TinyFish free-tier search+fetch fallback
 │       └── ssrf.py             # shared SSRF guard (edge + browser-side)
 └── mcp/
     ├── Dockerfile              # Python 3.12 + mcp + httpx (lightweight)
@@ -856,7 +892,7 @@ podman compose build camoufox && podman compose up -d camoufox
 
 ## How It Works
 
-1. **Search**: The bridge queries the configured provider chain. By default it scrapes real browser SERPs (Google → DuckDuckGo → DuckDuckGo Lite); when `SEARXNG_ENABLED=true`, SearXNG's `/search?format=json` merge is used as the primary or fallback transport. Opt-in Jina/Exa/Ceramic stages run only after the self-hosted transports return nothing.
+1. **Search**: The bridge queries the configured provider chain. By default it scrapes real browser SERPs (Google → DuckDuckGo → DuckDuckGo Lite); when `SEARXNG_ENABLED=true`, SearXNG's `/search?format=json` merge is used as the primary or fallback transport. Opt-in TinyFish/Jina/Exa/Ceramic stages run only after the self-hosted transports return nothing (TinyFish is free tier, so it stages before the paid providers).
 
 2. **Scrape**: The bridge connects to [Camoufox](https://github.com/daijro/camoufox) over Playwright's websocket protocol (`ws://camoufox:9222/browser`). Camoufox is a patched [Firefox](https://www.mozilla.org/firefox/) fork that corrects the browser fingerprint at the C++ level (fonts, WebRTC, screen, navigator properties — not via detectable JS injection), so bot detectors ([Cloudflare](https://www.cloudflare.com/), [DataDome](https://datadome.co/), [PerimeterX](https://www.perimeterx.com/), [Akamai](https://www.akamai.com/)) read it as a normal Firefox install. The [Playwright](https://playwright.dev/) client drives the browser to fetch/extract pages.
 

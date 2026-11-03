@@ -30,7 +30,7 @@ def test_new_file_is_compact_private_and_idempotent(init, monkeypatch):
     run(init, monkeypatch)
     values = init.parse_env_file(init.ENV_FILE)
     assert set(values) == set(init.parse_env_file(init.TEMPLATE))
-    assert len(values) <= 15
+    assert len(values) <= 17
     assert "BRIDGE_CACHE_TTL" not in values
     assert "change-me" not in values["MCP_API_KEY"]
     assert init.ENV_FILE.stat().st_mode & 0o777 == 0o600

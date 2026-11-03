@@ -97,6 +97,8 @@ covers the conventions and non-obvious decisions you must not regress.
     automatic retries — 429s surface Jina's `retryAfter` instead. The client
     is `bridge/bridge/jina_client.py`; `/jina_search` and `/jina_scrape` are
     the explicit endpoints (SSRF-validated like every URL-fetching endpoint).
+    (With the TinyFish free-tier stage enabled it stages directly above Jina —
+    see item 17.)
 12. **Exa is opt-in and stages strictly after Jina** — `EXA_ENABLED=false` by
     default; when enabled, `api.exa.ai` (search + contents) fires only after
     the Jina fallbacks directly above it in both chains (search:
@@ -122,12 +124,12 @@ covers the conventions and non-obvious decisions you must not regress.
 15. **Ceramic is opt-in, stages strictly after Exa, and search-only** —
     `CERAMIC_ENABLED=false` by default; when enabled, `api.ceramic.ai/search`
     fires only after the Exa fallback (search chain: SearXNG/browser SERPs →
-    Jina → Exa → Ceramic). It is a credit-metered paid API with no anonymous
-    tier: do not flip the default, reorder the chain to put Ceramic before
-    Exa, or add automatic retries. The API has **no contents/reader endpoint**
-    — Ceramic must never join the scrape chain or gain a scrape tool. The
-    client is `bridge/bridge/ceramic_client.py`; `/ceramic_search` is the
-    explicit endpoint.
+    TinyFish → Jina → Exa → Ceramic). It is a credit-metered paid API with no
+    anonymous tier: do not flip the default, reorder the chain to put Ceramic
+    before Exa, or add automatic retries. The API has **no contents/reader
+    endpoint** — Ceramic must never join the scrape chain or gain a scrape
+    tool. The client is `bridge/bridge/ceramic_client.py`; `/ceramic_search`
+    is the explicit endpoint.
 16. **Camoufox keeps exactly one capability: `CAP_SYS_CHROOT`** — every service
     uses `cap_drop: ALL`, but Firefox's content-process sandbox launches a
     chroot helper that chroots renderers into an empty directory. Without the
@@ -136,6 +138,22 @@ covers the conventions and non-obvious decisions you must not regress.
     with `Target crashed` (searches silently fall through to Jina). Keep
     `cap_add: [SYS_CHROOT]` on the camoufox service and nothing else; guarded by
     `tests/test_operations.py`.
+17. **TinyFish is opt-in, FREE-tier only, and stages before the paid fallbacks** —
+    `TINYFISH_ENABLED=false` by default; when enabled, TinyFish's Search and
+    Fetch APIs (`api.search.tinyfish.ai`, `api.fetch.tinyfish.ai`) fire after
+    every self-hosted transport failed but **before** the paid Jina/Exa/
+    Ceramic fallbacks — free transports are tried first. They are free on
+    every account (12k searches/day, 1k fetches/day); **implement only the
+    free-tier surfaces** — the wallet-metered TinyFish products (agent
+    automation, browser sessions, datasets, deep research, monitors) must
+    never gain bridge endpoints, MCP tools, or client methods, so the stack
+    can never spend wallet credits implicitly. The REST APIs have no
+    anonymous tier (key as `X-API-Key`, not Bearer) and no result-count
+    parameter on search (sliced client-side); requests are never retried
+    automatically; 429s surface the upstream `Retry-After` header. The
+    client is `bridge/bridge/tinyfish_client.py`; `/tinyfish_search` and
+    `/tinyfish_scrape` are the explicit endpoints (the scrape side is
+    SSRF-validated and cookieless, like every URL-fetching endpoint).
 
 ## Style
 

@@ -311,6 +311,19 @@ services:
       - CERAMIC_PROXY=${CERAMIC_PROXY:-http://egress-guard:8082}
       - CERAMIC_BASE_URL=${CERAMIC_BASE_URL:-https://api.ceramic.ai}
       - CERAMIC_DESCRIPTION_CHARS=${CERAMIC_DESCRIPTION_CHARS:-1000}
+      # Optional TinyFish (tinyfish.ai) FREE-tier fallbacks (default off — see
+      # .env.example). When enabled, api.search/fetch.tinyfish.ai fire after
+      # the self-hosted transports but BEFORE the paid Jina/Exa/Ceramic
+      # fallbacks (free transports are tried first). Free tier: 12k searches
+      # + 1k fetches per day.
+      - TINYFISH_ENABLED=${TINYFISH_ENABLED:-false}
+      - TINYFISH_API_KEY=${TINYFISH_API_KEY:-}
+      - TINYFISH_SEARCH_FALLBACK=${TINYFISH_SEARCH_FALLBACK:-true}
+      - TINYFISH_SCRAPE_FALLBACK=${TINYFISH_SCRAPE_FALLBACK:-true}
+      - TINYFISH_TIMEOUT=${TINYFISH_TIMEOUT:-60}
+      - TINYFISH_PROXY=${TINYFISH_PROXY:-http://egress-guard:8082}
+      - TINYFISH_SEARCH_URL=${TINYFISH_SEARCH_URL:-https://api.search.tinyfish.ai}
+      - TINYFISH_FETCH_URL=${TINYFISH_FETCH_URL:-https://api.fetch.tinyfish.ai}
       - CAMOUFOX_WS_URL=${CAMOUFOX_WS_URL:-ws://camoufox:9222/browser}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
@@ -389,6 +402,9 @@ services:
       # Mirrors the bridge's Ceramic flag: the ceramic_search tool is only
       # advertised when the integration is enabled (default off)
       - CERAMIC_ENABLED=${CERAMIC_ENABLED:-false}
+      # Mirrors the bridge's TinyFish flag: the tinyfish_search/tinyfish_scrape
+      # tools are only advertised when the integration is enabled (default off)
+      - TINYFISH_ENABLED=${TINYFISH_ENABLED:-false}
     depends_on:
       bridge:
         condition: service_healthy
