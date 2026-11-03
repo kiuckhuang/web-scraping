@@ -9,7 +9,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 
-@pytest.mark.parametrize("actual", ["158.0-beta.40", "152.0.4-beta.31"])
+@pytest.mark.parametrize("actual", ["158.0.1-beta.41", "152.0.4-beta.31"])
 def test_exact_browser_install(monkeypatch, actual):
     path = Path(__file__).resolve().parents[1] / "camoufox/install_browser.py"
     spec = importlib.util.spec_from_file_location("browser_installer", path)
@@ -30,7 +30,7 @@ def test_exact_browser_install(monkeypatch, actual):
 
     cli.CamoufoxUpdate = Update
     cli.load_repo_cache = lambda: {"repos": [{"name": "Official", "versions": [
-        {"version": "158.0", "build": "beta.40", "url": "https://example.com/browser.zip", "is_prerelease": True},
+        {"version": "158.0.1", "build": "beta.41", "url": "https://example.com/browser.zip", "is_prerelease": True},
     ]}]}
     package.AvailableVersion = lambda **kwargs: kwargs
     package.Version = lambda *args: args
@@ -40,12 +40,12 @@ def test_exact_browser_install(monkeypatch, actual):
     monkeypatch.setitem(sys.modules, "camoufox.__main__", cli)
     monkeypatch.setitem(sys.modules, "camoufox.pkgman", package)
     monkeypatch.setattr(installer.subprocess, "run", lambda command, **kwargs: calls.append(command))
-    monkeypatch.setenv("EXPECTED_BROWSER_VERSION", "158.0-beta.40")
-    if actual != "158.0-beta.40":
+    monkeypatch.setenv("EXPECTED_BROWSER_VERSION", "158.0.1-beta.41")
+    if actual != "158.0.1-beta.41":
         with pytest.raises(RuntimeError, match="pin mismatch"):
             installer.main()
     else:
         installer.main()
     assert calls[0][-1] == "sync"
-    assert calls[1][-1] == "official/prerelease/158.0-beta.40"
-    assert selected[0]["version"] == ("beta.40", "158.0")
+    assert calls[1][-1] == "official/prerelease/158.0.1-beta.41"
+    assert selected[0]["version"] == ("beta.41", "158.0.1")

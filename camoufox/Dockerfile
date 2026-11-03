@@ -19,11 +19,11 @@ RUN pip install --no-cache-dir -U pip
 # from the project's GitHub releases at build time — never at container start.
 # playwright is pinned to the same minor as bridge/pyproject.toml: Playwright's
 # remote protocol enforces client/server minor-version parity (HTTP 428 on
-# mismatch), and camoufox 0.5.9b5 requires playwright <1.63.
-ARG CAMOUFOX_PKG_VERSION=0.5.9b5
-# Pinned to the build camoufox 0.5.9b5 stamps in its browser-pin.json (the
+# mismatch), and camoufox 0.5.9 requires playwright <1.63.
+ARG CAMOUFOX_PKG_VERSION=0.5.9
+# Pinned to the build camoufox 0.5.9 stamps in its browser-pin.json (the
 # package warns on any other build: "other builds may not be compatible").
-ARG CAMOUFOX_BROWSER_VERSION=158.0-beta.40
+ARG CAMOUFOX_BROWSER_VERSION=158.0.1-beta.41
 # camoufox installs the browser under XDG_CACHE_HOME (platformdirs) — a fixed
 # shared path so the build-time fetch as root is visible to appuser at runtime.
 ENV XDG_CACHE_HOME=/opt/camoufox-cache
@@ -41,11 +41,12 @@ RUN pip install --no-cache-dir \
     && chmod -R a+rX "$camoufox_path" \
     && chown -R appuser:appuser "$camoufox_path"
 
-# Preserve the CLI fetch path's extension warmup when using the exact installer.
-RUN python -c "from camoufox.__main__ import maybe_download_addons, DefaultAddons; maybe_download_addons(list(DefaultAddons))" \
-    && chown -R appuser:appuser /opt/camoufox-cache
+# camoufox 0.5.9+ browser releases bundle the default addons (uBlock Origin)
+# under addons/ beside the binary — no separate addon warmup exists anymore
+# (the 0.5.9b5-era maybe_download_addons API is gone). STEP 11's chmod/chown
+# already makes the bundled addons readable.
 
-# camoufox 0.5.9b5 fetches the fpgen fingerprint model into site-packages at
+# camoufox 0.5.9 fetches the fpgen fingerprint model into site-packages at
 # startup unless installed — bake it in here (never at container start) and
 # hand it to appuser, whose writability the launcher asserts (FpgenModelError).
 RUN python -c "from camoufox.fpgen_model import ensure_fpgen_model; ensure_fpgen_model()" \

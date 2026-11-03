@@ -16,10 +16,10 @@ dependencies = [
     # Pinned to the 1.62 line: Playwright's remote protocol enforces
     # client/server minor-version parity (the server answers HTTP 428 on
     # mismatch), and the camoufox image's driver is playwright 1.62.x
-    # (camoufox 0.5.9b5 requires <1.63). When camoufox ships a release
+    # (camoufox 0.5.9 requires <1.63). When camoufox ships a release
     # supporting a newer playwright, bump both pins together.
     "playwright==1.62.0",
-    "pydantic==2.14.1",
+    "pydantic==2.14.2",
     "markdownify==1.2.3",
     # Direct imports in SERP/HTTP parsing and settings-renderer tests.
     "beautifulsoup4==4.15.0",
