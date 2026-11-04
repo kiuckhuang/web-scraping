@@ -363,3 +363,85 @@ def test_serp_breaker_tracks_engines_independently():
 def test_search_web_rejects_unknown_engine():
     with pytest.raises(ValueError, match="Unknown browser search engine"):
         asyncio.run(bc.search_web("q", engines=("ask jeeves",)))
+
+
+def _mock_serp_pages(monkeypatch, *, google, ddg, ddg_lite):
+    """Make search_web runnable offline: fake parsers and page plumbing."""
+    seen = {}
+
+    async def parser(name, page, query, count, **kwargs):
+        seen[name] = kwargs.get("time_range")
+        return {"google": google, "duckduckgo": ddg, "duckduckgo lite": ddg_lite}[name]
+
+    async def fake_new_page():
+        return object()
+
+    async def fake_close(page):
+        pass
+
+    monkeypatch.setattr(bc, "_serp_google", lambda *a, **k: parser("google", *a, **k))
+    monkeypatch.setattr(bc, "_serp_ddg", lambda *a, **k: parser("duckduckgo", *a, **k))
+    monkeypatch.setattr(bc, "_serp_ddg_lite", lambda *a, **k: parser("duckduckgo lite", *a, **k))
+    monkeypatch.setattr(bc, "_new_page", fake_new_page)
+    monkeypatch.setattr(bc, "_close_page", fake_close)
+    return seen
+
+
+def test_search_web_ddg_serves_time_filtered_queries(monkeypatch):
+    """A challenged google no longer empties day/week/month searches: the DDG
+    HTML engine honors its `df` date filter, so it stays eligible."""
+    seen = _mock_serp_pages(
+        monkeypatch, google=[], ddg=[{"title": "t", "url": "https://example.com", "snippet": "s"}], ddg_lite=[],
+    )
+    result = asyncio.run(bc.search_web("q", engines=("google", "duckduckgo"), time_range="day"))
+    assert result["engine"] == "duckduckgo"
+    assert result["results"]
+    assert seen["duckduckgo"] == "day"
+
+
+def test_search_web_keeps_lite_off_time_filtered_queries(monkeypatch):
+    """Lite ignores the `df` date parameter — it must not serve day/week/month
+    queries with unfiltered results."""
+    _mock_serp_pages(monkeypatch, google=[], ddg=[], ddg_lite=[{"title": "t", "url": "https://example.com", "snippet": "s"}])
+    result = asyncio.run(bc.search_web("q", engines=("google", "duckduckgo lite"), time_range="week"))
+    assert result["results"] == []
+    assert result["engines_tried"] == ["google"]
+
+
+def test_search_web_year_stays_google_only(monkeypatch):
+    """DDG's date filter has no 'year' option — year queries never fall back
+    to DDG with a silently different range."""
+    _mock_serp_pages(monkeypatch, google=[], ddg=[{"title": "t", "url": "https://example.com", "snippet": "s"}], ddg_lite=[])
+    result = asyncio.run(bc.search_web("q", engines=("google", "duckduckgo"), time_range="year"))
+    assert result["results"] == []
+    assert result["engines_tried"] == ["google"]
+
+
+def test_search_web_non_english_stays_google_only(monkeypatch):
+    """Language filters keep DDG ineligible (it cannot enforce `lr`)."""
+    _mock_serp_pages(monkeypatch, google=[], ddg=[{"title": "t", "url": "https://example.com", "snippet": "s"}], ddg_lite=[])
+    result = asyncio.run(bc.search_web("q", engines=("google", "duckduckgo"), language="de"))
+    assert result["results"] == []
+    assert result["engines_tried"] == ["google"]
+
+
+def test_serp_ddg_maps_time_range_to_df_param(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.urls = []
+
+        async def goto(self, url, **kwargs):
+            self.urls.append(url)
+
+        async def wait_for_timeout(self, ms):
+            pass
+
+        async def content(self):
+            return "<html></html>"
+
+    page = FakePage()
+    monkeypatch.setattr(bc, "parse_serp", lambda html, engine, count: [])
+    asyncio.run(bc._serp_ddg(page, "nasdaq futures", 10, time_range="day"))
+    assert page.urls[0].endswith("&df=d")
+    asyncio.run(bc._serp_ddg(page, "nasdaq futures", 10))
+    assert "df=" not in page.urls[1]

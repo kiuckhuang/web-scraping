@@ -710,8 +710,19 @@ async def search_web(
             if parser is None:
                 raise ValueError(f"Unknown browser search engine: {engine}")
             filtered = language != "en" or time_range is not None or safesearch != 0
-            if filtered and engine != "google":
-                continue  # DDG HTML/Lite cannot reliably enforce these filters.
+            if engine != "google":
+                # Only google can enforce language/safesearch, and only the
+                # DDG HTML engine honors its `df` date filter (day/week/month;
+                # "year" has no DDG option, and Lite ignores `df` entirely).
+                # Keeping those queries DDG-eligible means a google challenge
+                # no longer empties the whole browser stage.
+                enforceable = (
+                    language == "en" and safesearch == 0
+                    and (time_range is None
+                         or (engine == "duckduckgo" and time_range in _DDG_DATE_FILTER))
+                )
+                if not enforceable:
+                    continue
             if _serp_breaker_skip(engine):
                 logger.info("Browser SERP %s skipped — circuit breaker open (recent empty results)", engine)
                 continue
@@ -743,6 +754,11 @@ async def search_web(
         return {**last, "engines_tried": tried}
 
 
+# DuckDuckGo's `df` date filter values — the HTML SERP honors them; Lite and
+# the "year" range are not supported (the caller keeps those on google).
+_DDG_DATE_FILTER = {"day": "d", "week": "w", "month": "m"}
+
+
 async def _serp_google(
     page, query: str, count: int, *, language: str = "en",
     time_range: str | None = None, safesearch: int = 0,
@@ -767,17 +783,36 @@ async def _serp_google(
     return await asyncio.to_thread(parse_serp, await page.content(), "google", count)
 
 
-async def _serp_ddg(page, query: str, count: int) -> list[dict[str, str]]:
-    """Parse the DuckDuckGo HTML SERP from a Camoufox page."""
+async def _serp_ddg(
+    page, query: str, count: int, *, language: str = "en",
+    time_range: str | None = None, safesearch: int = 0,
+) -> list[dict[str, str]]:
+    """Parse the DuckDuckGo HTML SERP from a Camoufox page.
+
+    `time_range` maps onto DuckDuckGo's `df` date filter (day/week/month —
+    verified to return day-scoped results; DuckDuckGo has no "year" option).
+    Language and safesearch are accepted for call-signature parity but cannot
+    be enforced here — the caller keeps those queries on google.
+    """
     search_url = f"https://duckduckgo.com/html/?q={quote(query)}"
+    df = _DDG_DATE_FILTER.get(time_range or "")
+    if df:
+        search_url += f"&df={df}"
     await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
     await page.wait_for_timeout(int(NAV_DELAY))
     return await asyncio.to_thread(parse_serp, await page.content(), "duckduckgo", count)
 
 
-async def _serp_ddg_lite(page, query: str, count: int) -> list[dict[str, str]]:
+async def _serp_ddg_lite(
+    page, query: str, count: int, *, language: str = "en",
+    time_range: str | None = None, safesearch: int = 0,
+) -> list[dict[str, str]]:
     """Parse the DuckDuckGo Lite SERP (lite.duckduckgo.com) — a minimal,
-    JS-free table layout that is rarely challenged and trivial to parse."""
+    JS-free table layout that is rarely challenged and trivial to parse.
+
+    The filter kwargs exist for call-signature parity only: Lite ignores the
+    `df` date parameter, so the caller never routes filtered queries here.
+    """
     search_url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
     await page.goto(search_url, wait_until=NAV_WAIT, timeout=int(SCRAPE_TIMEOUT * 1000))
     await page.wait_for_timeout(int(NAV_DELAY))
