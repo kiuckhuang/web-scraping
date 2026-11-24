@@ -11,7 +11,7 @@ A self-hosted, Podman-based search-and-scrape stack that combines:
 
 ### Prerequisites
 
-- [Podman](https://podman.io/) 4.x+ with `podman compose` (or [podman-compose](https://github.com/containers/podman-compose))
+- [Podman](https://podman.io/) 4.x+ with `podman compose` (or [podman-compose](https://github.com/containers/podman-compose)) — on Apple-silicon Macs the runtime is auto-selected instead: [Apple `container`](https://github.com/apple/container) when installed (macOS 26+), else podman; see [Running with Apple container](#running-with-apple-container-macos)
 - ~4 GB free RAM for the default ceilings (Camoufox 4 GB, Bridge 1 GB, MCP 512 MB; SearXNG adds up to 1 GB when enabled) — lower `CAMOUFOX_MEM_LIMIT` on smaller hosts
 
 ```bash
@@ -19,6 +19,84 @@ make init && make up && make test
 ```
 
 That's it — generates secrets, starts the enabled services, and verifies everything works. Search uses the browser by default, SearXNG when enabled, followed by enabled TinyFish/Jina/Exa/Ceramic fallbacks. Then point your AI agent at the MCP server (see [MCP Server](#mcp-server-for-ai-agents) below).
+
+### Running with Apple container (macOS)
+
+On Apple-silicon Macs the runtime is **auto-selected**: podman on Linux (and
+CI), Apple's native [`container` runtime](https://github.com/apple/container)
+on macOS when its CLI is installed — no podman machine, containers run
+directly on the Virtualization framework. Force a runtime explicitly with
+`make CONTAINER=podman ...` or `make CONTAINER=container ...`. Every Makefile
+target works with either:
+
+```bash
+make init
+make CONTAINER=container up        # build/pull images, start + health-check everything
+make CONTAINER=container test      # unit + integration tests
+make CONTAINER=container logs      # follow logs from all services
+make CONTAINER=container down
+make CONTAINER=container rebuild   # stop, rebuild images, start
+```
+
+Apple `container` ships no compose implementation, no healthchecks and no
+restart policies. `scripts/apple_compose.py` fills those gaps by translating
+`podman-compose.yml` into native `container` CLI calls: it builds or pulls the
+images, creates the named volumes, starts services in `depends_on` order and
+replicates each compose healthcheck with `container exec` probes.
+
+One-time setup the adapter handles for you:
+
+- `container system start` — the runtime's system service (installs the
+  default Linux kernel on first use)
+- `[dns] domain = "test"` in `~/.config/container/config.toml` (backed up and
+  written automatically if missing) so containers resolve each other as
+  `<name>.test`; intra-stack URLs like `http://bridge:8000` are DNS-qualified
+  to `http://bridge.test:8000` at start time via the
+  `EGRESS_GUARD_HOST`-style compose defaults
+
+Known divergences from the podman runtime (same images, env and host ports):
+
+- All services share Apple container's `default` network — the
+  `internal`/`edge` segmentation shown in the architecture diagram is not
+  enforced between containers.
+- `restart: unless-stopped` is ignored: containers do not auto-restart after a
+  crash or reboot; `pids_limit` and `security_opt: no-new-privileges` have no
+  equivalent and are skipped.
+- Health is enforced by the adapter at start time rather than by the runtime.
+- The build tool is `container build` (BuildKit-based); image tags, build args
+  and layer caching behave the same.
+
+#### Troubleshooting: published ports reset connections (Local Network privacy)
+
+If containers are healthy but `curl http://127.0.0.1:8000/health` resets —
+with `No route to host (errno 65)` in `container system logs` — macOS is
+denying the runtime helper access to the local network
+([apple/container#1702](https://github.com/apple/container/issues/1702)).
+`make up` detects this and prints the fix:
+
+1. System Settings → Privacy & Security → **Local Network**
+2. Enable **container-runtime-linux** (and **container** if listed)
+3. `container system stop && container system start`
+
+No rebuild or re-run needed — containers keep running. This mainly affects
+source builds (ad-hoc signed helpers); the signed release installer usually
+gets the permission prompt automatically on first run.
+
+#### Troubleshooting: podman containers crash with SIGILL on Apple M4/M5
+
+On M4/M5 Macs, podman's AppleHV machine advertises SVE/SME2 CPU features to
+guests that Apple's Hypervisor.framework does not actually execute
+([podman#28312](https://github.com/podman-container-tools/podman/issues/28312)).
+Software that trusts the advertised flags (pydantic-core, .NET, glibc SIMD
+paths) dies with `exit 132` / `Illegal instruction` — e.g. the MCP service
+crash-loops while Bridge (different pydantic code paths) runs fine. Apple's
+Virtualization.framework masks these features, which is why the Apple
+container runtime is unaffected. Options, in order:
+
+- use the Apple container runtime (auto-selected on macOS by this repo)
+- upgrade to podman 6.x, whose default `libkrun` provider filters the
+  features out ([libkrun#338](https://github.com/containers/libkrun/pull/338)),
+  then recreate the machine: `podman machine rm -f … && podman machine init`
 
 ### Architecture
 
@@ -412,6 +490,7 @@ and `make build`/`update` picks up the other tracked build changes.
 | `SEARXNG_MAX_BAN_TIME_ON_FAIL` | `120`            | Upper cap on the engine ban (s)     |
 | `SEARXNG_SUSPEND_TOO_MANY` | `180`                | How long an engine is suspended (s) after a 429 / rate-limit |
 | `EGRESS_PROXY` | (unset)                   | Stack-wide egress proxy — SearXNG engines + Camoufox browser + HTTP fast path all route through it; the per-component knobs below override it per transport |
+| `EGRESS_GUARD_HOST` | `egress-guard`            | Hostname used in the egress-guard proxy URLs (Camoufox proxy, HTTP fast path, Jina/Exa/Ceramic/TinyFish proxies); the Apple container runtime sets it to `egress-guard.<dns-domain>` at start time |
 | `SEARXNG_OUTGOING_PROXY` | (unset)               | Outbound proxy for engine requests; overrides `EGRESS_PROXY` for SearXNG (unset = inherit it, else direct) |
 | `SEARXNG_FORCE_OWNERSHIP` | `true`                | Force SearXNG file ownership on start (passed to the container as upstream's `FORCE_OWNERSHIP`) |
 | `SEARXNG_UWSGI_THREADS` | `4`                    | SearXNG worker thread count (passed to the container as upstream's `UWSGI_THREADS`) |

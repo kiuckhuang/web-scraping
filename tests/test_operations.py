@@ -81,14 +81,61 @@ def test_camoufox_keeps_only_sys_chroot_capability():
     assert "no-new-privileges:true" in camoufox["security_opt"]
 
 
+def test_compose_egress_guard_hostnames_stay_parameterized():
+    """scripts/apple_compose.py DNS-qualifies the egress-guard host via this variable.
+
+    Bare `egress-guard` hostnames would never reach Apple container's embedded
+    DNS (single-label names are not routed); the podman default must stay
+    unqualified. See AGENTS.md design decision 18.
+    """
+    compose = yaml.safe_load((ROOT / "podman-compose.yml").read_text())
+    qualified = "${EGRESS_GUARD_HOST:-egress-guard}"
+    assert f"CAMOUFOX_PROXY_SERVER=http://{qualified}:8081" in compose["services"]["camoufox"]["environment"]
+    bridge_env = compose["services"]["bridge"]["environment"]
+    assert f"HTTP_FASTPATH_PROXY=http://{qualified}:8082" in bridge_env
+    assert f"JINA_PROXY=${{JINA_PROXY:-http://{qualified}:8082}}" in bridge_env
+    text = (ROOT / "podman-compose.yml").read_text()
+    assert "http://egress-guard:" not in text, "hardcoded egress-guard hostnames regressed"
+
+
 def test_compose_profile_selected_by_enable_flag(monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "scripts"))
     compose = load("compose_wrapper", "scripts/compose.py")
     assert not compose.searxng_enabled({})
     assert not compose.searxng_enabled({"SEARXNG_ENABLED": "false"})
     assert compose.searxng_enabled({"SEARXNG_ENABLED": "true"})
-    assert compose.compose_command("podman", ["up", "-d"], False) == ["podman", "compose", "up", "-d"]
-    assert compose.compose_command("podman", ["up", "-d"], True) == ["podman", "compose", "--profile", "searxng", "up", "-d"]
+    assert compose.compose_command("podman", ["up", "-d"], False) == [
+        "podman", "compose", "-f", "podman-compose.yml", "up", "-d",
+    ]
+    assert compose.compose_command("podman", ["up", "-d"], True) == [
+        "podman", "compose", "-f", "podman-compose.yml", "--profile", "searxng", "up", "-d",
+    ]
+
+
+def test_compose_detect_runtime(monkeypatch):
+    """Linux defaults to podman; macOS prefers Apple container when installed."""
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    compose = load("compose_wrapper", "scripts/compose.py")
+    monkeypatch.setattr(compose.sys, "platform", "linux")
+    assert compose.detect_runtime() == "podman"
+
+    monkeypatch.setattr(compose.sys, "platform", "darwin")
+    monkeypatch.setitem(compose.sys.modules, "apple_compose", _FakeAdapter(monkeypatch, found=True))
+    assert compose.detect_runtime() == "container"
+    monkeypatch.setitem(compose.sys.modules, "apple_compose", _FakeAdapter(monkeypatch, found=False))
+    assert compose.detect_runtime() == "podman"
+
+
+class _FakeAdapter:
+    """Stands in for scripts/apple_compose.py in detect_runtime tests."""
+
+    def __init__(self, monkeypatch, found: bool):
+        if found:
+            self.find_binary = lambda: "/usr/local/bin/container"
+        else:
+            def missing():
+                raise SystemExit("not installed")
+            self.find_binary = missing
 
 
 def test_compose_disabled_up_stops_old_optional_containers(monkeypatch):
@@ -104,7 +151,7 @@ def test_compose_disabled_up_stops_old_optional_containers(monkeypatch):
 
     monkeypatch.setenv("SEARXNG_ENABLED", "false")
     monkeypatch.setattr(compose.subprocess, "run", run)
-    monkeypatch.setattr(sys, "argv", ["compose.py", "up", "-d"])
+    monkeypatch.setattr(sys, "argv", ["compose.py", "--runtime", "podman", "up", "-d"])
     assert compose.main() == 0
     assert calls[1] == ["podman", "stop", "ws-searxng", "ws-valkey"]
-    assert calls[2] == ["podman", "compose", "up", "-d"]
+    assert calls[2] == ["podman", "compose", "-f", "podman-compose.yml", "up", "-d"]

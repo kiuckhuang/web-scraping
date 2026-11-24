@@ -154,6 +154,28 @@ covers the conventions and non-obvious decisions you must not regress.
     client is `bridge/bridge/tinyfish_client.py`; `/tinyfish_search` and
     `/tinyfish_scrape` are the explicit endpoints (the scrape side is
     SSRF-validated and cookieless, like every URL-fetching endpoint).
+18. **Apple container is a supported runtime, not a fork of the compose file** —
+    `make CONTAINER=container ...` routes Compose targets through
+    `scripts/apple_compose.py`, which translates `podman-compose.yml` into
+    native `container` CLI calls (Apple container has no compose engine, no
+    healthchecks, no restart policies). Two invariants: (a) every egress-guard
+    hostname in the compose file stays parameterized as
+    `${EGRESS_GUARD_HOST:-egress-guard}` — the adapter sets it to
+    `egress-guard.<dns-domain>` because bare single-label hostnames never
+    reach Apple container's embedded DNS; don't hardcode `egress-guard` back.
+    (b) The adapter is the only place that knows about the Apple runtime —
+    keep Makefile runtime differences in the `ifeq ($(CONTAINER),container)`
+    block. Runtime selection is auto-detected (podman on Linux/CI; Apple
+    container on macOS when its CLI exists) with explicit `CONTAINER=` wins —
+    don't hardcode a runtime. Documented divergences, all confined to the
+    adapter: services share the `default` network (no internal/edge
+    segmentation); no restart policies, `pids_limit` or `security_opt`; bare
+    service hostnames only resolve with a registered DNS domain, so `up`
+    falls back to injecting container IPs and recreating containers on every
+    start; Apple named volumes start empty and root-owned (no image-content
+    seeding like podman), so the adapter grants valkey CAP_CHOWN for its
+    entrypoint's /data chown; string commands are shlex-split like compose
+    (`_as_args`).
 
 ## Style
 

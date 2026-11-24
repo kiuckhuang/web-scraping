@@ -3,9 +3,12 @@ FROM python:3.12-slim
 ARG APP_UID=1000
 ARG APP_GID=1000
 
+# The GID may collide with a system group in the base image (e.g. macOS host
+# IDs where GID 20 = dialout on Debian) — fall back to an auto-assigned GID
+# in that case; the UID itself must stay free.
 RUN test "${APP_UID}" -ne 0 && test "${APP_GID}" -ne 0 && \
-    groupadd -g ${APP_GID} appuser && \
-    useradd -u ${APP_UID} -g ${APP_GID} -m appuser
+    (groupadd -g "${APP_GID}" appuser || groupadd appuser) && \
+    useradd -u "${APP_UID}" -g appuser -m appuser
 
 WORKDIR /app
 

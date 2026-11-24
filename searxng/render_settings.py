@@ -17,12 +17,24 @@ from urllib.parse import urlsplit
 
 DEFAULTS = {
     "SEARXNG_BASE_URL": "http://localhost:8888/",
+    # Cache host: the compose service name by default; the Apple container
+    # runtime passes a DNS-qualified name or IP (scripts/apple_compose.py).
+    "VALKEY_HOST": "valkey",
     "SEARXNG_REQUEST_TIMEOUT": "10",
     "SEARXNG_MAX_REQUEST_TIMEOUT": "15",
     "SEARXNG_BAN_TIME_ON_FAIL": "5",
     "SEARXNG_MAX_BAN_TIME_ON_FAIL": "120",
     "SEARXNG_SUSPEND_TOO_MANY": "180",
 }
+
+# DEFAULTS entries the renderer validates as non-negative numbers.
+_NUMERIC_TOKENS = frozenset({
+    "SEARXNG_REQUEST_TIMEOUT",
+    "SEARXNG_MAX_REQUEST_TIMEOUT",
+    "SEARXNG_BAN_TIME_ON_FAIL",
+    "SEARXNG_MAX_BAN_TIME_ON_FAIL",
+    "SEARXNG_SUSPEND_TOO_MANY",
+})
 
 
 def _outgoing_proxy_block() -> str:
@@ -77,12 +89,12 @@ def main() -> None:
     os.environ["SEARXNG_OUTGOING_PROXY_BLOCK"] = _outgoing_proxy_block()
     for token, default in DEFAULTS.items():
         val = os.environ.get(token, default) or default
-        if token != "SEARXNG_BASE_URL":
+        if token in _NUMERIC_TOKENS:
             number = float(val)
             if not math.isfinite(number) or number < 0:
                 raise ValueError(f"{token} must be non-negative")
             val = str(int(number)) if number.is_integer() else str(number)
-        else:
+        elif token == "SEARXNG_BASE_URL":
             val = json.dumps(val)[1:-1]
         data = data.replace(f"${{{token}}}", val)
     data = data.replace("${SEARXNG_SECRET_KEY}", json.dumps(_secret_key())[1:-1])

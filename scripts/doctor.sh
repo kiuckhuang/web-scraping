@@ -14,14 +14,19 @@ bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 echo "=== Environment ==="
 
 CONTAINER_CMD=""
-if command -v podman >/dev/null 2>&1; then
+CONTAINER_BIN=""
+if [ "$(uname -s)" = "Darwin" ] && { command -v container >/dev/null 2>&1 || [ -x "$HOME/github/container/bin/container" ]; }; then
+    CONTAINER_CMD="container"
+    CONTAINER_BIN="$(command -v container || echo "$HOME/github/container/bin/container")"
+    ok "apple container installed ($("$CONTAINER_BIN" --version 2>/dev/null | head -1))"
+elif command -v podman >/dev/null 2>&1; then
     CONTAINER_CMD="podman"
     ok "podman installed ($(podman --version))"
 elif command -v docker >/dev/null 2>&1; then
     CONTAINER_CMD="docker"
     ok "docker installed ($(docker --version))"
 else
-    bad "container runtime (podman or docker) not found in PATH"
+    bad "container runtime (podman, apple container or docker) not found in PATH"
 fi
 
 if [ -f .env ]; then
@@ -56,14 +61,19 @@ if [ -n "$CONTAINER_CMD" ]; then
     SERVICES="egress-guard camoufox bridge mcp"
     if [ "$SEARXNG_ENABLED" = true ]; then SERVICES="$SERVICES valkey searxng"; fi
     for svc in $SERVICES; do
-        if $CONTAINER_CMD ps --format '{{.Names}}' | grep -q "ws-$svc"; then
+        if [ "$CONTAINER_CMD" = "container" ]; then
+            RUNNING=$("$CONTAINER_BIN" ls 2>/dev/null | grep -q "ws-$svc" && echo yes || echo no)
+        else
+            RUNNING=$($CONTAINER_CMD ps --format '{{.Names}}' 2>/dev/null | grep -q "ws-$svc" && echo yes || echo no)
+        fi
+        if [ "$RUNNING" = "yes" ]; then
             ok "ws-$svc running"
         else
             bad "ws-$svc not running (start with 'make up')"
         fi
     done
 else
-    bad "cannot inspect containers without podman or docker"
+    bad "cannot inspect containers without podman, apple container or docker"
 fi
 
 echo ""
@@ -77,13 +87,13 @@ CAMOUFOX_PORT=$(sed -n 's/^PORT_CAMOUFOX=//p' .env 2>/dev/null); CAMOUFOX_PORT=$
 if curl -sf "http://localhost:${BRIDGE_PORT}/health" >/dev/null 2>&1; then
     ok "bridge /health"
 else
-    bad "bridge /health unreachable (check 'podman compose logs bridge')"
+    bad "bridge /health unreachable (check 'make logs bridge')"
 fi
 
 if curl -sf "http://localhost:${MCP_PORT}/health" >/dev/null 2>&1; then
     ok "mcp /health"
 else
-    bad "mcp /health unreachable (check 'podman compose logs mcp')"
+    bad "mcp /health unreachable (check 'make logs mcp')"
 fi
 
 if [ "$SEARXNG_ENABLED" = false ]; then
@@ -91,14 +101,14 @@ if [ "$SEARXNG_ENABLED" = false ]; then
 elif curl -sf "http://localhost:${SEARXNG_PORT}/healthz" >/dev/null 2>&1; then
     ok "searxng /healthz"
 else
-    bad "searxng /healthz unreachable (check 'podman compose logs searxng')"
+    bad "searxng /healthz unreachable (check 'make logs searxng')"
 fi
 
 # The Camoufox Playwright server has no HTTP endpoint — probe the TCP listener.
 if timeout 3 bash -c "cat < /dev/null > /dev/tcp/localhost/${CAMOUFOX_PORT}" 2>/dev/null; then
     ok "camoufox WS endpoint (tcp/${CAMOUFOX_PORT})"
 else
-    bad "camoufox WS endpoint unreachable (check 'podman compose logs camoufox')"
+    bad "camoufox WS endpoint unreachable (check 'make logs camoufox')"
 fi
 
 echo ""

@@ -7,8 +7,37 @@
 #    make           # show this help
 # =============================================================================
 
-CONTAINER := podman
+# Runtime selection: podman on Linux (and CI); Apple `container` on macOS when
+# its CLI is available. An explicit override always wins:
+#   make CONTAINER=podman up      # force podman (needs the podman machine)
+#   make CONTAINER=container up   # force Apple container
+UNAME := $(shell uname -s)
+ifeq ($(UNAME),Darwin)
+APPLE_CONTAINER_BIN := $(shell command -v container 2>/dev/null || { test -x "$(HOME)/github/container/bin/container" && echo "$(HOME)/github/container/bin/container"; })
+ifneq ($(APPLE_CONTAINER_BIN),)
+CONTAINER ?= container
+else
+CONTAINER ?= podman
+endif
+else
+CONTAINER ?= podman
+endif
 COMPOSE := python3 scripts/compose.py --runtime $(CONTAINER)
+
+# Runtime-specific invocations used outside Compose. The Apple container CLI
+# has no compose/ps/exec/pull surface compatible with podman's, so
+# scripts/apple_compose.py (which drives `container` natively) fills the gaps.
+ifeq ($(CONTAINER),container)
+PS_NAMES := python3 scripts/apple_compose.py ps
+EXEC_SVC := python3 scripts/apple_compose.py exec
+PULL_IMAGE := python3 scripts/apple_compose.py pull-image
+PRUNE := python3 scripts/apple_compose.py prune
+else
+PS_NAMES := $(CONTAINER) ps --format '{{.Names}}'
+EXEC_SVC := $(CONTAINER) compose -f podman-compose.yml exec -T
+PULL_IMAGE := $(CONTAINER) pull
+PRUNE := $(CONTAINER) system prune -f
+endif
 
 .PHONY: all init init-preview init-compact ensure-env build up down logs test test-unit test-unit-host test-scrape test-search doctor rebuild clean update help
 
@@ -22,7 +51,7 @@ help:
 	@echo "  init-preview — Preview init changes without writing files or printing secrets"
 	@echo "  init-compact — Back up and simplify .env; remove redundant tuning defaults, preserve keys/flags/overrides"
 	@echo "  build     — Build bridge and mcp images"
-	@echo "  up        — Start all services (podman compose up -d)"
+	@echo "  up        — Start all services (runtime auto-selected: podman on Linux, Apple container on macOS; override with CONTAINER=)"
 	@echo "  down      — Stop all services"
 	@echo "  logs      — Follow logs from all services"
 	@echo "  test      — Unit tests + integration tests (health checks + API smoke tests)"
@@ -126,10 +155,10 @@ test: test-unit
 # test the working tree directly.
 test-unit:
 	@echo "=== Unit Tests (bridge + mcp) ==="
-	@if $(CONTAINER) ps --format '{{.Names}}' 2>/dev/null | grep -q '^ws-bridge$$'; then \
+	@if $(PS_NAMES) 2>/dev/null | grep -q '^ws-bridge$$'; then \
 		echo "  (running inside containers — tests the deployed images)"; \
-		$(CONTAINER) compose exec -T bridge python -m pytest -q bridge/tests || { echo "  FAILED: bridge unit tests"; exit 1; }; \
-		$(CONTAINER) compose exec -T mcp python -m pytest -q tests || { echo "  FAILED: mcp unit tests"; exit 1; }; \
+		$(EXEC_SVC) bridge python -m pytest -q bridge/tests || { echo "  FAILED: bridge unit tests"; exit 1; }; \
+		$(EXEC_SVC) mcp python -m pytest -q tests || { echo "  FAILED: mcp unit tests"; exit 1; }; \
 	else \
 		echo "  (stack not running — using host venv, tests the working tree like CI)"; \
 		$(MAKE) --no-print-directory test-unit-host; \
@@ -150,7 +179,7 @@ test-scrape:
 	curl -sf -X POST "http://localhost:$$BRIDGE_PORT/scrape" \
 		-H 'Content-Type: application/json' \
 		-d "{\"url\": \"https://example.com/?cb=$$CB\", \"mode\": \"extract\"}" \
-		| python3 -m json.tool || { echo "  FAILED (check 'podman compose logs bridge' and the engine container ws-$$ENGINE)"; exit 1; }
+		| python3 -m json.tool || { echo "  FAILED (check 'make logs' and the engine container ws-$$ENGINE)"; exit 1; }
 
 doctor:
 	@./scripts/doctor.sh
@@ -165,10 +194,10 @@ rebuild: ensure-env down
 
 update: ensure-env down
 	$(COMPOSE) pull
-	$(CONTAINER) pull docker.io/library/python:3.12-slim
+	$(PULL_IMAGE) docker.io/library/python:3.12-slim
 	$(MAKE) build up
 
 clean: down
 	$(COMPOSE) down -v
-	$(CONTAINER) system prune -f
+	$(PRUNE)
 	rm -rf .venv

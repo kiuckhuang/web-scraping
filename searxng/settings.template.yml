@@ -42,7 +42,9 @@ server:
 
 # Valkey (Redis-compatible) for rate limiting and caching
 valkey:
-  url: redis://valkey:6379/0
+  # VALKEY_HOST defaults to the compose service name; the Apple container
+  # runtime qualifies it (DNS name or IP) at start — see scripts/apple_compose.py.
+  url: redis://${VALKEY_HOST}:6379/0
 
 search:
   safe_search: 0
