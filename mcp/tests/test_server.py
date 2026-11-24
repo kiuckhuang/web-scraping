@@ -10,9 +10,18 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import server as server_mod
+
+
+@pytest.fixture(autouse=True)
+def _deployment_independent_transport_security(monkeypatch):
+    """Drop compose's MCP_PUBLIC_BIND_HOST so unit tests do not inherit the
+    deployed loopback Host/Origin validation (which changes expected statuses)."""
+    monkeypatch.delenv("MCP_PUBLIC_BIND_HOST", raising=False)
 
 
 def test_format_search_results():
