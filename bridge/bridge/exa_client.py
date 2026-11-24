@@ -32,6 +32,8 @@ from typing import Any
 
 import httpx
 
+from .retry import parse_retry_after
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,7 +150,7 @@ def _raise_for_error(status_code: int, body: dict[str, Any]) -> None:
         raise ExaError(
             f"Exa rate limit exceeded: {message}",
             bridge_status=429,
-            retry_after=float(retry_after) if retry_after is not None else None,
+            retry_after=parse_retry_after(retry_after),
         )
     if status_code == 402:
         raise ExaError(f"Exa quota/billing: {message}")
@@ -237,6 +239,11 @@ async def scrape(url: str, *, mode: str = "extract") -> dict[str, Any]:
     """
     if not EXA_ENABLED:
         raise ExaError("Exa integration is disabled (EXA_ENABLED=false)", bridge_status=503)
+    if not EXA_API_KEY:
+        raise ExaError(
+            "api.exa.ai requires an API key — set EXA_API_KEY in .env (https://dashboard.exa.ai/api-keys)",
+            bridge_status=503,
+        )
     status_code, data = await _request_json(
         "POST",
         f"{EXA_BASE_URL}/contents",

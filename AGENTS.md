@@ -60,9 +60,14 @@ covers the conventions and non-obvious decisions you must not regress.
    browser (`_guard_request` intercepts redirects/subresources). Unresolvable
    hosts are *rejected*, not passed through (DNS-rebinding defense). Any new
    endpoint that fetches a URL must go through the same validator.
-6. **MCP auth model** — localhost/podman-forwarded subnets bypass bearer auth
-   (`_get_trusted_cidrs`); a non-loopback `MCP_BIND_HOST` without
-   `MCP_API_KEY` is a hard startup error. Requests carrying an `Origin` header
+6. **MCP auth model** — loopback, the network gateway (host-published ports are
+   SNATed to it) and the bridge container address bypass bearer auth
+   (`_get_trusted_cidrs`); the whole runtime subnet is *not* trusted (on the
+   Apple runtime every service shares one network, so a compromised container
+   must not inherit the local bypass). A non-loopback `MCP_BIND_HOST` without
+   `MCP_API_KEY` is a hard startup error, and while the published bind is
+   loopback the SDK's Host/Origin validation is enabled (extend with
+   `MCP_ALLOWED_HOSTS`). Requests carrying an `Origin` header
    or `X-Forwarded-For`/`Forwarded` always require the token (so a website
    cannot use a loopback MCP server, and a loopback TLS proxy cannot make
    remote clients look local). `MCP_TRUST_LOCAL=false` disables the bypass

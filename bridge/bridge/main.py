@@ -36,6 +36,7 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any, Literal
 
@@ -52,6 +53,7 @@ from .browser_client import (
     create_session as browser_create_session,
     health as browser_health,
     invalidate_disconnected_sessions,
+    is_connected as browser_connected,
     list_sessions as browser_list_sessions,
     scrape as browser_scrape,
     search_web as browser_web_search,
@@ -160,6 +162,20 @@ SEARCH_CACHE_TTL = float(os.environ.get("SEARCH_CACHE_TTL", "60"))
 SEARCH_CACHE_MAX = max(0, int(os.environ.get("SEARCH_CACHE_MAX", "100")))
 _search_cache: dict[tuple, tuple[float, dict[str, Any]]] = {}
 
+# Absolute monotonic deadline for the request currently being served, set by
+# OperationDeadline. Nested stages share it so their own budgets cannot
+# outlive the outer HTTP budget (e.g. search 75s + scrape 90s inside a 110s
+# /search_and_scrape).
+_request_deadline: ContextVar[float | None] = ContextVar("bridge_request_deadline", default=None)
+
+
+def _remaining(default: float) -> float:
+    """Clamp a stage budget to the remaining request time (min 50ms)."""
+    deadline = _request_deadline.get()
+    if deadline is None:
+        return default
+    return max(0.05, min(default, deadline - time.monotonic()))
+
 
 class OperationDeadline:
     """Pure ASGI deadline: cancellation also stops downstream handler tasks."""
@@ -172,12 +188,16 @@ class OperationDeadline:
             return await self.app(scope, receive, send)
         path = scope["path"]
         budget = COMBINED_MAX_SECONDS if path == "/search_and_scrape" else (
-            SEARCH_MAX_SECONDS if path in ("/search", "/web_search", "/jina_search", "/exa_search", "/ceramic_search")
+            SEARCH_MAX_SECONDS if path in (
+                "/search", "/web_search", "/jina_search", "/exa_search", "/ceramic_search", "/tinyfish_search",
+            )
             else SCRAPE_MAX_SECONDS
         )
         if path == "/crawl":
             from .browser_client import CRAWL_MAX_SECONDS
             budget = CRAWL_MAX_SECONDS + 2 if CRAWL_MAX_SECONDS > 0 else None
+        deadline = None if budget is None else time.monotonic() + budget
+        deadline_token = _request_deadline.set(deadline)
         started = False
 
         async def tracked_send(message):
@@ -193,6 +213,8 @@ class OperationDeadline:
             if not started:
                 from fastapi.responses import JSONResponse
                 await JSONResponse(status_code=504, content={"detail": "Operation deadline exceeded"})(scope, receive, send)
+        finally:
+            _request_deadline.reset(deadline_token)
 
 
 @asynccontextmanager
@@ -328,6 +350,8 @@ def _validate_public_url(url: str) -> str:
         return ssrf.validate_public_url(url)
     except ssrf.UrlBlockedError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    except ValueError as exc:  # defense in depth: never 500 on a malformed URL
+        raise HTTPException(status_code=400, detail="Malformed URL") from exc
 
 
 def _is_public_url(url: str) -> bool:
@@ -335,7 +359,7 @@ def _is_public_url(url: str) -> bool:
     try:
         ssrf.validate_public_url(url)
         return True
-    except ssrf.UrlBlockedError:
+    except (ssrf.UrlBlockedError, ValueError):
         return False
 
 
@@ -377,7 +401,9 @@ async def _cache_get(
         _cache_bytes -= item[2]
         return None
     logger.info("Cache hit: %s (mode=%s, session=%s)", url, mode, session or "-")
-    return item[1]
+    # Hand out a copy: nested lists (tables, results) are otherwise shared
+    # with the cache, and a future handler-side mutation would corrupt it.
+    return deepcopy(item[1])
 
 
 def _cache_set(
@@ -464,7 +490,10 @@ def _fallback_allowed(categories: str | None, pageno: int, query: str) -> bool:
     - an explicit "!bang" in the query means the caller is directing engines
       themselves — never second-guess that.
     """
-    if query.strip().startswith("!") or pageno != 1:
+    # SearXNG bangs may appear anywhere in the query ("laptop !ddg"), not only
+    # at the start — scan tokens so disabled-SearXNG deployments still fail
+    # explicitly instead of silently dropping bang semantics.
+    if any(token.startswith("!") for token in query.split()) or pageno != 1:
         return False
     if not categories:
         return True
@@ -550,13 +579,20 @@ async def _stage_browser(
         ]
         if results:
             logger.info("Search fallback served %d results via browser:%s for %r", len(results), web.get("engine"), q)
-            return {
-                "query": q,
-                "number_of_results": len(results),
-                "results": results[:max_results],
-                "unresponsive_engines": unresponsive,
-                "fallback": f"browser:{web.get('engine')}",
-            }
+        else:
+            logger.info("Browser search returned no results for %r (engine=%s)", q, web.get("engine"))
+        # A healthy-but-empty SERP is still a response: return it (the caller
+        # keeps trying other providers, then serves the empty result instead
+        # of a misleading 502 when nothing better is available).
+        served = {
+            "query": q,
+            "number_of_results": len(results),
+            "results": results[:max_results],
+            "unresponsive_engines": unresponsive,
+        }
+        if results:
+            served["fallback"] = f"browser:{web.get('engine')}"
+        return served
     except Exception as exc:
         logger.warning("Browser search fallback failed for %r: %s", q, exc)
     return None
@@ -648,7 +684,7 @@ async def _search_with_fallbacks(
     if hit and time.monotonic() - hit[0] < SEARCH_CACHE_TTL:
         return {**deepcopy(hit[1]), "cached": True}
     try:
-        async with asyncio.timeout(SEARCH_MAX_SECONDS):
+        async with asyncio.timeout(_remaining(SEARCH_MAX_SECONDS)):
             result = await _run_search_chain(q, categories=categories, language=language, pageno=pageno,
                                              time_range=time_range, safesearch=safesearch, max_results=max_results)
     except TimeoutError:
@@ -714,6 +750,7 @@ async def _run_search_chain(
         stage_names.append("ceramic")
 
     searxng_result: dict[str, Any] | None = None
+    empty_result: tuple[str, dict[str, Any]] | None = None
     attempts: list[dict[str, Any]] = []
 
     def finish(result: dict[str, Any], stage: str) -> dict[str, Any]:
@@ -779,10 +816,17 @@ async def _run_search_chain(
             attempts.append({"provider": stage, "status": "ok" if served is not None else "unavailable",
                              "seconds": round(time.monotonic() - stage_started, 3)})
             if served is not None:
-                return finish(served, stage)
+                if served.get("results"):
+                    return finish(served, stage)
+                # Healthy but empty: remember it and let the remaining
+                # providers try, so an empty 200 is still possible.
+                empty_result = (stage, served)
 
     if searxng_result is not None:
         return finish(searxng_result, "searxng")
+    if empty_result is not None:
+        empty_stage, empty_served = empty_result
+        return finish(empty_served, empty_stage)
     raise HTTPException(
         status_code=502,
         detail=f"All search stages failed (stages tried: {', '.join(stage_names) or 'none enabled'})",
@@ -829,7 +873,7 @@ async def search(
 
 async def _scrape_with_transports(url: str, *, mode: str, session: str | None) -> dict[str, Any]:
     try:
-        async with asyncio.timeout(SCRAPE_MAX_SECONDS):
+        async with asyncio.timeout(_remaining(SCRAPE_MAX_SECONDS)):
             return await _run_scrape_transports(url, mode=mode, session=session)
     except TimeoutError:
         raise HTTPException(status_code=504, detail="Scrape deadline exceeded") from None
@@ -1000,8 +1044,11 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
         # search engine returned it. DNS runs in a worker thread — with up to
         # 50 results gathered concurrently, on-loop resolution would serialize
         # and stall the whole event loop.
-        if not await asyncio.to_thread(_is_public_url, url):
-            return {**result, "content": None, "scrape_error": "blocked: internal or private address"}
+        try:
+            if not await asyncio.to_thread(_is_public_url, url):
+                return {**result, "content": None, "scrape_error": "blocked: internal or private address"}
+        except Exception as exc:  # one bad result URL must not abort the batch
+            return {**result, "content": None, "scrape_error": f"blocked: invalid URL ({exc})"}
         cached = await _cache_get(url, req.scrape_mode, req.session)
         if cached is not None:
             return {**result, "content": cached, "cached": True}
@@ -1030,7 +1077,14 @@ async def search_and_scrape(req: SearchAndScrapeRequest) -> dict[str, Any]:
         except Exception as exc:
             return {**result, "content": None, "scrape_error": str(exc)}
 
-    scraped = await asyncio.gather(*[scrape_one(r) for r in url_results])
+    outcomes = await asyncio.gather(*[scrape_one(r) for r in url_results], return_exceptions=True)
+    scraped = []
+    for result, outcome in zip(url_results, outcomes):
+        if isinstance(outcome, BaseException):
+            logger.warning("Scrape task failed for %s: %s", result.get("url"), outcome)
+            scraped.append({**result, "content": None, "scrape_error": f"scrape failed: {outcome}"})
+        else:
+            scraped.append(outcome)
     return {
         "query": req.query,
         "number_of_results": results.get("number_of_results", 0),
@@ -1104,6 +1158,8 @@ async def import_session_cookies(
     try:
         updated = await browser_set_session_cookies(name, cookies)
     except Exception as exc:
+        if not browser_connected():
+            raise HTTPException(status_code=502, detail=f"Browser session error: {exc}") from exc
         raise HTTPException(status_code=400, detail=f"Invalid cookie data: {exc}") from exc
     if not updated:
         raise HTTPException(status_code=404, detail=f"Session not found: {name}")
@@ -1113,7 +1169,10 @@ async def import_session_cookies(
 @app.delete("/sessions/{name}")
 async def delete_session(name: str = Path(..., pattern=_SESSION_NAME_PATTERN, description="Session name")) -> dict[str, Any]:
     """Close and forget a named browser session."""
-    deleted = await browser_close_session(name)
+    try:
+        deleted = await browser_close_session(name)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Browser session error: {exc}") from exc
     _cache_invalidate_session(name)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Session not found: {name}")

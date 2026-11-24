@@ -6,7 +6,8 @@
 link_token = true
 
 [botdetection.ip_lists]
-# Block list (deny) and pass list (allow) of IPs
-pass_ip = [
-  "0.0.0.0/0",
-]
+# Block list (deny) and pass list (allow) of IPs.
+# The limiter is disabled in settings.yml (internal JSON API only), but keep
+# this list empty: a wildcard pass_ip would silently exempt every client if
+# the limiter is ever enabled.
+pass_ip = []

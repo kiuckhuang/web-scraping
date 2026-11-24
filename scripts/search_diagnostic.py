@@ -37,7 +37,8 @@ def main() -> int:
         "", "0", "false", "no", "off",
     )
     failed = False
-    for query in args.query or ["python asyncio documentation"]:
+    default_query = os.environ.get("QUERY") or "python asyncio documentation"
+    for query in args.query or [default_query]:
         print(f"Query: {query}")
         for source, port in (("searxng", config.get("PORT_SEARXNG", "8888")),
                              ("bridge", config.get("PORT_BRIDGE", "8000"))):

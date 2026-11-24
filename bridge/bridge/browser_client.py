@@ -110,6 +110,11 @@ def invalidate_disconnected_sessions() -> None:
         _session_invalidator(None)
 
 
+def is_connected() -> bool:
+    """True while the Playwright websocket connection to Camoufox is alive."""
+    return _browser is not None and _browser.is_connected()
+
+
 class SessionLimitError(RuntimeError):
     """Raised when creating a session would exceed MAX_SESSIONS."""
 

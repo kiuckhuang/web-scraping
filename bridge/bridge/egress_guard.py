@@ -15,6 +15,7 @@ import select
 import socket
 import ssl
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -23,6 +24,10 @@ from .ssrf import UrlBlockedError, resolve_public_addresses
 
 logger = logging.getLogger(__name__)
 TIMEOUT = float(os.environ.get("EGRESS_GUARD_TIMEOUT", "30"))
+# A tunnel with no bytes in either direction for this long is closed. It is
+# deliberately far above the browser wait knobs (WAF waits, SPA settle), so a
+# quiet but healthy keep-alive tunnel is not torn down mid-scrape.
+IDLE_TIMEOUT = float(os.environ.get("EGRESS_GUARD_IDLE_TIMEOUT", "300"))
 
 
 def _receive(sock: socket.socket, size: int) -> bytes:
@@ -109,15 +114,36 @@ def open_public_connection(host: str, port: int, proxy: str = "") -> socket.sock
 def _relay(left: socket.socket, right: socket.socket) -> None:
     left.settimeout(TIMEOUT)
     right.settimeout(TIMEOUT)
-    while True:
-        ready, _, _ = select.select([left, right], [], [], TIMEOUT)
+    idle_deadline = time.monotonic() + IDLE_TIMEOUT
+    open_directions = {left, right}
+    while open_directions:
+        ready, _, _ = select.select(list(open_directions), [], [], TIMEOUT)
         if not ready:
-            return
-        for source in ready:
-            data = source.recv(65536)
-            if not data:
+            if time.monotonic() >= idle_deadline:
                 return
-            (right if source is left else left).sendall(data)
+            continue
+        for source in ready:
+            if source not in open_directions:
+                continue
+            try:
+                data = source.recv(65536)
+            except OSError:
+                return
+            target = right if source is left else left
+            if not data:
+                # Half-close: stop reading this direction but let the other
+                # one drain, so a response body is never truncated.
+                open_directions.discard(source)
+                try:
+                    target.shutdown(socket.SHUT_WR)
+                except OSError:
+                    return
+                continue
+            idle_deadline = time.monotonic() + IDLE_TIMEOUT
+            try:
+                target.sendall(data)
+            except OSError:
+                return
 
 
 class GuardHandler(BaseHTTPRequestHandler):

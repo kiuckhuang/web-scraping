@@ -31,6 +31,8 @@ from typing import Any
 
 import httpx
 
+from .retry import parse_retry_after
+
 logger = logging.getLogger(__name__)
 
 
@@ -139,7 +141,7 @@ def _raise_for_error(status_code: int, body: dict[str, Any]) -> None:
         raise CeramicError(
             f"Ceramic rate limit exceeded: {message}",
             bridge_status=429,
-            retry_after=float(retry_after) if retry_after is not None else None,
+            retry_after=parse_retry_after(retry_after),
         )
     if status_code == 402:
         raise CeramicError(f"Ceramic quota/billing: {message}")

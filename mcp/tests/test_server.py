@@ -202,13 +202,13 @@ def test_rate_limit_evicts_expired_entries_when_large(monkeypatch):
     try:
         # Pre-populate with stale entries
         for i in range(10001):
-            server_mod._RATE_WINDOW[f"10.0.{i // 256}.{i % 256}"] = [now - 120.0]
+            server_mod._RATE_WINDOW[("mcp", f"10.0.{i // 256}.{i % 256}")] = [now - 120.0]
         # Adding a fresh IP should trigger prune of stale entries
         scope = {"client": ("1.2.3.4", 1)}
         assert server_mod._rate_limit_ok(scope) is True
         # Stale entries should have been pruned
         assert len(server_mod._RATE_WINDOW) == 1
-        assert "1.2.3.4" in server_mod._RATE_WINDOW
+        assert ("mcp", "1.2.3.4") in server_mod._RATE_WINDOW
     finally:
         server_mod._RATE_WINDOW.clear()
 
@@ -243,13 +243,6 @@ def test_session_limit_rejects_initialize(monkeypatch):
 
 def test_session_sweep_expires_idle(monkeypatch):
     async def go():
-        class FakeCM:
-            async def __aenter__(self):
-                return None, None
-
-            async def __aexit__(self, *args):
-                return None
-
         async def noop():
             pass
 
@@ -258,9 +251,9 @@ def test_session_sweep_expires_idle(monkeypatch):
         monkeypatch.setattr(server_mod, "MCP_SESSION_TTL", 1800)
         server_mod._sessions.clear()
         try:
-            stale = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic() - 99999)  # type: ignore[arg-type]
-            fresh = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic())  # type: ignore[arg-type]
-            busy = server_mod.Session(transport=None, task=task, cm=FakeCM(), last_seen=time.monotonic() - 99999, busy=1)  # type: ignore[arg-type]
+            stale = server_mod.Session(transport=None, task=task, last_seen=time.monotonic() - 99999)  # type: ignore[arg-type]
+            fresh = server_mod.Session(transport=None, task=task, last_seen=time.monotonic())  # type: ignore[arg-type]
+            busy = server_mod.Session(transport=None, task=task, last_seen=time.monotonic() - 99999, busy=1)  # type: ignore[arg-type]
             server_mod._sessions["stale"] = stale
             server_mod._sessions["fresh"] = fresh
             server_mod._sessions["busy"] = busy
@@ -459,17 +452,13 @@ def test_get_without_session_rejected(monkeypatch):
 class _FakeTransport:
     def __init__(self):
         self.handled = []
+        self.terminated = False
 
     async def handle_request(self, scope, receive, send):
         self.handled.append(scope.get("method"))
 
-
-class _FakeCM:
-    def __init__(self):
-        self.exited = False
-
-    async def __aexit__(self, *args):
-        self.exited = True
+    async def terminate(self):
+        self.terminated = True
 
 
 def test_delete_session_frees_state(monkeypatch):
@@ -485,9 +474,9 @@ def test_delete_session_frees_state(monkeypatch):
 
             task = asyncio.create_task(noop())
             await task
-            transport, cm = _FakeTransport(), _FakeCM()
+            transport = _FakeTransport()
             server_mod._sessions["sess-del"] = server_mod.Session(
-                transport=transport, task=task, cm=cm, last_seen=time.monotonic()
+                transport=transport, task=task, last_seen=time.monotonic()
             )
             scope = {
                 "type": "http",
@@ -508,7 +497,7 @@ def test_delete_session_frees_state(monkeypatch):
             await server_mod.app(scope, receive, send)
             assert "sess-del" not in server_mod._sessions
             assert transport.handled == ["DELETE"]
-            assert cm.exited is True
+            assert transport.terminated is True
         finally:
             server_mod._sessions.clear()
 
@@ -525,7 +514,7 @@ def test_rate_limited_response_has_retry_after(monkeypatch):
         now = time.monotonic()
         server_mod._RATE_WINDOW.clear()
         try:
-            server_mod._RATE_WINDOW["9.9.9.9"] = [now] * 120
+            server_mod._RATE_WINDOW[("mcp", "9.9.9.9")] = [now] * 120
             scope = {"type": "http", "method": "POST", "path": "/mcp", "headers": [], "client": ("9.9.9.9", 1)}
 
             async def receive():
@@ -803,3 +792,127 @@ def test_tinyfish_tools_absent_by_default(monkeypatch):
     names = _tool_names_with_tinyfish_env(monkeypatch, "false")
     assert "tinyfish_search" not in names
     assert "tinyfish_scrape" not in names
+
+
+# ---------------------------------------------------------------------------
+#  Session-lifecycle hardening (review batch)
+# ---------------------------------------------------------------------------
+
+def test_rejected_initialize_does_not_register_session(monkeypatch):
+    """A transport-level rejection must not leave a live session behind."""
+
+    async def go():
+        server_mod._sessions.clear()
+        try:
+            start = await _post_mcp(
+                b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+                monkeypatch,
+                headers=[(b"content-type", b"application/json"), (b"accept", b"text/html")],
+            )
+            assert start["status"] == 406
+            assert server_mod._sessions == {}
+            assert server_mod._pending_sessions == 0
+        finally:
+            server_mod._sessions.clear()
+
+    asyncio.run(go())
+
+
+def test_session_cap_is_atomic_under_concurrent_initialize(monkeypatch):
+    """The cap must hold when two initialize requests interleave."""
+
+    async def go():
+        monkeypatch.setattr(server_mod, "_ensure_cleanup", lambda: None)
+        monkeypatch.setattr(server_mod, "MCP_MAX_SESSIONS", 1)
+        server_mod._sessions.clear()
+        body = (
+            b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+            b'{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}'
+        )
+
+        async def post():
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "path": "/mcp",
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"accept", b"application/json, text/event-stream"),
+                ],
+                "client": ("127.0.0.1", 5),
+            }
+
+            async def receive():
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            sent = []
+
+            async def send(message):
+                sent.append(message)
+
+            await server_mod.app(scope, receive, send)
+            return next(m for m in sent if m["type"] == "http.response.start")["status"]
+
+        try:
+            statuses = await asyncio.gather(post(), post())
+            assert sorted(statuses) == [200, 503]
+            assert len(server_mod._sessions) == 1
+        finally:
+            server_mod._sessions.clear()
+
+    asyncio.run(go())
+
+
+def test_redaction_covers_common_secret_parameter_names():
+    cases = {
+        "https://x/?access_token=SECRET": "SECRET",
+        "https://x/?x-api-key=KEY": "KEY",
+        "https://x/?auth_token=T": "T",
+    }
+    for raw, secret in cases.items():
+        masked = server_mod._redact(raw)
+        assert secret not in masked
+        assert "***" in masked
+
+
+def test_deeply_nested_json_is_not_initialize():
+    body = b"[" * 400_000 + b"]" * 400_000
+    assert server_mod._is_initialize_request(body) is False
+
+
+def test_lifespan_handshake_is_acknowledged(monkeypatch):
+    async def fake_aclose():
+        return None
+
+    monkeypatch.setattr(server_mod._client, "aclose", fake_aclose)
+
+    async def go():
+        messages = iter([
+            {"type": "lifespan.startup"},
+            {"type": "lifespan.shutdown"},
+        ])
+        sent = []
+
+        async def receive():
+            return next(messages)
+
+        async def send(message):
+            sent.append(message)
+
+        await server_mod.app({"type": "lifespan"}, receive, send)
+        assert [m["type"] for m in sent] == ["lifespan.startup.complete", "lifespan.shutdown.complete"]
+
+    asyncio.run(go())
+
+
+def test_transport_security_enabled_for_loopback_bind(monkeypatch):
+    monkeypatch.setenv("MCP_PUBLIC_BIND_HOST", "127.0.0.1")
+    security = server_mod._transport_security()
+    assert security is not None
+    assert security.enable_dns_rebinding_protection is True
+    assert "localhost:*" in security.allowed_hosts
+
+
+def test_transport_security_disabled_for_remote_bind(monkeypatch):
+    monkeypatch.setenv("MCP_PUBLIC_BIND_HOST", "0.0.0.0")
+    assert server_mod._transport_security() is None

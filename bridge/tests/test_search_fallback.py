@@ -10,7 +10,6 @@ import asyncio
 
 import bridge.main as main_mod
 import pytest
-from fastapi import HTTPException
 
 
 @pytest.fixture(autouse=True)
@@ -185,7 +184,10 @@ def test_searxng_down_browser_serves(monkeypatch):
     assert resp["results"][0]["url"] == "https://d.example/"
 
 
-def test_searxng_down_and_nothing_else_serves(monkeypatch):
+def test_searxng_down_and_browser_empty_serves_empty_result(monkeypatch):
+    """A healthy-but-empty browser SERP is a response, not a failure: SearXNG
+    being down must not turn a legitimate zero-hit query into a 502."""
+
     async def fake_searxng(query, **_k):
         _boom()
 
@@ -194,10 +196,10 @@ def test_searxng_down_and_nothing_else_serves(monkeypatch):
 
     monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
     monkeypatch.setattr(main_mod, "browser_web_search", fake_browser)
-    with pytest.raises(HTTPException) as excinfo:
-        _run()
-    assert excinfo.value.status_code == 502
-    assert "All search stages failed" in excinfo.value.detail
+    resp = _run()
+    assert resp["results"] == []
+    assert resp["number_of_results"] == 0
+    assert resp["provider"] == "browser"
 
 
 # ---------------------------------------------------------------------------
@@ -329,9 +331,10 @@ def test_browser_primary_falls_back_to_searxng(monkeypatch):
     assert resp["results"][0]["engine"] == "x"
 
 
-def test_browser_primary_searxng_down_raises_502(monkeypatch):
-    """Browser-primary + browser empty + SearXNG unreachable: every stage
-    failed to produce a response, so the endpoint raises a 502."""
+def test_browser_primary_searxng_down_serves_empty(monkeypatch):
+    """Browser-primary + browser empty + SearXNG unreachable: the browser
+    response is served as an empty result set (200), not misreported as a
+    total infrastructure failure."""
     monkeypatch.setattr(main_mod, "SEARCH_PRIMARY", "browser")
 
     async def fake_searxng(query, **_k):
@@ -342,10 +345,9 @@ def test_browser_primary_searxng_down_raises_502(monkeypatch):
 
     monkeypatch.setattr(main_mod, "searxng_search", fake_searxng)
     monkeypatch.setattr(main_mod, "browser_web_search", fake_browser)
-    with pytest.raises(HTTPException) as excinfo:
-        _run()
-    assert excinfo.value.status_code == 502
-    assert "All search stages failed" in excinfo.value.detail
+    resp = _run()
+    assert resp["results"] == []
+    assert resp["provider"] == "browser"
 
 
 def test_browser_primary_bing_stage_absent(monkeypatch):

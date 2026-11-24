@@ -16,6 +16,7 @@ build/
 
 # Podman / containers
 .env.local
+.apple-container.state.json
 
 # Local diagnostic logs
 /test.log

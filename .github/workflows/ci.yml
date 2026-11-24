@@ -12,6 +12,9 @@ on:
       - ".gitignore"
       - "opencode.jsonc.example"
 
+permissions:
+  contents: read
+
 # Cancel any in-progress CI run on the same branch when a new commit is pushed
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -29,6 +32,9 @@ jobs:
           python-version: "3.12"
       - run: pip install "ruff==0.17.6"
       - run: ruff check .
+      # Shell syntax check (bash 5 on CI; scripts must also stay bash-3.2-safe
+      # for stock macOS — avoid bash-4-only expansions in scripts/*.sh).
+      - run: for f in scripts/*.sh searxng-entrypoint.sh; do bash -n "$f"; done
 
   test-bridge:
     name: Bridge unit tests

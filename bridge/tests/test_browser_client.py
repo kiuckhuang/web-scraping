@@ -191,7 +191,7 @@ def _session_fake_browser(recorder):
 
 
 @pytest.fixture
-def session_playwright(fake_playwright):
+def session_playwright(fake_playwright, monkeypatch):
     """Replace the fake factory so connects return a session-capable browser."""
     recorder = fake_playwright
 
@@ -213,7 +213,7 @@ def session_playwright(fake_playwright):
     _FakePlaywright.firefox.connect = staticmethod(_connect)
     import bridge.browser_client as bcl
 
-    bcl.async_playwright = lambda: _FakePlaywright()
+    monkeypatch.setattr(bcl, "async_playwright", lambda: _FakePlaywright())
     return recorder
 
 

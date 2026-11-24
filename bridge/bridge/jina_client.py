@@ -29,6 +29,8 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
+from .retry import parse_retry_after
+
 logger = logging.getLogger(__name__)
 
 
@@ -140,7 +142,7 @@ def _raise_for_error(status_code: int, body: dict[str, Any]) -> None:
         raise JinaError(
             f"Jina rate limit exceeded: {message}",
             bridge_status=429,
-            retry_after=float(retry_after) if retry_after is not None else None,
+            retry_after=parse_retry_after(retry_after),
         )
     if status_code == 402 or jina_status in (40202, 40203, 40904):
         raise JinaError(f"Jina quota/billing: {message}")

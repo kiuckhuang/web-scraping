@@ -52,7 +52,9 @@ fi
 echo ""
 echo "=== Containers ==="
 SEARXNG_ENABLED=$(sed -n 's/^SEARXNG_ENABLED=//p' .env 2>/dev/null)
-case "${SEARXNG_ENABLED,,}" in
+# Stock macOS ships bash 3.2, which has no ${var,,} lowercasing.
+SEARXNG_ENABLED_LC=$(printf '%s' "${SEARXNG_ENABLED:-}" | tr '[:upper:]' '[:lower:]')
+case "$SEARXNG_ENABLED_LC" in
     true|1|yes|on) SEARXNG_ENABLED=true ;;
     *) SEARXNG_ENABLED=false ;;
 esac

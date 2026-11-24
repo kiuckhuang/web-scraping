@@ -20,6 +20,7 @@ plain headless mode.
 import logging
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from camoufox.server import launch_server
 
@@ -52,6 +53,17 @@ def _proxy() -> dict[str, str] | None:
     if bypass:
         proxy["bypass"] = bypass
     return proxy
+
+
+def _mask_proxy(server: str) -> str:
+    """Strip proxy credentials before a server URL is logged."""
+    parsed = urlparse(server)
+    if not parsed.username and not parsed.password:
+        return server
+    netloc = parsed.hostname or ""
+    if parsed.port:
+        netloc += f":{parsed.port}"
+    return parsed._replace(netloc=netloc).geturl()
 
 
 def _geoip_enabled(proxy: dict[str, str] | None) -> bool:
@@ -94,7 +106,7 @@ def main() -> None:
     )
     if proxy:
         kwargs["proxy"] = proxy
-        logger.info("Browser proxy enabled: %s (bypass: %s)", proxy["server"], proxy.get("bypass", "none"))
+        logger.info("Browser proxy enabled: %s (bypass: %s)", _mask_proxy(proxy["server"]), proxy.get("bypass", "none"))
     if use_geoip:
         kwargs["geoip"] = True
     logger.info("Launching Camoufox server (proxy=%s, geoip=%s)", bool(proxy), use_geoip)

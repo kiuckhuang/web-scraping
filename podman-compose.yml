@@ -29,6 +29,7 @@ services:
       - CAMOUFOX_PROXY_PASSWORD=${CAMOUFOX_PROXY_PASSWORD:-}
       - HTTP_FASTPATH_PROXY=${HTTP_FASTPATH_PROXY:-}
       - EGRESS_GUARD_TIMEOUT=${EGRESS_GUARD_TIMEOUT:-30}
+      - EGRESS_GUARD_IDLE_TIMEOUT=${EGRESS_GUARD_IDLE_TIMEOUT:-300}
     networks:
       - internal
     healthcheck:
@@ -254,8 +255,10 @@ services:
       # HTTP fast path: static pages are fetched directly with a Chrome-shaped
       # TLS stack (curl_cffi) — WAF challenges / JS shells / HTTP errors
       # escalate to the browser. Named sessions always use the browser (login
-      # persistence needs its cookie contexts); HTTP_FASTPATH_PROXY wins, else
-      # the stack-wide EGRESS_PROXY applies (empty = direct)
+      # persistence needs its cookie contexts). The fast path always egresses
+      # through ws-egress-guard (connection-time IP validation); the
+      # HTTP_FASTPATH_PROXY .env knob configures that guard listener's upstream,
+      # it is not a bridge-side bypass.
       - EGRESS_PROXY=${EGRESS_PROXY:-}
       - HTTP_FASTPATH=${HTTP_FASTPATH:-true}
       - HTTP_FASTPATH_TIMEOUT=${HTTP_FASTPATH_TIMEOUT:-15}
@@ -263,6 +266,7 @@ services:
       # Bounds concurrent fast-path fetches (0 = unlimited) so a wide
       # /search_and_scrape fan-out cannot open one curl session per result
       - HTTP_FASTPATH_MAX_CONCURRENT=${HTTP_FASTPATH_MAX_CONCURRENT:-6}
+      # Always via the egress guard — no unvalidated fast-path egress.
       - HTTP_FASTPATH_PROXY=http://${EGRESS_GUARD_HOST:-egress-guard}:8082
       # Search chain: SEARCH_PRIMARY picks the first transport ("searxng" or
       # "browser"); the other serves as fallback. Browser SERP engine order
@@ -395,6 +399,8 @@ services:
       - MCP_RATE_LIMIT=${MCP_RATE_LIMIT:-120}
       - MCP_MAX_BODY=${MCP_MAX_BODY:-1048576}
       - MCP_ALLOWED_ORIGIN=${MCP_ALLOWED_ORIGIN:-localhost}
+      # Extra Host header values for the loopback DNS-rebinding check.
+      - MCP_ALLOWED_HOSTS=${MCP_ALLOWED_HOSTS:-}
       # Local/podman-forwarded clients bypass bearer auth unless disabled. Set
       # false when MCP is fronted by a loopback reverse proxy.
       - MCP_TRUST_LOCAL=${MCP_TRUST_LOCAL:-true}

@@ -28,6 +28,11 @@ DNS_CACHE_MAX = 4096  # bound on cached hostnames
 # Host names that are always local regardless of what DNS says.
 LOCAL_HOSTS = frozenset({"localhost", "0.0.0.0", "127.0.0.1", "::1"})
 
+# IPv6 transition prefixes that embed an IPv4 destination. ipaddress reports
+# them as global, so the embedded IPv4 must be classified instead — otherwise a
+# NAT64 address such as 64:ff9b::7f00:1 (127.0.0.1) would pass every SSRF layer.
+_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+
 # Tri-state DNS verdict per host -> (monotonic timestamp, verdict).
 _dns_cache: dict[str, tuple[float, str]] = {}
 
@@ -50,6 +55,22 @@ def clear_dns_cache() -> None:
     _dns_cache.clear()
 
 
+def _embedded_ipv4(ip: ipaddress.IPv4Address | ipaddress.IPv6Address):
+    """Map an IPv4-mapped/NAT64 IPv6 address back to the IPv4 it carries."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped:
+            return ip.ipv4_mapped
+        if ip in _NAT64_PREFIX:
+            return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip
+
+
+def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True only for global unicast addresses after unwrapping IPv4 embedding."""
+    ip = _embedded_ipv4(ip)
+    return ip.is_global and not ip.is_multicast
+
+
 def _resolve_verdict(host: str) -> str:
     """Resolve host and classify it: 'public', 'private', or 'unresolvable'.
 
@@ -64,9 +85,7 @@ def _resolve_verdict(host: str) -> str:
         return "unresolvable"
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-            ip = ip.ipv4_mapped
-        if not ip.is_global or ip.is_multicast:
+        if not _is_public_ip(ip):
             return "private"
     return "public"
 
@@ -80,12 +99,13 @@ def resolve_public_addresses(host: str, port: int) -> list[str]:
     addresses = []
     for info in infos:
         address = ipaddress.ip_address(info[4][0])
-        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-            address = address.ipv4_mapped
-        if not address.is_global or address.is_multicast:
+        if not _is_public_ip(address):
             raise UrlBlockedError(403, "Access to non-global addresses is blocked")
-        if str(address) not in addresses:
-            addresses.append(str(address))
+        # Keep the address as resolved (NAT64/mapped hosts must connect in
+        # their original family); classification above used the embedded IPv4.
+        text = str(address)
+        if text not in addresses:
+            addresses.append(text)
     if not addresses:
         raise UrlBlockedError(403, "Could not resolve host; access blocked")
     return addresses
@@ -125,7 +145,10 @@ def is_public_http_url(url: str) -> bool:
     schemes (data:, blob:, about:) are allowed — Chromium generates them
     internally and they carry no network authority.
     """
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError:  # malformed IPv6/host brackets — treat as non-public
+        return False
     scheme = parsed.scheme.lower()
     if scheme not in ("http", "https") or not parsed.hostname:
         return scheme in ("data", "blob", "about")
@@ -142,7 +165,10 @@ def validate_public_url(url: str) -> str:
     hosts are rejected outright rather than re-resolved later by the browser
     — DNS-rebinding defense).
     """
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError as exc:
+        raise UrlBlockedError(400, "Malformed URL") from exc
     if parsed.scheme.lower() not in ("http", "https"):
         raise UrlBlockedError(400, f"Unsupported scheme: {parsed.scheme}")
     host = parsed.hostname or ""

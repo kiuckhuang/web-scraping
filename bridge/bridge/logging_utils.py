@@ -5,11 +5,20 @@ import logging
 import re
 
 _CREDS = re.compile(r"//([^/@:]+):([^/@]+)@")
-_PARAM = re.compile(r"([?&](?:token|key|secret|auth|password|api_key|apikey|signature|sig)=)[^&#\s]*", re.I)
+_ENC_CREDS = re.compile(r"(%2F%2F[^/?#]*?:)[^/?#%]*(%40)", re.I)
+# Parameter names that carry credentials: match by name substring so
+# access_token / api-key / X-Amz-Signature variants are covered, and handle
+# percent-encoded query strings (a fully encoded URL must not leak either).
+_SECRET_NAME = r"[A-Za-z0-9_.\-]*(?:token|key|secret|auth|password|passwd|sig|credential)[A-Za-z0-9_.\-]*"
+_PARAM = re.compile(r"(?P<prefix>[?&;])(?P<name>" + _SECRET_NAME + r")=[^&#;\s]*", re.I)
+_ENC_PARAM = re.compile(r"(?P<prefix>%3F|%26|%3B)(?P<name>" + _SECRET_NAME + r")%3D[^&#;\s]*", re.I)
 
 
 def redact(value: str) -> str:
-    return _PARAM.sub(r"\1***", _CREDS.sub(r"//\1:***@", value))
+    value = _ENC_PARAM.sub(lambda m: f"{m.group('prefix')}{m.group('name')}%3D***", value)
+    value = _PARAM.sub(lambda m: f"{m.group('prefix')}{m.group('name')}=***", value)
+    value = _ENC_CREDS.sub(r"\1***\2", value)
+    return _CREDS.sub(r"//\1:***@", value)
 
 
 class SafeLogFilter(logging.Filter):

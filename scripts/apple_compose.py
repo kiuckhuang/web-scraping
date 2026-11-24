@@ -30,6 +30,7 @@ build, up, down, logs, ps, exec, pull-image, prune.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import queue
@@ -39,6 +40,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -48,6 +50,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_FILE = ROOT / "podman-compose.yml"
+# Last rendered stack fingerprint; detects .env/image drift on DNS-mode starts.
+STATE_FILE = ROOT / ".apple-container.state.json"
 
 # Bare service names used as hostnames inside container URLs (SEARXNG_URL,
 # CAMOUFOX_WS_URL, ...) never reach Apple container's embedded DNS service;
@@ -105,22 +109,53 @@ def env_values() -> dict[str, str]:
     return values
 
 
-_VAR_PATTERN = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:(?P<op>:?-)(?P<default>[^}]*))?\}")
+_INNER_VAR_PATTERN = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:(?P<op>:-|-)(?P<default>[^{}]*))?\}")
 
 
 def interpolate(text: str, values: dict[str, str]) -> str:
-    """Substitute ${VAR}, ${VAR:-default} and ${VAR-default} (compose semantics)."""
+    """Substitute ${VAR}, ${VAR:-default} and ${VAR-default} (compose semantics).
+
+    Defaults may themselves contain placeholders (``${A:-http://${B:-host}:1}``):
+    those are resolved innermost-first, like compose. Substituted values are
+    parked behind sentinels so they are never re-expanded.
+    """
+    placeholder = "\x00"
+    text = text.replace("$$", placeholder)
+    parked: list[str] = []
 
     def sub(match: re.Match[str]) -> str:
         name, op, default = match.group("name"), match.group("op"), match.group("default")
         if name not in values:
-            return default if op else ""
-        if op == ":-" and values[name] == "":
-            return default
-        return values[name]
+            value = default if op else ""
+        elif op == ":-" and values[name] == "":
+            value = default
+        else:
+            value = values[name]
+        parked.append(value or "")
+        return f"\x01{len(parked) - 1}\x02"
 
-    placeholder = "\x00"
-    return _VAR_PATTERN.sub(sub, text.replace("$$", placeholder)).replace(placeholder, "$")
+    while True:
+        expanded = _INNER_VAR_PATTERN.sub(sub, text)
+        if expanded == text:
+            break
+        text = expanded
+    while True:
+        restored = re.sub(r"\x01(\d+)\x02", lambda m: parked[int(m.group(1))], text)
+        if restored == text:
+            break
+        text = restored
+    return text.replace(placeholder, "$")
+
+
+def _interpolate_json(value: Any, values: dict[str, str]) -> Any:
+    """Recursively interpolate a parsed YAML value (dict/list/str/number)."""
+    if isinstance(value, dict):
+        return {key: _interpolate_json(item, values) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_interpolate_json(item, values) for item in value]
+    if isinstance(value, str):
+        return interpolate(value, values)
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +215,7 @@ def parse_compose(path: Path = COMPOSE_FILE, domain: str = "") -> tuple[dict[str
             ports=[interpolate(str(p), values) for p in spec.get("ports", []) or []],
             volumes=[interpolate(str(v), values) for v in spec.get("volumes", []) or []],
             depends_on=list((spec.get("depends_on") or {}).keys()),
-            healthcheck=spec.get("healthcheck"),
+            healthcheck=_interpolate_json(spec.get("healthcheck"), values),
             mem_limit=interpolate(spec["mem_limit"], values) if spec.get("mem_limit") else None,
             shm_size=interpolate(spec["shm_size"], values) if spec.get("shm_size") else None,
             cap_add=[str(c) for c in spec.get("cap_add", []) or []],
@@ -452,7 +487,57 @@ def normalize_size(spec: str) -> str:
     return f"{match.group(1)}{suffix}"
 
 
-def run_argv(binary: str, svc: Service, env: dict[str, str]) -> list[str]:
+def write_private_env_file(env: dict[str, str]) -> str:
+    """Write a 0600 env file for `container run --env-file`.
+
+    Keeping secrets out of argv matters on this runtime: the full environment
+    is visible via `ps` and `container ls --format json`.
+    """
+    fd, path = tempfile.mkstemp(prefix="ws-env-")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            for key, value in env.items():
+                file.write(f"{key}={value}\n")
+    except BaseException:
+        os.unlink(path)
+        raise
+    return path
+
+
+def stack_fingerprint(services: list[Service], values: dict[str, str]) -> str:
+    """Hash of the rendered service specs, to detect stale container state."""
+    payload = {}
+    for svc in services:
+        payload[svc.name] = {
+            "image": svc.image,
+            "command": svc.command,
+            "entrypoint": svc.entrypoint,
+            "environment": service_env(svc, values),
+            "ports": svc.ports,
+            "volumes": svc.volumes,
+        }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _read_state() -> str | None:
+    try:
+        return STATE_FILE.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def _write_state(fingerprint: str) -> None:
+    try:
+        fd, path = tempfile.mkstemp(prefix=".apple-state-", dir=ROOT)
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(fingerprint + "\n")
+        os.replace(path, STATE_FILE)
+    except OSError:
+        pass  # best effort: a missing state file only costs one recreate
+
+
+def run_argv(binary: str, svc: Service, env: dict[str, str], env_file: str | None = None) -> list[str]:
     argv = [binary, "run", "-d", "--name", svc.container_name, "--network", f"default,alias={svc.name}"]
     if svc.mem_limit:
         argv += ["--memory", normalize_size(svc.mem_limit)]
@@ -468,8 +553,11 @@ def run_argv(binary: str, svc: Service, env: dict[str, str]) -> list[str]:
     # (CAP_SETGID/SETUID alone), which needs CAP_CHOWN on this runtime.
     if svc.name == "valkey" and "CHOWN" not in svc.cap_add:
         argv += ["--cap-add", "CHOWN"]
-    for key, val in env.items():
-        argv += ["-e", f"{key}={val}"]
+    if env_file:
+        argv += ["--env-file", env_file]
+    else:
+        for key, val in env.items():
+            argv += ["-e", f"{key}={val}"]
     for port in svc.ports:
         argv += ["-p", port]
     for vol in svc.volumes:
@@ -598,12 +686,18 @@ def cmd_up(args: argparse.Namespace) -> int:
             f"note: host resolver has no \"{domain}\" domain — using container IPs.\n"
             f"      For name-based addressing run once: sudo {binary} system dns create {domain}"
         )
+    selected = enabled_services(services, values)
     # Baked env holds container IPs in fallback mode; IPs change on every
     # system restart, so `up` recreates the containers for consistent
-    # addressing. DNS mode keeps names stable and starts containers in place.
-    recreate_all = not dns_mode
-
-    selected = enabled_services(services, values)
+    # addressing. DNS mode keeps names stable, but an .env/image change
+    # (rotated MCP_API_KEY, toggled flags) must still recreate the containers:
+    # their environment is frozen at creation time.
+    fingerprint = stack_fingerprint(selected, values)
+    previous = _read_state()
+    config_changed = previous is not None and previous != fingerprint
+    if config_changed:
+        print("stack configuration changed since the last up — recreating containers")
+    recreate_all = not dns_mode or config_changed
     states = container_state(binary)
     if not searxng_enabled(values):
         for name in ("ws-searxng", "ws-valkey"):
@@ -620,7 +714,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         for svc in selected:
             if svc.container_name in states:
                 print(f"recreating {svc.container_name} (--force)" if args.force
-                      else f"recreating {svc.container_name} (fresh addressing)")
+                      else f"recreating {svc.container_name} (stale spec or fresh addressing)")
                 run(binary, "delete", "--force", svc.container_name, check=False)
                 states.pop(svc.container_name, None)
 
@@ -636,7 +730,12 @@ def cmd_up(args: argparse.Namespace) -> int:
             run(binary, "start", svc.container_name)
         else:
             print(f"starting {svc.container_name} ({svc.name})")
-            run(*run_argv(binary, svc, service_env(svc, values)))
+            env = service_env(svc, values)
+            env_file = write_private_env_file(env)
+            try:
+                run(*run_argv(binary, svc, env, env_file=env_file))
+            finally:
+                os.unlink(env_file)
         # Dependents started later resolve this service by its live address
         # (IP mode only; DNS mode keeps the stable <name>.<domain> names).
         if not dns_mode:
@@ -652,6 +751,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         endpoints = ", ".join(svc.ports) if svc.ports else "internal only"
         print(f"  {svc.name:13} {endpoints}")
     _warn_if_publishing_blocked(binary, selected, domain)
+    _write_state(fingerprint)
     print(
         "\nnotes: containers do not auto-restart on this runtime "
         "(restart: unless-stopped is ignored); `make logs` tails them."

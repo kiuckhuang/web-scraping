@@ -22,11 +22,11 @@ import socket
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any
 from urllib.parse import quote, urlparse
 
 import httpx
 from mcp.server.streamable_http import StreamableHTTPServerTransport
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import (
     CallToolRequestParams,
     CallToolResult,
@@ -100,6 +100,9 @@ MCP_SESSION_TTL = float(os.environ.get("MCP_SESSION_TTL", "1800"))  # idle sessi
 MCP_RATE_LIMIT = max(0, int(os.environ.get("MCP_RATE_LIMIT", "120")))  # requests/minute/IP, 0 = unlimited
 MCP_MAX_BODY = max(0, int(os.environ.get("MCP_MAX_BODY", "1048576")))  # max request body bytes
 MCP_ALLOWED_ORIGIN = os.environ.get("MCP_ALLOWED_ORIGIN", "localhost").strip()
+# Extra Host header values accepted by DNS-rebinding protection (comma list;
+# only consulted while the public bind is loopback).
+MCP_ALLOWED_HOSTS = os.environ.get("MCP_ALLOWED_HOSTS", "").strip()
 # Local/podman-forwarded clients bypass the bearer token by default. Disable
 # this when a loopback reverse proxy fronts the server (the proxy's source is
 # loopback, so every remote client would otherwise look local).
@@ -415,13 +418,18 @@ async def _list_tools_handler(_ctx, _params):
 
 
 _URL_CREDS = re.compile(r"//([^/@:]+):([^/@]+)@")
-_SENSITIVE_PARAM = re.compile(r"([?&](?:token|key|secret|auth|password|api_key|apikey|signature|sig)=)[^&#]*", re.IGNORECASE)
+_ENC_CREDS = re.compile(r"(%2F%2F[^/?#]*?:)[^/?#%]*(%40)", re.IGNORECASE)
+_SECRET_NAME = r"[A-Za-z0-9_.\-]*(?:token|key|secret|auth|password|passwd|sig|credential)[A-Za-z0-9_.\-]*"
+_SENSITIVE_PARAM = re.compile(r"(?P<prefix>[?&;])(?P<name>" + _SECRET_NAME + r")=[^&#;\s]*", re.IGNORECASE)
+_ENC_PARAM = re.compile(r"(?P<prefix>%3F|%26|%3B)(?P<name>" + _SECRET_NAME + r")%3D[^&#;\s]*", re.IGNORECASE)
 
 
 def _redact(value: str) -> str:
-    """Mask embedded credentials in URLs before they hit the logs."""
-    value = _URL_CREDS.sub(r"//\1:***@", value)
-    return _SENSITIVE_PARAM.sub(r"\1***", value)
+    """Mask embedded credentials and secret query parameters before logging."""
+    value = _ENC_PARAM.sub(lambda m: f"{m.group('prefix')}{m.group('name')}%3D***", value)
+    value = _SENSITIVE_PARAM.sub(lambda m: f"{m.group('prefix')}{m.group('name')}=***", value)
+    value = _ENC_CREDS.sub(r"\1***\2", value)
+    return _URL_CREDS.sub(r"//\1:***@", value)
 
 
 def _redact_args(arguments: dict) -> dict:
@@ -605,13 +613,28 @@ def _get_trusted_cidrs() -> set[str]:
                 continue
             cidrs.add(entry)
         return cidrs
+    # Trust exactly the addresses that legitimately reach us without a token:
+    # our own container address, the network gateway (host-published ports are
+    # SNATed to it), and the bridge we call. Trusting the whole /24 would also
+    # trust every other service on the runtime network — on the Apple runtime
+    # all services share one network, so a compromised container could drive
+    # the MCP server tokenlessly.
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             ip = info[4][0]
             octets = ip.split(".")
-            cidrs.add(".".join(octets[:3]) + ".0/24")
+            cidrs.add(f"{ip}/32")
+            cidrs.add(".".join(octets[:3]) + ".1/32")
+            break
     except Exception:
         pass
+    bridge_host = urlparse(BRIDGE_URL).hostname or ""
+    if bridge_host:
+        try:
+            for info in socket.getaddrinfo(bridge_host, None, socket.AF_INET):
+                cidrs.add(f"{info[4][0]}/32")
+        except OSError:
+            pass
     return cidrs
 
 
@@ -665,29 +688,37 @@ def _auth_ok(scope) -> bool:
 #  Rate limiting — sliding window per client IP
 # ---------------------------------------------------------------------------
 
-_RATE_WINDOW: dict[str, list[float]] = {}
+_RATE_WINDOW: dict[tuple[str, str], list[float]] = {}
+_RATE_WINDOW_MAX_KEYS = 10_000
 
 
-def _rate_limit_ok(scope) -> bool:
-    """True if the request is within the per-IP rate limit (MCP_RATE_LIMIT/min)."""
+def _rate_limit_ok(scope, bucket: str = "mcp") -> bool:
+    """True if the request is within the per-(bucket, IP) rate limit (MCP_RATE_LIMIT/min).
+
+    /health has its own bucket so monitoring probes cannot consume the budget
+    of real MCP calls (and cannot be used to exhaust it for other clients).
+    """
     global _RATE_WINDOW
     if MCP_RATE_LIMIT <= 0:
         return True
     client = scope.get("client")
     ip = client[0] if client else "unknown"
     now = time.monotonic()
-    hits = [t for t in _RATE_WINDOW.get(ip, []) if now - t < 60.0]
+    key = (bucket, ip)
+    hits = [t for t in _RATE_WINDOW.get(key, []) if now - t < 60.0]
     if len(hits) >= MCP_RATE_LIMIT:
-        _RATE_WINDOW[ip] = hits
+        _RATE_WINDOW[key] = hits
         return False
     hits.append(now)
-    _RATE_WINDOW[ip] = hits
-    if len(_RATE_WINDOW) > 10000:  # bound memory: prune expired entries
-        _RATE_WINDOW = {
-            k: fresh
-            for k, v in _RATE_WINDOW.items()
-            if (fresh := [t for t in v if now - t < 60.0])
-        }
+    _RATE_WINDOW[key] = hits
+    if len(_RATE_WINDOW) > _RATE_WINDOW_MAX_KEYS:
+        # Drop expired buckets first; if that is not enough, evict the least
+        # recently active ones so a spoofed-IP flood cannot grow this map.
+        fresh = {k: v for k, v in _RATE_WINDOW.items() if any(now - t < 60.0 for t in v)}
+        if len(fresh) > _RATE_WINDOW_MAX_KEYS:
+            keep = sorted(fresh, key=lambda k: fresh[k][-1], reverse=True)[:_RATE_WINDOW_MAX_KEYS]
+            fresh = {k: fresh[k] for k in keep}
+        _RATE_WINDOW = fresh
     return True
 
 
@@ -829,16 +860,37 @@ def _format_crawl_result(result: dict) -> str:
 
 @dataclass
 class Session:
-    """Holds a live MCP session: transport, background server task, and context manager."""
+    """Holds a live MCP session: transport, owner task, and activity tracking."""
     transport: StreamableHTTPServerTransport
     task: asyncio.Task
-    cm: Any  # the connect() async context manager
     last_seen: float  # time.monotonic() of the most recent request
     busy: int = 0  # in-flight request count; the idle sweep must not cancel these
 
 
 _sessions: dict[str, Session] = {}
 _cleanup_task: asyncio.Task | None = None
+# Admitted-but-not-yet-registered sessions: counted so the cap check and the
+# insert cannot be interleaved by another initialize request.
+_pending_sessions = 0
+
+
+async def _session_owner(transport: StreamableHTTPServerTransport, started: asyncio.Event) -> None:
+    """Run one session's server loop and own its transport task group.
+
+    ``transport.connect()`` enters an anyio task group, which must be exited by
+    the same task that entered it. Request handlers therefore only call
+    ``transport.handle_request()``; this task owns connect/terminate.
+    """
+    try:
+        async with transport.connect() as (read_stream, write_stream):
+            started.set()
+            await server.run(read_stream, write_stream, server.create_initialization_options())
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("MCP session server task crashed")
+    finally:
+        started.set()
 
 
 async def _sweep_sessions() -> None:
@@ -854,16 +906,18 @@ async def _sweep_sessions() -> None:
 
 
 async def _close_session(session: Session) -> None:
-    """Cancel a session's server task and release its transport context."""
+    """Terminate the transport, then stop and reap its owner task."""
+    try:
+        await session.transport.terminate()
+    except Exception:
+        logger.debug("MCP transport terminate failed", exc_info=True)
     session.task.cancel()
     try:
-        await asyncio.wait_for(asyncio.shield(session.task), timeout=5)
+        await asyncio.wait_for(session.task, timeout=5)
     except (TimeoutError, asyncio.CancelledError):
         pass
-    try:
-        await session.cm.__aexit__(None, None, None)
     except Exception:
-        pass
+        logger.debug("MCP session task ended with an error", exc_info=True)
 
 
 def _is_initialize_request(body: bytes) -> bool:
@@ -876,7 +930,7 @@ def _is_initialize_request(body: bytes) -> bool:
     """
     try:
         payload = json.loads(body)
-    except (ValueError, TypeError):
+    except Exception:  # ValueError/TypeError, or RecursionError on deep nesting
         return False
     if isinstance(payload, list):  # JSON-RPC batch
         return any(isinstance(m, dict) and m.get("method") == "initialize" for m in payload)
@@ -897,6 +951,53 @@ def _ensure_cleanup() -> None:
     global _cleanup_task
     if _cleanup_task is None or _cleanup_task.done():
         _cleanup_task = asyncio.create_task(_cleanup_loop())
+
+
+async def _shutdown_sessions() -> None:
+    """Close every live session and the shared HTTP client (lifespan shutdown)."""
+    global _cleanup_task
+    if _cleanup_task is not None:
+        _cleanup_task.cancel()
+        try:
+            await _cleanup_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001 - shutdown best effort
+            pass
+        _cleanup_task = None
+    for sid, session in list(_sessions.items()):
+        _sessions.pop(sid, None)
+        await _close_session(session)
+    try:
+        await _client.aclose()
+    except Exception:
+        pass
+
+
+def _transport_security() -> TransportSecuritySettings | None:
+    """DNS-rebinding protection for the loopback-exposed (default) deployment.
+
+    Compose always sets MCP_PUBLIC_BIND_HOST, so a containerised server gets
+    Host/Origin validation. Remote exposures (non-loopback bind) keep relying
+    on the bearer token, because the public hostname is not knowable here.
+    """
+    bind = os.environ.get("MCP_PUBLIC_BIND_HOST", "").strip()
+    if not bind or not _is_local_bind_host(bind):
+        return None
+    if MCP_ALLOWED_ORIGIN.strip() == "*":
+        return None  # wildcard origins are incompatible with strict validation
+    allowed_hosts = ["localhost:*", "127.0.0.1:*", "[::1]:*"]
+    allowed_hosts += [host.strip() for host in MCP_ALLOWED_HOSTS.split(",") if host.strip()]
+    allowed_origins = [
+        "http://localhost:*", "https://localhost:*",
+        "http://127.0.0.1:*", "https://127.0.0.1:*",
+        "http://[::1]:*", "https://[::1]:*",
+    ]
+    if MCP_ALLOWED_ORIGIN.strip().lower() not in ("", "localhost"):
+        allowed_origins += [origin.strip() for origin in MCP_ALLOWED_ORIGIN.split(",") if origin.strip()]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+    )
 
 
 async def _send_json(scope, send, status: int, body: dict, headers: list[tuple[bytes, bytes]] | None = None):
@@ -963,44 +1064,55 @@ async def handle_mcp(scope, receive, send, body: bytes = b""):
         if method != "POST" or not _is_initialize_request(body):
             await _send_json(scope, send, 400, {"error": "Missing Mcp-Session-Id header — send an initialize request first"})
             return
-        if MCP_MAX_SESSIONS > 0 and len(_sessions) >= MCP_MAX_SESSIONS:
+        global _pending_sessions
+        # Admission is synchronous: the slot is reserved before the first
+        # await, so concurrent initialize requests cannot overshoot the cap
+        # between the check and the insert.
+        if MCP_MAX_SESSIONS > 0 and len(_sessions) + _pending_sessions >= MCP_MAX_SESSIONS:
             logger.warning("MCP session limit reached (%d) — rejecting initialize", MCP_MAX_SESSIONS)
             await _send_json(scope, send, 503, {"error": "session limit reached"})
             return
-        # New session — create transport, connect server, handle initialize request
+        _pending_sessions += 1
         transport = StreamableHTTPServerTransport(
             mcp_session_id=uuid.uuid4().hex,
             is_json_response_enabled=True,
+            security_settings=_transport_security(),
         )
-        # Enter the connect() context manager and keep it open for the session lifetime
-        cm = transport.connect()
-        read_stream, write_stream = await cm.__aenter__()
-        # Start the MCP server as a background task — it runs for the session lifetime
-        task = asyncio.create_task(
-            server.run(read_stream, write_stream, server.create_initialization_options())
-        )
+        started = asyncio.Event()
+        task = asyncio.create_task(_session_owner(transport, started))
+        status = 0
+        response = bytearray()
+
+        async def send_capturing(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = int(message.get("status", 0))
+            elif message["type"] == "http.response.body":
+                response.extend(message.get("body", b""))
+            await send(message)
+
+        registered = False
         try:
+            await asyncio.wait_for(started.wait(), timeout=5)
             # Handle the initialize request (this sends the response back via HTTP)
-            await transport.handle_request(scope, receive, send)
+            await transport.handle_request(scope, receive, send_capturing)
+            sid = transport.mcp_session_id or ""
+            # A rejected initialize (bad headers, malformed params) must not
+            # leave a live session behind: only register accepted responses.
+            accepted = 0 < status < 400 and b'"error"' not in bytes(response[:4096])
+            if sid and accepted:
+                _sessions[sid] = Session(transport=transport, task=task, last_seen=time.monotonic())
+                registered = True
+                logger.info("MCP session created: %s", sid)
+            else:
+                logger.info("initialize rejected (status=%s) — no session registered", status)
         except BaseException:
-            task.cancel()
-            try:
-                await cm.__aexit__(None, None, None)
-            except Exception:
-                pass
+            await _close_session(Session(transport=transport, task=task, last_seen=time.monotonic()))
             raise
-        sid = transport.mcp_session_id or ""
-        if sid:
-            _sessions[sid] = Session(transport=transport, task=task, cm=cm, last_seen=time.monotonic())
-            logger.info("MCP session created: %s", sid)
-        else:
-            # Defensive: never leave an orphan server task if the transport
-            # somehow failed to assign a session id.
-            task.cancel()
-            try:
-                await cm.__aexit__(None, None, None)
-            except Exception:
-                pass
+        finally:
+            _pending_sessions -= 1
+        if not registered:
+            await _close_session(Session(transport=transport, task=task, last_seen=time.monotonic()))
     else:
         session = _sessions.get(session_id)
         if session is None:
@@ -1133,6 +1245,21 @@ def _wrap_send_with_cors(scope, send):
 # ---------------------------------------------------------------------------
 
 async def app(scope, receive, send):
+    scope_type = scope.get("type", "http")
+    if scope_type == "lifespan":
+        # Raw ASGI app: acknowledge the lifespan handshake instead of sending
+        # an HTTP response into a lifespan scope (which uvicorn treats as a
+        # fatal "unsupported protocol" error).
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await _shutdown_sessions()
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+    if scope_type != "http":
+        return
     path = scope.get("path", "")
     method = scope.get("method", "")
     rid = uuid.uuid4().hex[:8]
@@ -1191,8 +1318,9 @@ async def app(scope, receive, send):
         await handle_mcp(scope, receive, send_with_cors, body=body)
     elif path == "/health" and method == "GET":
         # Health stays unauthenticated (probes need it), but must not become an
-        # unthrottled amplifier for bridge health checks.
-        if not _rate_limit_ok(scope):
+        # unthrottled amplifier for bridge health checks. It has its own bucket
+        # so probes cannot consume (or exhaust) the MCP call budget.
+        if not _rate_limit_ok(scope, "health"):
             logger.warning("req=%s rate limited: GET /health from %s", rid, client)
             await _send_json(
                 scope,
@@ -1209,6 +1337,11 @@ async def app(scope, receive, send):
 
 if __name__ == "__main__":
     import uvicorn
+    if not MCP_API_KEY and not _is_local_bind_host(MCP_LISTEN_HOST):
+        raise RuntimeError(
+            "Refusing to start keyless on a non-loopback MCP_LISTEN_HOST "
+            f"({MCP_LISTEN_HOST}) — set MCP_API_KEY or bind loopback"
+        )
     auth_mode = "open" if not MCP_API_KEY else f"bearer-token for untrusted sources (trusted: {', '.join(sorted(_TRUSTED_CIDRS))})"
     logger.info("MCP server starting on %s:%d (auth: %s)", MCP_LISTEN_HOST, MCP_PORT, auth_mode)
     uvicorn.run(app, host=MCP_LISTEN_HOST, port=MCP_PORT, log_level="info")

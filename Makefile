@@ -184,8 +184,12 @@ test-scrape:
 doctor:
 	@./scripts/doctor.sh
 
+# Exported so a query containing quotes/shell metacharacters never round-trips
+# through a recipe command line.
+export QUERY
+
 test-search:
-	@python3 scripts/search_diagnostic.py $(if $(QUERY),--query "$(QUERY)",)
+	@python3 scripts/search_diagnostic.py
 
 
 rebuild: ensure-env down

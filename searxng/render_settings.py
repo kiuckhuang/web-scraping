@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 from urllib.parse import urlsplit
 
@@ -94,6 +95,11 @@ def main() -> None:
             if not math.isfinite(number) or number < 0:
                 raise ValueError(f"{token} must be non-negative")
             val = str(int(number)) if number.is_integer() else str(number)
+        elif token == "VALKEY_HOST":
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", val):
+                raise ValueError(
+                    "VALKEY_HOST must be a bare hostname/IP (letters, digits, dot, dash, underscore)"
+                )
         elif token == "SEARXNG_BASE_URL":
             val = json.dumps(val)[1:-1]
         data = data.replace(f"${{{token}}}", val)

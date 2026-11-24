@@ -296,3 +296,57 @@ def test_referenced_volumes_maps_name_to_service_image(parsed):
     volumes = adapter.referenced_volumes(list(services.values()))
     assert volumes["valkey-data"] == services["valkey"].image
     assert volumes["searxng-data"] == services["searxng"].image
+
+
+# ---------------------------------------------------------------------------
+#  Review batch: nested interpolation, healthcheck, env-file, fingerprints
+# ---------------------------------------------------------------------------
+
+def test_interpolate_nested_defaults_inner_first(adapter):
+    values = {"EGRESS_GUARD_HOST": "egress-guard.test"}
+    nested = "${JINA_PROXY:-http://${EGRESS_GUARD_HOST:-egress-guard}:8082}"
+    assert adapter.interpolate(nested, values) == "http://egress-guard.test:8082"
+    assert adapter.interpolate(nested, {**values, "JINA_PROXY": "http://proxy:3128"}) == "http://proxy:3128"
+    assert adapter.interpolate("${A:-${B:-c}}", {"A": "x"}) == "x"
+    assert adapter.interpolate("${A:-${B:-c}}", {"B": "y"}) == "y"
+    assert adapter.interpolate("${A:-${B:-c}}", {}) == "c"
+
+
+def test_parse_compose_leaves_no_unresolved_placeholders(parsed):
+    _, services, _, _ = parsed
+    env = services["bridge"].environment
+    for key in ("JINA_PROXY", "EXA_PROXY", "CERAMIC_PROXY", "TINYFISH_PROXY", "HTTP_FASTPATH_PROXY"):
+        assert "${" not in env[key], (key, env[key])
+
+
+def test_parse_compose_interpolates_healthcheck_fields(parsed):
+    _, services, _, _ = parsed
+    for service in services.values():
+        assert "${" not in str(service.healthcheck or {})
+
+
+def test_stack_fingerprint_tracks_env_changes(adapter, monkeypatch):
+    services, _ = adapter.parse_compose(domain="test")
+    values = {"_service_names": set(services), "_addresses": {}}
+    before = adapter.stack_fingerprint([services["mcp"]], values)
+    monkeypatch.setenv("MCP_API_KEY", "rotated-key-for-fingerprint-test")
+    services_after, _ = adapter.parse_compose(domain="test")
+    after = adapter.stack_fingerprint([services_after["mcp"]], values)
+    assert before != after
+
+
+def test_write_private_env_file_is_private(adapter):
+    path = adapter.write_private_env_file({"A": "1", "B": "two"})
+    try:
+        assert Path(path).stat().st_mode & 0o777 == 0o600
+        assert Path(path).read_text() == "A=1\nB=two\n"
+    finally:
+        Path(path).unlink()
+
+
+def test_run_argv_uses_env_file_for_secrets(adapter):
+    service = svc(adapter, "bridge", image="img")
+    argv = adapter.run_argv("/bin/container", service, {"A": "1"}, env_file="/tmp/ws-env")
+    assert "--env-file" in argv
+    assert argv[argv.index("--env-file") + 1] == "/tmp/ws-env"
+    assert "-e" not in argv

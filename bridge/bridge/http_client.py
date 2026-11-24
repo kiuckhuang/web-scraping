@@ -97,8 +97,29 @@ def _request_raw(url: str) -> tuple[int, str, dict[str, str], str]:
             # host:port:address, and an unbracketed "::1:443:..." is ambiguous.
             resolve_host = f"[{host}]" if ":" in host else host
             session.curl_options[CurlOpt.RESOLVE] = [f"{resolve_host}:{port}:{address}".encode()]
-        resp = session.get(url, allow_redirects=False)
-        return resp.status_code, str(resp.url), dict(resp.headers), resp.text[:MAX_HTML_CHARS]
+        # Stream the body so a huge (or malicious) target cannot be buffered
+        # in full before the 2 MB cap applies. The cap is a transfer cap here,
+        # not just a string slice.
+        resp = session.get(url, allow_redirects=False, stream=True)
+        try:
+            chunks: list[bytes] = []
+            size = 0
+            for chunk in resp.iter_content(65536):
+                if not chunk:
+                    continue
+                chunks.append(chunk)
+                size += len(chunk)
+                if size >= MAX_HTML_CHARS:
+                    break
+            raw = b"".join(chunks)[:MAX_HTML_CHARS]
+            encoding = resp.encoding or resp.charset_encoding or "utf-8"
+            try:
+                body = raw.decode(encoding, errors="replace")
+            except LookupError:
+                body = raw.decode("utf-8", errors="replace")
+        finally:
+            resp.close()
+        return resp.status_code, str(resp.url), dict(resp.headers), body
 
 
 def _ensure_public(url: str, what: str) -> None:
@@ -107,6 +128,8 @@ def _ensure_public(url: str, what: str) -> None:
         ssrf.validate_public_url(url)
     except ssrf.UrlBlockedError as exc:
         raise Escalation(f"{what} blocked by SSRF guard: {exc.detail}") from exc
+    except ValueError as exc:
+        raise Escalation(f"{what} blocked by SSRF guard: {exc}") from exc
 
 
 def _fetch_public_sync(url: str, *, mode: str) -> dict[str, Any]:
@@ -126,9 +149,12 @@ def _fetch_public_sync(url: str, *, mode: str) -> dict[str, Any]:
                 continue
             if location:
                 raise Escalation(f"redirect limit ({MAX_REDIRECTS}) exceeded at {current}")
-            # 3xx without a Location header — serve whatever body came with it.
-        if status >= 400:
+            # 3xx without a Location header falls through to the non-2xx
+            # escalation below.
+        if not 200 <= status < 300:
             raise Escalation(f"HTTP {status} — letting the browser retry")
+        if not body.strip():
+            raise Escalation("empty response body — letting the browser retry")
         return _build_result(final_url, body, mode, status)
     raise Escalation(f"redirect limit ({MAX_REDIRECTS}) exceeded at {current}")
 
@@ -183,6 +209,19 @@ _NOISE_SELECTORS = (
     ".ad, .ads, .advertisement, .sidebar, .menu, .cookie",
 )
 
+# Tags the browser never renders; inner_text() ignores them too. Noise
+# selectors (nav/footer/ads) are NOT removed here: fetch-mode text and table
+# extraction must match the browser path, which sees the untouched DOM.
+_NON_RENDERED_SELECTORS = "script, style, noscript, template, iframe, svg"
+
+
+def _visible_soup(body: str) -> BeautifulSoup:
+    """Parse HTML and drop only non-rendered elements (browser inner_text parity)."""
+    soup = BeautifulSoup(body, "html.parser")
+    for element in soup.select(_NON_RENDERED_SELECTORS):
+        element.decompose()
+    return soup
+
 
 def _soup_from(body: str) -> BeautifulSoup:
     soup = BeautifulSoup(body, "html.parser")
@@ -213,18 +252,19 @@ def _extract_tables(soup: BeautifulSoup) -> list[dict[str, Any]]:
 
 def _build_result(url: str, body: str, mode: str, status: int) -> dict[str, Any]:
     body = body[:MAX_HTML_CHARS]
-    soup = _soup_from(body)
-    title = _title_of(soup)
-    if _looks_like_challenge(title, body) or soup.select_one(_CHALLENGE_SELECTORS):
+    visible = _visible_soup(body)
+    title = _title_of(visible)
+    if _looks_like_challenge(title, body) or visible.select_one(_CHALLENGE_SELECTORS):
         raise Escalation("WAF challenge detected — letting the browser verify")
     if mode == "fetch":
         return {
             "url": url,
             "title": title,
-            "text": soup.get_text("\n"),
+            "text": visible.get_text("\n"),
             "html": body,
             "status": status,
         }
+    soup = _soup_from(body)
     main = soup.select_one("main, article, [role='main'], #content, .content") or soup.body or soup
     md = markdownify(f"<body>{main.decode_contents()}</body>", heading_style="ATX", bullets="-")
     markdown = _collapse_blank_lines(md).strip()[:MAX_MARKDOWN_CHARS]
@@ -236,6 +276,8 @@ def _build_result(url: str, body: str, mode: str, status: int) -> dict[str, Any]
         "url": url,
         "title": title,
         "markdown": markdown,
-        "tables": _extract_tables(soup),
+        # Tables come from the visible DOM: the browser path extracts tables
+        # before its markdown pass removes nav/footer noise.
+        "tables": _extract_tables(visible),
         "status": status,
     }
