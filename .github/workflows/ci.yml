@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: pip install "ruff==0.17.3"
+      - run: pip install "ruff==0.17.6"
       - run: ruff check .
 
   test-bridge:

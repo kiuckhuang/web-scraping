@@ -5,7 +5,7 @@ description = "Bridge service: SearXNG search + Camoufox stealth scrape"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
-    "fastapi==0.162.0",
+    "fastapi==0.165.0",
     # Pinned explicitly: fastapi only sets a lower bound (starlette>=0.46.0),
     # so without this the image silently pulls a Starlette that may predate the
     # 2026 security fixes (CVE-2026-48710 "BadHost", CVE-2026-48817/48818,
@@ -19,11 +19,11 @@ dependencies = [
     # (camoufox 0.5.9 requires <1.63). When camoufox ships a release
     # supporting a newer playwright, bump both pins together.
     "playwright==1.62.0",
-    "pydantic==2.14.2",
-    "markdownify==1.2.3",
+    "pydantic==2.14.4",
+    "markdownify==1.2.4",
     # Direct imports in SERP/HTTP parsing and settings-renderer tests.
     "beautifulsoup4==4.15.0",
-    "PyYAML==6.0.3",
+    "PyYAML==6.0.4",
     # HTTP fast path: Chrome-shaped TLS (JA3/JA4) + HTTP/2 fingerprinting for
     # static pages, escalating to the stealth browser for JS/WAF targets.
     # 0.17.0 carries the brotli 1.2.1 (http2shell) and certifi fixes.

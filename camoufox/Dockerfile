@@ -24,9 +24,12 @@ RUN pip install --no-cache-dir -U pip
 # remote protocol enforces client/server minor-version parity (HTTP 428 on
 # mismatch), and camoufox 0.5.9 requires playwright <1.63.
 ARG CAMOUFOX_PKG_VERSION=0.5.9
-# Pinned to the build camoufox 0.5.9 stamps in its browser-pin.json (the
-# package warns on any other build: "other builds may not be compatible").
-ARG CAMOUFOX_BROWSER_VERSION=158.0.1-beta.41
+# Pinned to the current official (non-prerelease) build. It is one step ahead
+# of the build camoufox 0.5.9 stamps in browser-pin.json (158.0.1-beta.41, and
+# the package warns on other builds), so this pin was verified end-to-end
+# against the pkg + playwright 1.62.0: WS connect, proxy navigation and UA
+# spoofing (rv:159.0) all work. Re-verify the same way when bumping again.
+ARG CAMOUFOX_BROWSER_VERSION=159.0-beta.43
 # camoufox installs the browser under XDG_CACHE_HOME (platformdirs) — a fixed
 # shared path so the build-time fetch as root is visible to appuser at runtime.
 ENV XDG_CACHE_HOME=/opt/camoufox-cache
