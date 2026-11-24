@@ -174,8 +174,11 @@ covers the conventions and non-obvious decisions you must not regress.
     falls back to injecting container IPs and recreating containers on every
     start; Apple named volumes start empty and root-owned (no image-content
     seeding like podman), so the adapter grants valkey CAP_CHOWN for its
-    entrypoint's /data chown; string commands are shlex-split like compose
-    (`_as_args`).
+    entrypoint's /data chown and normalizes each named volume's ext4
+    `lost+found` (chmod 755 via a throwaway container) — without that, the
+    valkey entrypoint's `find . ! -user valkey` cannot read the directory on
+    the second start and aborts under `set -e`; string commands are
+    shlex-split like compose (`_as_args`).
 
 ## Style
 

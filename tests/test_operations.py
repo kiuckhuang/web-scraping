@@ -15,6 +15,9 @@ def load(name: str, path: str):
     spec = importlib.util.spec_from_file_location(name, ROOT / path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    # Register before exec: dataclasses resolve string annotations through
+    # sys.modules[cls.__module__] on Python 3.12 (CI).
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 

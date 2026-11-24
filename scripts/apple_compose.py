@@ -55,7 +55,7 @@ COMPOSE_FILE = ROOT / "podman-compose.yml"
 DNS_DOMAIN_DEFAULT = "test"
 CONTAINER_CONFIG = Path.home() / ".config" / "container" / "config.toml"
 
-PYAML_PIN = "PyYAML==6.0.3"  # matches bridge/pyproject.toml
+PYAML_PIN = "PyYAML==6.0.4"  # matches bridge/pyproject.toml
 BOOTSTRAP_VENV = ROOT / ".venv-compose"
 
 
@@ -421,15 +421,15 @@ def build_one(binary: str, svc: Service, values: dict[str, str]) -> None:
     run(*argv)
 
 
-def referenced_volumes(services: list[Service]) -> list[str]:
-    """Named volumes (not bind mounts) the given services mount."""
-    named = []
+def referenced_volumes(services: list[Service]) -> dict[str, str]:
+    """Named volumes (not bind mounts) the given services mount, with an image."""
+    volumes: dict[str, str] = {}
     for svc in services:
         for spec in svc.volumes:
             source = spec.split(":")[0]
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", source) and source not in named:
-                named.append(source)
-    return named
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", source) and source not in volumes:
+                volumes[source] = svc.image or ""
+    return volumes
 
 
 def volume_spec(spec: str) -> str:
@@ -604,8 +604,6 @@ def cmd_up(args: argparse.Namespace) -> int:
     recreate_all = not dns_mode
 
     selected = enabled_services(services, values)
-    ensure_volumes(binary, referenced_volumes(selected))
-
     states = container_state(binary)
     if not searxng_enabled(values):
         for name in ("ws-searxng", "ws-valkey"):
@@ -615,14 +613,21 @@ def cmd_up(args: argparse.Namespace) -> int:
                 run(binary, "stop", name, "-t", "10", check=False)
                 states[name] = ("stopped", "")
 
+    # IP mode recreates every container, and Apple volumes are single-attach:
+    # delete the old containers BEFORE normalizing volume metadata, otherwise
+    # the normalization helper cannot mount a volume that a running VM holds.
+    if recreate_all or args.force:
+        for svc in selected:
+            if svc.container_name in states:
+                print(f"recreating {svc.container_name} (--force)" if args.force
+                      else f"recreating {svc.container_name} (fresh addressing)")
+                run(binary, "delete", "--force", svc.container_name, check=False)
+                states.pop(svc.container_name, None)
+
+    ensure_volumes(binary, referenced_volumes(selected))
+
     for svc in selected:
         state, _ = states.get(svc.container_name, ("", ""))
-        if state and (args.force or recreate_all):
-            print(f"recreating {svc.container_name} (--force)" if args.force
-                  else f"recreating {svc.container_name} (fresh addressing)")
-            run(binary, "delete", "--force", svc.container_name, check=False)
-            states.pop(svc.container_name, None)
-            state = ""
         ensure_image(binary, svc, values)
         if state == "running":
             print(f"{svc.container_name} already running")
@@ -705,11 +710,42 @@ def _probe_port(host: str, port: str, timeout: float = 3.0) -> tuple[bool, str]:
         return False, str(exc)
 
 
-def ensure_volumes(binary: str, names: list[str]) -> None:
-    for name in names:
+def ensure_volumes(binary: str, volumes: dict[str, str]) -> None:
+    for name, image in volumes.items():
         if not volume_exists(binary, name):
             print(f"creating volume {name}")
             run(binary, "volume", "create", name)
+        _normalize_volume(binary, name, image)
+
+
+def volume_init_argv(binary: str, name: str, image: str) -> list[str]:
+    """Normalize an Apple named volume's ext4 metadata.
+
+    Apple named volumes are ext4 images, so they contain a `lost+found`
+    directory that podman's directory-backed volumes do not. It is created
+    mode 0700 and the service entrypoint chowns it to the service user
+    (valkey does `find . ! -user valkey -exec chown ... +`), after which the
+    next start cannot read it as root without DAC capabilities and aborts
+    under `set -e`. Make it traversable for root once per `up`; harmless for
+    every service image.
+    """
+    return [
+        binary, "run", "--rm",
+        # Override the image entrypoint: searxng's upstream entrypoint ignores
+        # the command and launches the server, which would hang this helper.
+        "--entrypoint", "/bin/sh",
+        "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE",
+        "-v", f"{name}:/vol", image,
+        "-c", "chmod 755 /vol/lost+found 2>/dev/null || true",
+    ]
+
+
+def _normalize_volume(binary: str, name: str, image: str) -> None:
+    # Expected to fail while another container still attaches the volume
+    # (Apple volumes are single-attach); cmd_up deletes old containers first.
+    if not image:
+        return
+    run(*volume_init_argv(binary, name, image), check=False, capture=True)
 
 
 def cmd_down(args: argparse.Namespace) -> int:

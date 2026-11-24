@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,9 @@ def load(name: str, path: str):
     spec = importlib.util.spec_from_file_location(name, ROOT / path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    # Register before exec: dataclasses resolve string annotations through
+    # sys.modules[cls.__module__] on Python 3.12 (CI).
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -271,3 +275,24 @@ def test_parse_dns_domains_table(adapter):
     assert adapter._parse_dns_domains("DOMAIN\n") == set()
     assert adapter._parse_dns_domains("DOMAIN\ntest\n") == {"test"}
     assert adapter._parse_dns_domains("DOMAIN\ntest  \nws.local\n") == {"test", "ws.local"}
+
+
+# ---------------------------------------------------------------------------
+# named-volume normalization
+
+
+def test_volume_init_makes_lost_found_traversable(adapter):
+    """Apple ext4 volumes carry lost+found; entrypoints abort on it once chowned."""
+    argv = adapter.volume_init_argv("/bin/container", "valkey-data", "docker.io/valkey/valkey:9.1.4-alpine")
+    assert argv[:3] == ["/bin/container", "run", "--rm"]
+    assert argv[argv.index("--entrypoint") + 1] == "/bin/sh"  # never the image's own entrypoint
+    assert "FOWNER" in argv and "DAC_OVERRIDE" in argv
+    assert "valkey-data:/vol" in argv
+    assert argv[-2:] == ["-c", "chmod 755 /vol/lost+found 2>/dev/null || true"]
+
+
+def test_referenced_volumes_maps_name_to_service_image(parsed):
+    adapter, services, _, _ = parsed
+    volumes = adapter.referenced_volumes(list(services.values()))
+    assert volumes["valkey-data"] == services["valkey"].image
+    assert volumes["searxng-data"] == services["searxng"].image
